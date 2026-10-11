@@ -1,0 +1,154 @@
+import Foundation
+import Darwin
+
+@MainActor enum DemoContent { static var enabled = false }
+enum SyntheticFailure: Error, LocalizedError {
+    case transport
+    var errorDescription: String? { "synthetic transport failure" }
+}
+actor FakeEngine {
+    private var attempted: [WireCommand] = []
+    private var sent: [WireCommand] = []
+    private var failKind: String?
+    func fail(on kind: String) { failKind = kind }
+    // Synchronous actor method, as in EngineClient.send; records real WireCommands.
+    func send(_ command: WireCommand) throws {
+        attempted.append(command)
+        if command.kind == failKind { throw SyntheticFailure.transport }
+        sent.append(command)
+    }
+    func values() -> (attempted: [WireCommand], sent: [WireCommand]) { (attempted, sent) }
+}
+@MainActor final class Model {
+    let engine = FakeEngine()
+    var paused = false
+    var acOnly = true
+    var problem: String?
+    var selected: Job?
+    var transcript: Transcript?
+    var jobs: [Job] = []
+    var connection = "synthetic connection"
+/* APPMODEL_METHODS */
+}
+@MainActor var passed = 0
+@MainActor var failed = 0
+@MainActor func check(_ value: Bool, _ name: String) {
+    if value { passed += 1; print("PASS: " + name) }
+    else { failed += 1; print("FAIL: " + name) }
+}
+func job(_ status: String, id: String = "selected-job", artifact: Bool = true) throws -> Job {
+    var object: [String: Any] = ["id": id, "uuid": id + "-recording-uuid", "status": status,
+        "stage": "noting", "elapsed_seconds": 0, "title_status": "completed", "alignment_status": "completed"]
+    if artifact { object["artifact_path"] = "synthetic-artifact" }
+    return try JSONDecoder().decode(Job.self, from: JSONSerialization.data(withJSONObject: object))
+}
+// The product methods expose no Task handle. Observe the transport until the
+// expected count/error; use a bounded scheduling window to detect forbidden sends.
+@MainActor func observe(_ model: Model, attempts: Int, error: Bool = false) async -> (attempted: [WireCommand], sent: [WireCommand]) {
+    let until = Date().addingTimeInterval(attempts == 0 ? 0.05 : 0.6)
+    repeat {
+        let values = await model.engine.values()
+        if attempts > 0 && values.attempted.count >= attempts && (!error || model.problem != nil) { return values }
+        try? await Task.sleep(nanoseconds: 1_000_000)
+    } while Date() < until
+    return await model.engine.values()
+}
+@MainActor func metadata(_ commands: [WireCommand], _ name: String) {
+    check(commands.allSatisfy { $0.protocol_version == 1 }, name + " protocol version one")
+    check(Set(commands.map(\.request_id)).count == commands.count && commands.allSatisfy { !$0.request_id.isEmpty }, name + " distinct nonempty request IDs")
+    check(!commands.contains { $0.kind == "set_policy" }, name + " sends no AC-policy override")
+}
+@main struct ProcessingChecks {
+    @MainActor static func main() async throws {
+        let transcript = try JSONDecoder().decode(Transcript.self, from: Data(#"{"text":"synthetic source","segments":[],"alignment_status":"failed"}"#.utf8))
+        for paused in [true, false] {
+            let model = Model(); model.paused = paused
+            check(model.manualProcessingTitle("전사") == (paused ? "전사 · 처리 재개" : "전사"), "manual title discloses pause for paused=\(paused)")
+            for acOnly in [true, false] {
+                let notes = Model(); notes.paused = paused; notes.acOnly = acOnly
+                notes.selected = try job("completed"); notes.transcript = transcript
+                notes.generateNotes()
+                let values = await observe(notes, attempts: paused ? 2 : 1)
+                check(values.sent.map(\.kind) == (paused ? ["resume", "generate_notes"] : ["generate_notes"]), paused ? "paused notes must send resume before generate_notes" : "unpaused notes sends only generate_notes")
+                check(values.sent.last?.payload == ["job_id": .string("selected-job")], "notes targets exact job ID, not recording UUID")
+                if paused { check(values.sent.first?.payload.isEmpty == true, "resume carries empty payload") }
+                check(notes.acOnly == acOnly && notes.paused == paused, "notes preserves AC preference and observed pause")
+                metadata(values.sent, "notes")
+                for status in ["unprocessed", "failed"] {
+                    let request = Model(); request.paused = paused; request.acOnly = acOnly
+                    let selected = try job(status); request.processRecording(selected)
+                    let commands = await observe(request, attempts: paused ? 2 : 1)
+                    let kind = status == "unprocessed" ? "enqueue" : "retry"
+                    check(commands.sent.map(\.kind) == (paused ? ["resume", kind] : [kind]), "\(status) paused=\(paused) exact request order")
+                    let expected: [String: JSONValue] = status == "unprocessed" ? ["uuids": .array([.string(selected.uuid)])] : ["job_id": .string(selected.id)]
+                    check(commands.sent.last?.payload == expected, "\(status) exact UUID/job-ID payload")
+                    check(request.acOnly == acOnly && request.paused == paused, "recording request preserves pause and AC preference")
+                    metadata(commands.sent, status)
+                }
+            }
+        }
+        for status in ["paused", "waiting", "completed", "needs_recording_date", "preparing", "transcribing", "aligning", "titling", "noting", "saving", "unknown"] {
+            let model = Model(); model.paused = true; let queued = try job(status)
+            model.processRecording(queued)
+            let values = await observe(model, attempts: 0)
+            check(values.attempted.isEmpty && model.paused && model.acOnly, "\(status) recording route is noop; no restart/regeneration")
+        }
+        for scenario in ["nil-selected", "no-transcript", "no-artifact", "paused", "waiting", "noting"] {
+            let model = Model(); model.paused = true; model.transcript = transcript
+            model.selected = try job(["paused", "waiting", "noting"].contains(scenario) ? scenario : "completed", artifact: scenario != "no-artifact")
+            if scenario == "nil-selected" { model.selected = nil }
+            if scenario == "no-transcript" { model.transcript = nil }
+            check(!model.canGenerateNotes, "\(scenario) is ineligible before global resume")
+            model.generateNotes(); let values = await observe(model, attempts: 0)
+            check(values.attempted.isEmpty && model.paused && model.acOnly, "\(scenario) notes guard sends nothing")
+        }
+        for status in ["failed", "needs_recording_date"] {
+            let model = Model(); model.paused = true; model.transcript = transcript; model.selected = try job(status)
+            model.generateNotes(); let values = await observe(model, attempts: 2)
+            check(values.sent.map(\.kind) == ["resume", "generate_notes"], "eligible \(status) notes request resumes processing")
+        }
+        // Action parameters and original pause are captured before Task suspension.
+        let capture = Model(); capture.paused = true; capture.transcript = transcript; capture.selected = try job("completed", id: "original")
+        capture.generateNotes(); capture.paused = false; capture.selected = try job("completed", id: "replacement")
+        let captured = await observe(capture, attempts: 2)
+        check(captured.sent.map(\.kind) == ["resume", "generate_notes"] && captured.sent.last?.payload == ["job_id": .string("original")], "notes captures original pause and selected job before suspension")
+        let originallyRunning = Model(); originallyRunning.selected = try job("completed"); originallyRunning.transcript = transcript
+        originallyRunning.generateNotes(); originallyRunning.paused = true
+        check(await observe(originallyRunning, attempts: 1).sent.map(\.kind) == ["generate_notes"], "later pause-state change does not alter the captured action")
+        let backfill = Model(); backfill.paused = true; backfill.acOnly = false
+        let payload: [String: JSONValue] = ["uuids": .array([.string("older-a"), .string("older-b")])]
+        backfill.processingCommand("backfill", payload)
+        let backfilled = await observe(backfill, attempts: 2)
+        check(backfilled.sent.map(\.kind) == ["resume", "backfill"] && backfilled.sent.last?.payload == payload, "backfill preserves explicit UUID list after resume")
+        check(!backfill.acOnly, "battery processing preference stays enabled")
+        // Repeated new user actions need unique IDs, not replay IDs from earlier actions.
+        let repeated = Model(); repeated.paused = true
+        repeated.processingCommand("enqueue", payload)
+        _ = await observe(repeated, attempts: 2)
+        repeated.processingCommand("enqueue", payload)
+        let repeatValues = await observe(repeated, attempts: 4)
+        check(repeatValues.sent.map(\.kind) == ["resume", "enqueue", "resume", "enqueue"], "repeated actions retain per-action ordering")
+        metadata(repeatValues.sent, "repeated action")
+        for failKind in ["resume", "generate_notes"] {
+            let model = Model(); model.paused = true; model.selected = try job("completed"); model.transcript = transcript
+            await model.engine.fail(on: failKind); model.generateNotes()
+            let values = await observe(model, attempts: failKind == "resume" ? 1 : 2, error: true)
+            check(values.attempted.map(\.kind) == (failKind == "resume" ? ["resume"] : ["resume", "generate_notes"]), "\(failKind) failure stops subsequent sends")
+            check(values.sent.map(\.kind) == (failKind == "resume" ? [] : ["resume"]), "\(failKind) successful sends reflect transport failure")
+            check(model.problem == "synthetic transport failure" && model.paused && model.acOnly, "\(failKind) failure surfaces error without optimistic state/policy change")
+        }
+        let ordinary = Model(); ordinary.paused = true
+        ordinary.command("enqueue", payload)
+        check(await observe(ordinary, attempts: 1).sent.map(\.kind) == ["enqueue"], "ordinary command API does not silently resume")
+        let status = Model(); status.paused = true
+        status.jobs = [try job("paused"), try job("waiting"), try job("noting")]
+        check(status.overallStatus.contains("일시 중지") && status.overallStatus.contains("2"), "overall status makes global pause visible ahead of active work")
+        DemoContent.enabled = true
+        let demo = Model(); demo.paused = true; demo.selected = try job("completed"); demo.transcript = transcript
+        demo.generateNotes(); demo.processRecording(try job("unprocessed")); demo.processingCommand("backfill", payload); demo.command("resume")
+        check(await observe(demo, attempts: 0).attempted.isEmpty, "demo mode suppresses every processing/command entry point")
+        DemoContent.enabled = false
+        print("RESULT: \(passed) assertions passed; \(failed) failed")
+        fflush(stdout); exit(failed == 0 ? 0 : 1)
+    }
+}

@@ -1,6 +1,6 @@
 # Public preview validation
 
-Current preview: `v0.2.0-preview.1`. Checks performed on an Apple Silicon M5 Pro, 24 GB RAM, macOS 27.0.1. This is evidence from one Mac, not certification of every supported system. The first sections describe the preserved 0.1 release; 0.2 checks follow below.
+Current preview: `v0.2.0-preview.2`. Checks performed on an Apple Silicon M5 Pro, 24 GB RAM, macOS 27.0.1. This is evidence from one Mac, not certification of every supported system. The first sections describe the preserved 0.1 release; 0.2 checks follow below.
 
 ## Automated checks
 
@@ -70,3 +70,35 @@ A control-state issue was observed during that installed-app check: successful p
 - Signed-package local note inference on synthetic content previously completed in **8.08 seconds** with exact-source quotes, outside the source tree and with network access denied to the worker. This is a smoke result, not a quality or performance benchmark. The final policy-only fix does not change note inference.
 
 Final artifact: `Vemo-0.2.0-preview.1-arm64.dmg`, app version `0.2.0`, build `4`, public bundle ID `io.github.sangdnog.vemo`. SHA-256: `eefed4f42ec06c5bbde451a2dc3827ea09f3168d7ebfc04a7181df0609b82cb6`. The preview is not Developer ID signed or notarized; second-Mac installation and real Drive/iPhone delivery remain unverified.
+
+
+## 0.2 preview.2 UI and manual processing checks (2026-10-11)
+
+- Headers now share one native compact toolbar. CUA inspection of the real demo app confirmed a single sidebar toggle above the library at its trailing edge, vertically aligned with the traffic lights; hide/show recovery worked. An initial placement attempt produced duplicate toggles and was corrected before release.
+- The empty notes icon, explanation and `+` generation button form one centered group. A vertical clipping defect observed during real screen transitions was corrected by removing the inner vertical fixed-size constraint. Updated transcript/notes/empty-notes images use synthetic fixtures only.
+- Actual clicks on blank padding of the detail tab, folder row, keyword chip, highlight quote and export menu activated their intended actions. Icon menus displayed without an added disclosure chevron. This checks representative native controls, not every display/OS combination.
+- The new ProcessingChecks runner compiled unchanged AppModel methods with real native WireTypes and Validation: **118 assertions passed, 0 failed**. The old generateNotes negative control compiled and exited 1 with **12 expected failures** (106 other assertions passed). Product source was never mutated by the negative control.
+- Checks cover pause-first manual enqueue/retry/notes/backfill, payloads, distinct request IDs, selection/pause capture, eligibility, transport errors, unchanged power policy and demo isolation. Sequential writes within an action are verified; engine acknowledgement and atomic ordering against unrelated tasks are outside this harness.
+- The native executable suite passed **223 assertions** during this follow-up. The incidental long-notes fix changes Python notes decoding and the bounded output allowance; its final regression results follow below. Native-core/audio code did not change, so runtime27 remains prior evidence. Full XCTest remains unavailable on this Command Line Tools installation.
+- Installed build5 and build6 retain the fixed local designated requirement. A fresh read-only source diagnostic at `2026-10-11T12:42:08Z` reported `supported_schema` and `schema_verified=true`; no Full Disk Access re-registration was used. This is specific to this Mac's local certificate, not a promise for the ad-hoc public package.
+- The user explicitly allowed battery processing. The real engine resumed with `paused=false`, `ac_only=false`: an existing long recording committed all 11 ASR units and moved into alignment, and saved its final publication; a second queued recording also completed transcription, alignment, notes and local publication. Completed recordings were not re-enqueued; nine unprocessed historical recordings were left available for explicit selection.
+- Two long recordings returned `notes_failed` with no generated notes; their successful transcripts and local publications remained preserved. For the resumed notes-only job, the last two failed tasks were both index 0 and had no result file or checkpoint. Their overall job status was completed, which must not be interpreted as successful note generation. Local first-unit reproductions subsequently identified output truncation and malformed final closing brackets, as described below.
+- The build5 candidate passed strict deep signing, DMG verification and read-only mount checks. It was superseded by build6 after the notes failure was diagnosed; final build6 package evidence follows below.
+
+### Long-notes failure reproduction and correction
+
+The first failed real notes unit reproduced JSONDecodeError locally with network access denied. Metadata-only inspection showed 1534 output tokens against the old 1536 cap and an unterminated string six characters from the end. Raising the bounded cap to 3072 produced a complete 2047-token response, but strict JSON decoding still failed at a five-character final closing-bracket suffix. The raw private response was inspected only locally and is excluded from public images and work records.
+
+The correction allows up to 3072 output tokens and normalizes only a malformed terminal closing-bracket suffix of at most 16 characters when the parser reports the demonstrated delimiter error. It scans the prefix with proper string/escape tracking and requires matching internal brackets and every required closing delimiter already present in the suffix; strict JSON parsing and existing schema/exact-source citation checks still apply. Truncated strings, missing terminal object closure, interior errors and extra trailing data continue to fail. This does not invent or rewrite note content. Worst-case decoding work per call can increase; the limit remains finite.
+
+Two new synthetic regressions failed before their respective corrections, then passed. The focused notes suite passed **10 tests**. The actual complete first-unit response then passed strict schema/source validation, retaining two summaries and three keyword cards; unsupported highlights were filtered rather than accepted. This is evidence for that response and the narrow repair, not a semantic-accuracy benchmark or proof that all later model responses are valid.
+
+
+Final Python suite: **76 tests passed, no skips** using the pinned Python runtime, project source and the actual native decoder. Independent review identified a too-permissive terminal-repair case with missing closers; a closer-count guard and rejection regression were added before this final run.
+
+Installed build6 preserved Full Disk Access in a fresh diagnostic at `2026-10-11T13:13:46Z`, with `supported_schema`, `schema_verified=true`. Battery processing remained enabled and global pause remained off. Real regeneration persisted the previously failing first note unit (1/11 checkpoint), but both complete long-note runs subsequently failed in other units. Full long-recording note generation is therefore **still unresolved**; the narrow truncation/terminal-format correction is not a claim that those recordings now complete. Their ASR, alignment and published transcripts remain preserved, and the nine historical unprocessed recordings were not started.
+
+
+Final public build6 passed strict deep signing, DMG verification/read-only mount, Applications link and installation-notice checks. Every bundled engine source module matched the final project source. Bundled engine/MLX imports and the synthetic terminal-repair/missing-closure rejection checks passed outside the project with system-only PATH.
+
+Artifact: `Vemo-0.2.0-preview.2-arm64.dmg`, app version `0.2.0`, build `6`, public ID `io.github.sangdnog.vemo`. Size: **290199679 bytes**. SHA-256: `53163590d3b4f7591d3cd0129cd8ca60c29f3ff14440496cf6eb29b694cdf5e3`. Developer ID/notarization, another physical Mac and real Drive/iPhone delivery remain unverified. Prior releases are preserved.

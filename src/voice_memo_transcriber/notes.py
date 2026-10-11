@@ -7,7 +7,9 @@ from bisect import bisect_right
 
 CHUNK_CHARS=1800
 SOURCE_TOKENS=3000
-OUTPUT_TOKENS=1536
+# Exact citations can repeat across summary, highlights and keyword cards.
+# Keep a hard bound while allowing those validated JSON objects to close.
+OUTPUT_TOKENS=3072
 
 def source_digest(source):
     return hashlib.sha256(source.encode('utf-8')).hexdigest()
@@ -41,11 +43,38 @@ def source_chunks(source,limit=CHUNK_CHARS,token_count=None):
         chunks.append(chunk);start=end
     return chunks
 
+def decode_notes_json(raw):
+    try:return json.loads(raw)
+    except json.JSONDecodeError as error:
+        # Some complete model responses misorder only the final closing brackets.
+        # Normalize that bounded suffix without changing any key, value or quote.
+        # Truncation, malformed strings, interior errors and extra text still fail.
+        suffix=raw[error.pos:]
+        if (error.msg!="Expecting ',' delimiter" or not raw.startswith('{')
+                or not raw.endswith('}') or not 0<len(suffix)<=16
+                or suffix[0] not in ']}' or not re.fullmatch(r'[\s\]}]+',suffix)):
+            raise
+        stack=[];quoted=False;escaped=False
+        for char in raw[:error.pos]:
+            if quoted:
+                if escaped:escaped=False
+                elif char=='\\':escaped=True
+                elif char=='"':quoted=False
+            elif char=='"':quoted=True
+            elif char in '[{':stack.append(char)
+            elif char in ']}':
+                if not stack or {'[':']','{':'}'}[stack[-1]]!=char:raise error
+                stack.pop()
+        if quoted or escaped or not stack or stack[0]!='{' or len(stack)>16:raise error
+        closing=''.join({'[':']','{':'}'}[char] for char in reversed(stack))
+        if any(suffix.count(char)<closing.count(char) for char in ']}'):raise error
+        return json.loads(raw[:error.pos]+closing)
+
 def validate_notes(raw,source,item_limit=None):
     if isinstance(raw,str):
         raw=raw.strip()
         if raw.startswith('```json\n') and raw.endswith('\n```'):raw=raw[8:-4]
-        raw=json.loads(raw)
+        raw=decode_notes_json(raw)
     if not isinstance(raw,dict):raise ValueError('invalid_notes_json')
     digest=source_digest(source)
     if 'source_sha256' in raw and raw['source_sha256']!=digest:raise ValueError('notes_source_mismatch')

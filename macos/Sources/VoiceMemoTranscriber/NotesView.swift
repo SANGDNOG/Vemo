@@ -20,7 +20,7 @@ struct NotesView: View {
                         }
                         section("강조 문장", icon:"highlighter") {
                             ForEach(Array(notes.highlights.enumerated()),id:\.offset) { _,item in
-                                quote(item.quote).padding(10).frame(maxWidth:.infinity,alignment:.leading).background(VemoTheme.wash,in:RoundedRectangle(cornerRadius:10))
+                                quote(item.quote, highlighted: true)
                             }
                         }
                         section("키워드별 정리",icon:"number") {
@@ -44,13 +44,21 @@ struct NotesView: View {
                         Button("결과 폴더 열기") { model.openResultFolder() }.disabled(job.status != "completed")
                     }.vemoMenuSurface()
                     Spacer()
-                    Button("다시 생성",systemImage:"arrow.clockwise") { model.generateNotes() }.disabled(!model.canGenerateNotes)
+                    Button(model.manualProcessingTitle("다시 생성"),systemImage:"arrow.clockwise") { model.generateNotes() }.disabled(!model.canGenerateNotes)
                 }
             } else {
-                Spacer()
-                ContentUnavailableView(job.status == "noting" ? "노트를 정리하고 있습니다" : "이 녹음의 노트를 만들어 보세요",systemImage:"note.text",description:Text(model.notesReadError ?? (job.notes_status == "failed" ? "노트 생성에 실패했습니다. 원문은 보존되어 있으며 다시 생성할 수 있습니다." : "핵심 요약, 중요한 문장, 키워드별 내용을 Mac에서 정리합니다.")))
-                if model.canGenerateNotes { Button("노트 생성",systemImage:"sparkles") { model.generateNotes() }.buttonStyle(VemoButtonStyle(emphasis: .primary)).frame(maxWidth:.infinity) }
-                Spacer()
+                VStack(spacing: 14) {
+                    Image(systemName: "note.text").font(.system(size: 40)).foregroundStyle(.secondary).accessibilityHidden(true)
+                    Text(job.status == "noting" ? "노트를 정리하고 있습니다" : "이 녹음의 노트를 만들어 보세요").font(.title2.weight(.semibold))
+                    Text(model.notesReadError ?? (job.notes_status == "failed" ? "노트 생성에 실패했습니다. 원문은 보존되어 있으며 다시 생성할 수 있습니다." : "핵심 요약, 중요한 문장, 키워드별 내용을 Mac에서 정리합니다."))
+                        .font(.callout).foregroundStyle(.secondary)
+                    if model.canGenerateNotes {
+                        Button(model.manualProcessingTitle("노트 생성"), systemImage: "plus") { model.generateNotes() }.buttonStyle(VemoButtonStyle(emphasis: .primary))
+                    }
+                }
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 460)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             }
         }.frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
         .onChange(of:job.id) { _,_ in keyword = nil }
@@ -61,12 +69,16 @@ struct NotesView: View {
     func quotes(_ values:[String]) -> some View {
         VStack(alignment:.leading,spacing:6) { ForEach(Array(values.enumerated()),id:\.offset) { _,value in quote(value) } }
     }
-    func quote(_ value:String) -> some View {
+    func quote(_ value:String, highlighted: Bool = false) -> some View {
         Button { model.revealQuote(value) } label: {
             HStack(alignment:.top,spacing:8) { Image(systemName:"quote.opening").font(.caption); Text(value).multilineTextAlignment(.leading); Spacer(minLength:4); Image(systemName:"arrow.up.left").font(.caption) }.foregroundStyle(.secondary)
+                .padding(highlighted ? 10 : 0)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(highlighted ? VemoTheme.wash : .clear, in: RoundedRectangle(cornerRadius: 10))
+                .contentShape(RoundedRectangle(cornerRadius: highlighted ? 10 : 0))
         }.buttonStyle(.plain).help("전사 원문에서 확인")
     }
     func keywordButton(_ title:String,value:String?) -> some View {
-        Button { withAnimation(VemoTheme.motion(reducedMotion)) { keyword = value } } label: { Text(title).font(.caption).padding(.horizontal,10).padding(.vertical,5).background(keyword == value ? VemoTheme.accent.opacity(0.14) : Color.secondary.opacity(0.08),in:Capsule()) }.buttonStyle(.plain).foregroundStyle(keyword == value ? VemoTheme.ink : Color.secondary).accessibilityAddTraits(keyword == value ? .isSelected : [])
+        Button { withAnimation(VemoTheme.motion(reducedMotion)) { keyword = value } } label: { Text(title).font(.caption).padding(.horizontal,10).padding(.vertical,5).background(keyword == value ? VemoTheme.accent.opacity(0.14) : Color.secondary.opacity(0.08),in:Capsule()).contentShape(Capsule()) }.buttonStyle(.plain).foregroundStyle(keyword == value ? VemoTheme.ink : Color.secondary).accessibilityAddTraits(keyword == value ? .isSelected : [])
     }
 }

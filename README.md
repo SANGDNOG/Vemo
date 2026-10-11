@@ -6,9 +6,9 @@
 
 Vemo는 Apple Silicon Mac에서 한국어 중심의 음성을 전사하는 로컬 앱입니다. 영어가 섞인 녹음도 처리하며, 문장·문단으로 정리한 전사문, **내용 기반 제목 + 녹음일**, **핵심 요약·강조 문장·키워드별 노트**를 제공합니다. iPhone에서는 기본 **음성 메모와 파일 앱**을 사용합니다.
 
-> 0.2 프리뷰에 노트 정리, Drive 폴더 연결, 녹음 폴더 관리와 보라색 UI를 포함했습니다.
+> 0.2 프리뷰에 노트 정리, Drive 폴더 연결, 녹음 폴더 관리와 보라색 UI를 포함했습니다. preview.2에서는 상단·노트 정렬, 버튼 클릭 영역과 일시 중지된 작업의 재개를 개선하고 긴 노트 응답의 형식 처리를 보완했습니다.
 
-**[프리뷰 DMG 다운로드](https://github.com/SANGDNOG/Vemo/releases/tag/v0.2.0-preview.1)** · [설치 안내](docs/INSTALL.txt) · [라이선스](LICENSE)
+**[프리뷰 DMG 다운로드](https://github.com/SANGDNOG/Vemo/releases/tag/v0.2.0-preview.2)** · [설치 안내](docs/INSTALL.txt) · [라이선스](LICENSE)
 
 > 현재 배포는 Developer ID 서명·Apple 공증이 없는 프리뷰입니다. macOS의 최초 실행 허용이 필요할 수 있습니다. 다른 실제 Mac에서의 검증은 아직 진행하지 않았습니다.
 
@@ -19,6 +19,8 @@ Vemo는 Apple Silicon Mac에서 한국어 중심의 음성을 전사하는 로�
 ![전사 결과: 문장과 문단, 제목 및 녹음일](docs/images/transcript.jpg)
 
 ![로컬 노트: 핵심 요약, 원문 강조, 키워드별 정리](docs/images/notes.jpg)
+
+![노트 생성: 중앙에 표시되는 안내와 간단한 생성 버튼](docs/images/notes-empty.jpg)
 
 ![전사 단계와 완료 구간 수](docs/images/progress.jpg)
 
@@ -35,7 +37,7 @@ Vemo는 Apple Silicon Mac에서 한국어 중심의 음성을 전사하는 로�
 
 ## 설치와 첫 실행
 
-1. [Releases](https://github.com/SANGDNOG/Vemo/releases)에서 `Vemo-0.2.0-preview.1-arm64.dmg`를 내려받습니다.
+1. [Releases](https://github.com/SANGDNOG/Vemo/releases)에서 `Vemo-0.2.0-preview.2-arm64.dmg`를 내려받습니다.
 2. DMG를 열고 **Vemo.app → Applications**로 드래그합니다.
 3. Vemo를 실행합니다. macOS가 차단하면 **시스템 설정 → 개인정보 보호 및 보안 → 차단된 Vemo의 ‘확인 없이 열기’**에서 실행을 허용합니다. 이후 표시되는 열기 확인도 승인합니다. Gatekeeper를 끌 필요는 없습니다.
 4. **Vemo → 설정…**에서 **모델 다운로드 / 재개**를 누릅니다. 다운로드 완료 후 로컬에서 처리합니다.
@@ -116,6 +118,8 @@ AI 요약에는 오류가 있을 수 있습니다. 인용은 원문과 대조하
 
 기본값은 **전원 연결 시에만 처리**입니다. 창을 닫아도 메뉴 막대에서 실행하며, **종료**하면 엔진도 종료합니다. 로그인 실행은 설정에서 선택합니다.
 
+일시 중지 상태에서는 녹음 상세 화면의 **처리 재개**를 누르면 대기 중인 작업들이 저장된 지점에서 이어집니다. **전사하기 · 처리 재개**, **노트 생성 · 처리 재개** 같은 수동 동작도 전체 처리를 재개한 뒤 선택한 작업을 요청합니다. 전원 정책은 유지하므로 배터리에서도 처리하려면 설정의 **전원 연결 시에만 처리**를 끄세요. 완료된 녹음은 다시 전사하지 않습니다.
+
 ## 로컬 처리와 현재 한계
 
 전사는 **Qwen3-ASR-1.7B**, 시간 정렬은 **Qwen3-ForcedAligner-0.6B**, 제목과 노트는 **Qwen3-4B-Instruct-2507 4bit**를 사용합니다. 한국어 전사 프롬프트를 사용하며 영어를 번역하는 기능은 아닙니다. 모델 리비전과 패키지 버전은 고정합니다.
@@ -146,6 +150,7 @@ bash scripts/build-dmg.sh
 build/portable/python/bin/python3 -m unittest discover -s tests
 swift run --package-path macos NativeChecks --broker-checks
 python3 macos/Tests/SelectionChecks/run.py
+python3 macos/Tests/ProcessingChecks/run.py --mutation-check
 swift scripts/build-icon.swift assets
 ```
 

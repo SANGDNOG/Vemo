@@ -5,7 +5,7 @@ configuration="${CONFIGURATION:-release}"
 app_path="${1:-$project_root/dist/Vemo.app}"
 bundle_id="${BUNDLE_ID:-io.github.sangdnog.vemo}"
 app_version="${APP_VERSION:-0.2.0}"
-app_build="${APP_BUILD:-1}"
+app_build="${APP_BUILD:-6}"
 demo_mode="${DEMO_MODE:-0}"
 runtime_path="${RUNTIME_PATH:-$project_root/build/portable/python}"
 if [ -e "$app_path" ]; then

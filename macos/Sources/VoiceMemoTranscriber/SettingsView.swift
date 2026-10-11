@@ -34,6 +34,6 @@ struct SettingsView: View {
                 Text("창을 닫아도 메뉴 막대에서 계속 처리합니다. 최초 과거 녹음은 자동으로 전사하지 않습니다.").font(.caption).foregroundStyle(.secondary)
             }
         }.formStyle(.grouped).padding().frame(width: 580, height: 650)
-        .confirmationDialog("과거 미처리 녹음을 모두 전사할까요?", isPresented: $confirmBackfill) { Button("모두 전사") { model.command("backfill", ["uuids": .array(model.jobs.filter { $0.status == "unprocessed" }.map { .string($0.uuid) })]) } } message: { Text("로컬 처리에 시간이 걸릴 수 있습니다.") }
+        .confirmationDialog("과거 미처리 녹음을 모두 전사할까요?", isPresented: $confirmBackfill) { Button(model.manualProcessingTitle("모두 전사")) { model.processingCommand("backfill", ["uuids": .array(model.jobs.filter { $0.status == "unprocessed" }.map { .string($0.uuid) })]) } } message: { Text(model.paused ? "대기 중인 작업도 함께 재개합니다. 로컬 처리에 시간이 걸릴 수 있습니다." : "로컬 처리에 시간이 걸릴 수 있습니다.") }
     }
 }

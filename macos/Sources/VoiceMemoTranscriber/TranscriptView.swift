@@ -17,6 +17,7 @@ struct TranscriptView: View {
                 HStack { TextField("녹음 시작일 YYYY-MM-DD", text: $model.dateInput).textFieldStyle(.roundedBorder); Button("날짜 확인") { model.setDate() }.buttonStyle(VemoButtonStyle(emphasis: .primary)) }.help("파일 수정일 대신 실제 녹음 시작일을 입력하세요.")
             }
             if editingTopic { HStack { TextField("주제만 수정", text: $model.topic).textFieldStyle(.roundedBorder); Button("저장") { model.retitle(generate: false); editingTopic = false }.buttonStyle(VemoButtonStyle(emphasis: .primary)); Button("취소") { editingTopic = false } }; Text("녹음일은 그대로 유지됩니다.").font(.caption).foregroundStyle(.secondary) }
+            if model.paused || (model.acOnly && job.wait_reason == "ac_power") { processingNotice }
             if job.status != "completed" { stage }
             if model.audioDuration > 0 {
                 HStack { Button { model.togglePlayback() } label: { Image(systemName: model.playing ? "pause.fill" : "play.fill") }.buttonStyle(VemoButtonStyle(emphasis: .primary)).accessibilityLabel(model.playing ? "일시 정지" : "재생")
@@ -66,21 +67,40 @@ struct TranscriptView: View {
                 .foregroundStyle(active ? VemoTheme.ink : Color.secondary)
                 .padding(.horizontal, 15).padding(.vertical, 7)
                 .background(active ? VemoTheme.accent.opacity(0.10) : .clear, in: RoundedRectangle(cornerRadius: 8))
+                .contentShape(RoundedRectangle(cornerRadius: 8))
         }.buttonStyle(.plain).accessibilityAddTraits(active ? .isSelected : [])
+    }
+    private var processingNotice: some View {
+        HStack(spacing: 12) {
+            Image(systemName: model.paused ? "pause.circle" : "powerplug").foregroundStyle(VemoTheme.ink)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(model.paused ? "새 작업이 일시 중지되어 있습니다" : "전원 연결을 기다리고 있습니다").font(.callout.weight(.medium))
+                Text(model.paused ? "재개하면 대기 중인 녹음도 저장된 지점에서 함께 처리합니다." : "전원을 연결하거나 배터리 처리를 허용하면 이어서 진행합니다.").font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            if model.paused {
+                Button("처리 재개", systemImage: "play.fill") { model.command("resume") }.buttonStyle(VemoButtonStyle(emphasis: .primary))
+            } else {
+                Button("배터리에서 처리") { model.acOnly = false; model.setPolicy(false) }
+            }
+        }.padding(12).frame(maxWidth: .infinity, alignment: .leading).background(VemoTheme.wash, in: RoundedRectangle(cornerRadius: 12))
     }
     var stage: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack { if ["preparing", "transcribing", "aligning", "titling", "noting", "saving"].contains(job.status) { ProgressView().controlSize(.small) }; Text(job.statusLabel + (job.progress.isEmpty ? "" : " · " + job.progress)); Spacer(); Text("경과 \(clock(job.elapsed_seconds))").font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
+            HStack { if ["preparing", "transcribing", "aligning", "titling", "noting", "saving"].contains(job.status) { ProgressView().controlSize(.small) }; Text((job.wait_reason == "paused" && !model.paused ? "대기 중" : job.statusLabel) + (job.progress.isEmpty ? "" : " · " + job.progress)); Spacer(); Text("경과 \(clock(job.elapsed_seconds))").font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
             if let reason = job.wait_reason { Text(waitReason(reason)).font(.caption).foregroundStyle(.secondary) }
             if let error = job.error, error != .null { Text(error.string ?? error.object?["message"]?.string ?? "처리 실패").foregroundStyle(.red).textSelection(.enabled) }
-            HStack { if job.status == "unprocessed" { Button("전사하기") { model.command("enqueue", ["uuids": .array([.string(job.uuid)])]) }.buttonStyle(VemoButtonStyle(emphasis: .primary)) }; if ["failed", "waiting", "paused"].contains(job.status) { Button("다시 시도") { model.command("retry", ["job_id": .string(job.id)]) } } }
+            HStack {
+                if job.status == "unprocessed" { Button(model.manualProcessingTitle("전사하기")) { model.processRecording(job) }.buttonStyle(VemoButtonStyle(emphasis: .primary)) }
+                if job.status == "failed" { Button(model.manualProcessingTitle("다시 시도")) { model.processRecording(job) } }
+            }
         }.padding(14).background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
     }
     func waitReason(_ value: String) -> String {
         switch value {
         case "models": return "설정에서 모델 다운로드를 완료하면 처리합니다."
         case "ac_power": return "전원을 연결하면 처리합니다."
-        case "paused": return "새 작업이 일시 중지되었습니다. 메뉴에서 처리 재개를 선택하세요."
+        case "paused": return model.paused ? "위의 처리 재개를 누르면 저장된 지점에서 이어서 진행합니다." : "현재 처리 중인 작업이 끝나면 저장된 지점에서 이어서 진행합니다."
         case "source_incomplete": return model.sourceDiagnostic ?? "녹음 완료와 동기화를 기다립니다."
         case "source_copy": return "원본 파일을 안전하게 복사하지 못했습니다. 접근 상태를 확인하세요."
         case "publication": return "결과 폴더에 안전하게 저장하는 중입니다."

@@ -9,9 +9,10 @@ struct LibraryView: View {
     @ViewState private var editingFolderID: String?
     @ViewState private var folderName = ""
     @ViewState private var deletingFolder: LibraryFolder?
+    @ViewState private var columnVisibility: NavigationSplitViewVisibility = .all
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             VStack(spacing: 0) {
                 folderNavigation
                 Divider().padding(.horizontal, 14)
@@ -30,11 +31,24 @@ struct LibraryView: View {
                     }.listStyle(.sidebar)
                 }
             }.navigationSplitViewColumnWidth(min: 250, ideal: 290, max: 420)
+                .toolbar(removing: .sidebarToggle)
+                .toolbar {
+                    if columnVisibility != .detailOnly {
+                        if #available(macOS 26.0, *) {
+                            ToolbarSpacer(.flexible, placement: .primaryAction)
+                        }
+                        ToolbarItem(placement: .primaryAction) { sidebarToggle }
+                    }
+                }
         } detail: {
             if let job = model.selected { TranscriptView(model: model, job: job) }
             else { onboarding }
         }
+        .toolbar(removing: .sidebarToggle)
         .toolbar {
+            ToolbarItem(placement: .navigation) {
+                if columnVisibility == .detailOnly { sidebarToggle }
+            }
             ToolbarItem(placement: .principal) { Text(model.overallStatus).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
             ToolbarItem { if model.importing { ProgressView().controlSize(.small).help("오디오를 안전하게 가져오는 중") } }
             ToolbarItem { Button { model.chooseFiles() } label: { Label("파일 가져오기", systemImage: "square.and.arrow.down") }.help("파일 가져오기 ⌘O") }
@@ -62,11 +76,24 @@ struct LibraryView: View {
         }
     }
 
+    private var sidebarToggle: some View {
+        Button {
+            withAnimation(VemoTheme.motion(reducedMotion)) {
+                columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
+            }
+        } label: {
+            Image(systemName: "sidebar.left")
+        }
+        .accessibilityLabel(columnVisibility == .detailOnly ? "사이드바 보기" : "사이드바 가리기")
+        .help(columnVisibility == .detailOnly ? "사이드바 보기" : "사이드바 가리기")
+        .keyboardShortcut("s", modifiers: [.command, .control])
+    }
+
     private var folderNavigation: some View {
         VStack(spacing: 3) {
             HStack {
                 Button { withAnimation(VemoTheme.motion(reducedMotion)) { foldersExpanded.toggle() } } label: {
-                    HStack(spacing: 6) { Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).rotationEffect(.degrees(foldersExpanded ? 90 : 0)); Text("라이브러리").font(.caption.weight(.semibold)) }.foregroundStyle(.secondary)
+                    HStack(spacing: 6) { Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).rotationEffect(.degrees(foldersExpanded ? 90 : 0)); Text("라이브러리").font(.caption.weight(.semibold)) }.foregroundStyle(.secondary).padding(.vertical, 5).contentShape(Rectangle())
                 }.buttonStyle(.plain).accessibilityLabel(foldersExpanded ? "폴더 접기" : "폴더 펼치기")
                 Spacer()
                 Menu {
@@ -75,7 +102,7 @@ struct LibraryView: View {
                     }
                     Button("폴더 삭제…", role: .destructive) { deletingFolder = model.library.folders.first { $0.id == model.libraryFilter } }
                 } label: { Image(systemName: "ellipsis").font(.system(size: 12)) }
-                    .menuStyle(.borderlessButton).fixedSize().padding(5).foregroundStyle(.secondary)
+                    .menuStyle(.button).buttonStyle(VemoButtonStyle(emphasis: .quiet)).fixedSize().foregroundStyle(.secondary)
                     .accessibilityLabel("선택 폴더 관리").help("선택 폴더 관리")
                     .disabled(!model.libraryReady || model.libraryBusy || !model.library.folders.contains(where: { $0.id == model.libraryFilter }))
                 Button { editingFolderID = nil; folderName = ""; folderEditor = true } label: { Image(systemName: "plus").font(.system(size: 12, weight: .medium)) }.buttonStyle(VemoButtonStyle(emphasis: .quiet)).accessibilityLabel("새 폴더").help("새 폴더").disabled(!model.libraryReady || model.libraryBusy)
@@ -107,6 +134,7 @@ struct LibraryView: View {
                 .foregroundStyle(active ? VemoTheme.ink : Color.primary)
                 .padding(.horizontal, 10).padding(.vertical, 7)
                 .background(active ? VemoTheme.accent.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 8))
+                .contentShape(RoundedRectangle(cornerRadius: 8))
         }.buttonStyle(.plain).accessibilityAddTraits(active ? .isSelected : []).accessibilityLabel("\(name), \(model.folderCount(filter))개 녹음")
     }
     private func recordingRow(_ job: Job) -> some View {

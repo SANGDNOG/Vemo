@@ -29,6 +29,16 @@ class NotesTests(unittest.TestCase):
         source='x'*1001
         for raw in (generated('x'*601),{'summary':[{'text':'x'*1001,'quotes':['x']}],'highlights':[],'topics':[]},{'summary':[],'highlights':[],'topics':[{'keyword':'x'*81,'summary':'x','quotes':['x']}]}, {'summary':'oops','highlights':[],'topics':[]}):
             with self.subTest(raw=raw),self.assertRaises(ValueError):n.validate_notes(raw,source)
+    def test_terminal_closing_brackets_preserve_exact_content(self):
+        n=self.notes();source='그는 "API [v2]"와 경로 \\data를 확인했습니다.'
+        response=json.dumps(generated(source),ensure_ascii=False)
+        self.assertTrue(response.endswith(']}]}'))
+        malformed=response[:-4]+'}]}]}'
+        expected=n.validate_notes(response,source)
+        self.assertEqual(n.validate_notes(malformed,source),expected)
+        for rejected in (response[:-1],response[:-4]+'}',response+'{}',response[:-4]+',]}]}',
+                '{"summary":[{"text":"끝나지 않은 인용 }]}]}'):
+            with self.subTest(rejected=rejected),self.assertRaises(ValueError):n.validate_notes(rejected,source)
     def test_every_chunk_participates_and_checkpoint_resumes(self):
         n=self.notes();source=('한국어 English synthetic 42. '*300)+'마지막 결론 END.';seen=[];budgets=[]
         def produce(text,budget):
@@ -40,7 +50,7 @@ class NotesTests(unittest.TestCase):
                 state=json.loads(json.dumps(result['notes_checkpoint']))
                 self.assertEqual(result['completed_units'],len(seen))
         self.assertEqual(''.join(seen),source);self.assertGreater(len(seen),3)
-        self.assertLessEqual(len(seen),6);self.assertTrue(all(len(c)<=1800 for c in seen));self.assertTrue(all(b<=1536 for b in budgets))
+        self.assertLessEqual(len(seen),6);self.assertTrue(all(len(c)<=1800 for c in seen));self.assertTrue(all(b<=3072 for b in budgets))
         self.assertEqual(len(result['notes']['summary']),len(seen))
         with self.assertRaises(ValueError):n.notes_unit(source+'changed',state,produce)
     def test_publication_adds_notes_identity_and_preserves_old_versions(self):
@@ -87,6 +97,32 @@ class NotesTests(unittest.TestCase):
         self.assertLessEqual(len(result['topics'][0]['quotes']),8)
 
 class NotesWorkerBoundaryTests(unittest.TestCase):
+    def test_complete_notes_response_larger_than_old_output_budget(self):
+        from unittest.mock import patch
+        source='Important evidence. '*12+'Final decision: ship the API on Monday.'
+        raw={'summary':[{'text':'First decision','quotes':[source]},{'text':'Schedule decision','quotes':[source]}],
+            'highlights':[{'quote':source},{'quote':source}],
+            'topics':[{'keyword':'API','summary':'Shipping decision','quotes':[source]},
+                {'keyword':'Schedule','summary':'Monday schedule','quotes':[source]}]}
+        response=json.dumps(raw)
+        # A valid bounded response with exact citations needs more than the old
+        # 1536 output tokens under this deterministic one-character tokenizer.
+        self.assertGreater(len(response),1536);self.assertLess(len(response),3072)
+        class Tokenizer:
+            def encode(self,text,add_special_tokens=False):return list(text)
+            def apply_chat_template(self,messages,**kwargs):return list(messages[1]['content'])
+        def generate(model,tokenizer,**kwargs):return response[:kwargs['max_tokens']]
+        with tempfile.TemporaryDirectory() as td:
+            root=pathlib.Path(td);model=root/'models'/'title';model.mkdir(parents=True)
+            (model/'config.json').write_text('{}');(model/'fixture.safetensors').write_bytes(b'synthetic')
+            artifact=root/'transcript.json';artifact.write_text(json.dumps({'text':source}))
+            request={'state_root':td,'model_root':str(root/'models'),'artifact_path':str(artifact)}
+            with patch('mlx_lm.load',return_value=(object(),Tokenizer())),patch('mlx_lm.generate',side_effect=generate):
+                result=worker.notes(request)
+        self.assertEqual(result['completed_units'],1);self.assertEqual(result['total_units'],1)
+        self.assertEqual(len(result['notes']['summary']),2);self.assertEqual(len(result['notes']['topics']),2)
+        self.assertTrue(all(q==source for item in result['notes']['summary'] for q in item['quotes']))
+
     def test_pinned_title_model_bounded_prompts_and_all_source_characters(self):
         from unittest.mock import patch
         # Replace only heavy MLX inference; execute owned-path checks, chunking,
@@ -99,7 +135,7 @@ class NotesWorkerBoundaryTests(unittest.TestCase):
                 self_text=messages[1]['content'];seen.append(self_text);instructions.append(messages[0]['content'])
                 return [0]*(len(self_text)*4+300)
         def generate(model,tokenizer,**kwargs):
-            self.assertLessEqual(len(kwargs['prompt']),4096);self.assertLessEqual(kwargs['max_tokens'],1536)
+            self.assertLessEqual(len(kwargs['prompt']),4096);self.assertLessEqual(kwargs['max_tokens'],3072)
             return json.dumps(generated(seen[-1][:80]),ensure_ascii=False)
         with tempfile.TemporaryDirectory() as td:
             root=pathlib.Path(td);model=root/'models'/'title';model.mkdir(parents=True)

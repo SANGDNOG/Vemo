@@ -102,6 +102,7 @@ import ServiceManagement
     }
     func moveRecording(_ jobID: String, to folderID: String?) { changeLibrary { try await $0.assign(jobIDs: [jobID], folderID: folderID) } }
     var overallStatus: String {
+        if paused { return "새 작업 일시 중지 · 대기 \(jobs.filter { ["waiting", "paused"].contains($0.status) }.count)개" }
         if let j = jobs.first(where: { ["preparing", "transcribing", "aligning", "titling", "noting", "saving"].contains($0.status) }) { return "\(j.statusLabel) · \(j.progress)" }
         return "\(connection) · 대기 \(jobs.filter { ["waiting", "paused"].contains($0.status) }.count)개"
     }
@@ -125,6 +126,22 @@ import ServiceManagement
     func command(_ kind: String, _ payload: [String:JSONValue] = [:]) {
         guard !DemoContent.enabled else { return }
         Task { do { try await engine.send(WireCommand(kind, payload)) } catch { problem = error.localizedDescription } }
+    }
+    func manualProcessingTitle(_ title: String) -> String { paused ? title + " · 처리 재개" : title }
+    func processingCommand(_ kind: String, _ payload: [String:JSONValue] = [:]) {
+        guard !DemoContent.enabled else { return }
+        let resume = paused ? WireCommand("resume") : nil
+        let requested = WireCommand(kind, payload)
+        Task {
+            do {
+                if let resume { try await engine.send(resume) }
+                try await engine.send(requested)
+            } catch { problem = error.localizedDescription }
+        }
+    }
+    func processRecording(_ job: Job) {
+        if job.status == "unprocessed" { processingCommand("enqueue", ["uuids": .array([.string(job.uuid)])]) }
+        else if job.status == "failed" { processingCommand("retry", ["job_id": .string(job.id)]) }
     }
     func receive(_ event: WireEvent) async {
         do {
@@ -286,7 +303,7 @@ import ServiceManagement
     }
     func chooseFiles() { let panel = NSOpenPanel(); panel.allowsMultipleSelection = true; panel.canChooseDirectories = false; if panel.runModal() == .OK { importFiles(panel.urls) } }
     var canGenerateNotes: Bool { transcript != nil && selected?.artifact_path != nil && selected.map { ["completed","needs_recording_date","failed"].contains($0.status) } == true }
-    func generateNotes() { guard let job = selected, canGenerateNotes else { return }; command("generate_notes",["job_id":.string(job.id)]) }
+    func generateNotes() { guard let job = selected, canGenerateNotes else { return }; processingCommand("generate_notes",["job_id":.string(job.id)]) }
     func revealQuote(_ quote: String) {
         guard let transcript, let target = NotesDisplay.quoteTarget(quote,in:transcript) else { return }
         focusedQuote = quote; quoteRow = target.row; detailMode = "transcript"

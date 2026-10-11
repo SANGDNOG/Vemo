@@ -28,6 +28,7 @@ struct VemoButtonStyle: ButtonStyle {
             .foregroundStyle(emphasis == .primary ? Color.white : (emphasis == .quiet ? Color.primary : VemoTheme.ink))
             .background(background(pressed: configuration.isPressed), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             .overlay { RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(emphasis == .primary ? .clear : Color.primary.opacity(contrast == .increased ? 0.3 : 0.07), lineWidth: 1) }
+            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
             .opacity(enabled ? 1 : 0.42)
             .scaleEffect(reducedMotion ? 1 : (configuration.isPressed ? 0.98 : 1))
             .animation(VemoTheme.motion(reducedMotion), value: configuration.isPressed)
@@ -43,9 +44,6 @@ struct VemoButtonStyle: ButtonStyle {
 
 extension View {
     func vemoMenuSurface() -> some View {
-        self.menuStyle(.borderlessButton).fixedSize()
-            .font(.system(size: 12, weight: .medium)).foregroundStyle(VemoTheme.ink)
-            .padding(.horizontal, 11).padding(.vertical, 7)
-            .background(VemoTheme.wash, in: RoundedRectangle(cornerRadius: 9))
+        self.menuStyle(.button).buttonStyle(VemoButtonStyle()).fixedSize()
     }
 }
