@@ -14,6 +14,7 @@ import ServiceManagement
     @Published var libraryFilter = "all"
     @Published var libraryReady = false
     @Published var libraryBusy = false
+    let libraryDragSessionID = UUID().uuidString
     private var libraryWriteTask: Task<Void, Never>?
     private lazy var libraryStore = LibraryFolderStore(root: stateRoot)
     @Published var connection = "엔진 연결 준비 중"
@@ -113,6 +114,32 @@ import ServiceManagement
         changeLibrary { try await $0.delete(id: id) }
     }
     func moveRecording(_ jobID: String, to folderID: String?) { changeLibrary { try await $0.assign(jobIDs: [jobID], folderID: folderID) } }
+    func libraryDragPayload(kind: LibraryDragKind, id: String) -> LibraryDragPayload {
+        LibraryDragPayload(kind: kind, id: id, sessionID: libraryDragSessionID)
+    }
+    func canDropLibraryItem(_ payload: LibraryDragPayload, on target: LibraryDropTarget) -> Bool {
+        guard libraryReady, !libraryBusy else { return false }
+        return (try? LibraryDropRules.action(for: payload, target: target, organization: library,
+                                           knownJobIDs: Set(jobs.map(\.id)), sessionID: libraryDragSessionID)) != nil
+    }
+    @discardableResult
+    func dropLibraryItem(_ payload: LibraryDragPayload, on target: LibraryDropTarget) -> Bool {
+        guard libraryReady, !libraryBusy else { return false }
+        do {
+            guard let action = try LibraryDropRules.action(for: payload, target: target, organization: library,
+                                                         knownJobIDs: Set(jobs.map(\.id)), sessionID: libraryDragSessionID) else { return false }
+            changeLibrary { store in
+                switch action {
+                case .recording(let id, let folderID): return try await store.assign(jobIDs: [id], folderID: folderID)
+                case .folder(let id, let parentID): return try await store.moveFolder(id: id, parentID: parentID)
+                }
+            }
+            return true
+        } catch {
+            problem = error.localizedDescription
+            return false
+        }
+    }
     var overallStatus: String {
         if paused { return "새 작업 일시 중지 · 대기 \(jobs.filter { ["waiting", "paused"].contains($0.status) }.count)개" }
         if let j = jobs.first(where: { ["preparing", "transcribing", "aligning", "titling", "noting", "saving"].contains($0.status) }) { return "\(j.statusLabel) · \(j.progress)" }

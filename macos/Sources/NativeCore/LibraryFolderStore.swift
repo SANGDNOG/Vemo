@@ -117,6 +117,17 @@ public actor LibraryFolderStore {
         }
     }
 
+    /// Uses the current name, preserving descendants and assignments when moving.
+    public func moveFolder(id: String, parentID: String?) throws -> LibraryOrganization {
+        let organization = try load()
+        guard let folder = organization.folders.first(where: { $0.id == id }) else {
+            throw LibraryFolderStoreError.unknownFolder(id)
+        }
+        guard folder.parentID != parentID else { return organization }
+        // No await: the fresh-name read and existing atomic update share actor isolation.
+        return try update(id: id, name: folder.name, parentID: parentID)
+    }
+
     /// Removes the folder and its assignments; never opens, moves or deletes recordings.
     public func delete(id: String) throws -> LibraryOrganization {
         try mutate { organization in
@@ -161,7 +172,7 @@ public actor LibraryFolderStore {
         return organization
     }
 
-    private static func validName(_ raw: String) throws -> String {
+    static func validName(_ raw: String) throws -> String {
         // Check raw scalars before trimming so newlines/tabs cannot disappear into a valid name.
         guard !raw.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
             throw LibraryFolderStoreError.invalidName
@@ -175,7 +186,7 @@ public actor LibraryFolderStore {
         name.folding(options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX"))
     }
 
-    private static func requireUnique(_ name: String, in folders: [LibraryFolder]) throws {
+    static func requireUnique(_ name: String, in folders: [LibraryFolder]) throws {
         let key = nameKey(name)
         if try folders.contains(where: { try nameKey(validName($0.name)) == key }) {
             throw LibraryFolderStoreError.duplicateName

@@ -11,6 +11,7 @@ func wave() -> Data {
         do { try await run() } catch { try? FileHandle.standardError.write(contentsOf: Data("FAIL: \(error.localizedDescription)\n".utf8)); exit(1) }
     }
     static func run() async throws {
+        if CommandLine.arguments.contains("--library-drag-checks") { try await libraryDragChecks(); print("All library drag checks passed"); return }
         if CommandLine.arguments.contains("--library-hierarchy-checks") { try await libraryHierarchyChecks(); print("All library hierarchy checks passed"); return }
         if CommandLine.arguments.contains("--library-folder-checks") { try await libraryFolderChecks(); print("All library folder checks passed"); return }
         if CommandLine.arguments.contains("--runtime-audio-checks") { try runtimePathChecks(); try await audioNormalizationChecks(); print("All runtime/audio checks passed"); return }
@@ -45,6 +46,7 @@ func wave() -> Data {
         try notesChecks()
         try await libraryFolderChecks()
         try await libraryHierarchyChecks()
+        try await libraryDragChecks()
         try libraryQueryChecks()
         try await cloudFolderChecks()
         try playbackChecks()

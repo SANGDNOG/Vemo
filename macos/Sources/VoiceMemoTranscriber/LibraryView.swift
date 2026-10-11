@@ -1,5 +1,6 @@
 import SwiftUI
 import NativeCore
+import UniformTypeIdentifiers
 
 struct LibraryView: View {
     @ObservedObject var model: AppModel
@@ -11,6 +12,8 @@ struct LibraryView: View {
     @ViewState private var folderParentID = ""
     @ViewState private var collapsedFolderIDs: Set<String> = []
     @ViewState private var deletingFolder: LibraryFolder?
+    @ViewState private var dragSession = VemoLibraryDragSession()
+    @ViewState private var dropTarget: String?
     @ViewState private var columnVisibility: NavigationSplitViewVisibility = .all
 
     var body: some View {
@@ -25,10 +28,11 @@ struct LibraryView: View {
                 }.font(.callout).padding(9).background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9)).padding(12)
                 HStack { Text(model.libraryTitle).font(.caption.weight(.semibold)).lineLimit(1).help(model.libraryTitle); Spacer(); Text("\(model.visibleJobs.count)").font(.caption.monospacedDigit()) }.foregroundStyle(.secondary).padding(.horizontal, 17).padding(.bottom, 6)
                 if model.visibleJobs.isEmpty {
-                    VStack(spacing: 9) { Image(systemName: model.search.isEmpty ? "folder" : "magnifyingglass").font(.title2); Text(model.search.isEmpty ? "이 폴더는 비어 있습니다" : "검색 결과가 없습니다").font(.callout); if model.search.isEmpty { Text("녹음의 메뉴에서 폴더로 이동하세요.").font(.caption) } }.foregroundStyle(.secondary).padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
+                    VStack(spacing: 9) { Image(systemName: model.search.isEmpty ? "folder" : "magnifyingglass").font(.title2); Text(model.search.isEmpty ? "이 폴더는 비어 있습니다" : "검색 결과가 없습니다").font(.callout); if model.search.isEmpty { Text("녹음을 폴더로 드래그해 정리하세요.").font(.caption) } }.foregroundStyle(.secondary).padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     List(model.visibleJobs, selection: $model.selection) { job in
                         recordingRow(job).tag(job.id)
+                            .onDrag { dragProvider(kind: .recording, id: job.id) }
                             .contextMenu { RecordingFolderMenu(model: model, jobID: job.id) }
                     }.listStyle(.sidebar)
                 }
@@ -65,18 +69,34 @@ struct LibraryView: View {
             for provider in providers { _ = provider.loadObject(ofClass: URL.self) { url, _ in if let url { Task { @MainActor in model.importFiles([url]) } } } }; return !providers.isEmpty
         }
         .sheet(isPresented: $folderEditor) {
-            VStack(alignment: .leading, spacing: 18) {
-                Text(editingFolderID == nil ? "새 폴더" : "폴더 수정").font(.title3.weight(.semibold))
-                TextField("폴더 이름", text: $folderName).textFieldStyle(.roundedBorder).onSubmit { saveFolder() }
-                Picker("상위 폴더", selection: $folderParentID) {
-                    Text("최상위").tag("")
-                    ForEach(LibraryFolderHierarchy.parentCandidates(for: editingFolderID, in: model.library.folders), id: \.id) { row in
-                        Text(LibraryFolderHierarchy.path(for: row.id, in: model.library.folders)).tag(row.id)
+            VStack(alignment: .leading, spacing: 20) {
+                HStack(spacing: 12) {
+                    Image(systemName: "folder.badge.plus").font(.system(size: 19, weight: .light))
+                        .foregroundStyle(VemoTheme.ink).frame(width: 42, height: 42)
+                        .background(VemoTheme.wash, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(editingFolderID == nil ? "새 폴더" : "폴더 수정").font(.title3.weight(.semibold))
+                        Text("녹음을 원하는 구조로 정리하세요.").font(.caption).foregroundStyle(.secondary)
                     }
+                    Spacer()
                 }
-                HStack { Spacer(); Button("취소") { folderEditor = false }.keyboardShortcut(.cancelAction); Button(editingFolderID == nil ? "만들기" : "저장") { saveFolder() }.buttonStyle(VemoButtonStyle(emphasis: .primary)).keyboardShortcut(.defaultAction).disabled(folderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.libraryBusy) }
-            }.padding(24).frame(width: 380).tint(VemoTheme.accent).buttonStyle(VemoButtonStyle())
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("폴더 이름").font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                    TextField("이름 입력", text: $folderName).textFieldStyle(.plain)
+                        .padding(11).background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .accessibilityLabel("폴더 이름").onSubmit { saveFolder() }
+                }
+                VemoParentFolderPicker(folders: model.library.folders, editingID: editingFolderID, selection: $folderParentID)
+                HStack(spacing: 10) {
+                    Spacer()
+                    Button("취소") { folderEditor = false }.keyboardShortcut(.cancelAction)
+                    Button(editingFolderID == nil ? "만들기" : "저장") { saveFolder() }
+                        .buttonStyle(VemoButtonStyle(emphasis: .primary)).keyboardShortcut(.defaultAction)
+                        .disabled(folderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.libraryBusy)
+                }
+            }.padding(24).frame(width: 400).tint(VemoTheme.accent).buttonStyle(VemoButtonStyle())
         }
+
         .confirmationDialog("폴더를 삭제할까요?", isPresented: Binding(get: { deletingFolder != nil }, set: { if !$0 { deletingFolder = nil } }), titleVisibility: .visible) {
             if let folder = deletingFolder { Button("폴더 삭제", role: .destructive) { model.deleteLibraryFolder(folder.id); deletingFolder = nil }; Button("취소", role: .cancel) { deletingFolder = nil } }
         } message: { Text("이 폴더에 직접 넣은 녹음은 미분류로 돌아갑니다. 하위 폴더가 있으면 먼저 이동하거나 삭제해 주세요. 녹음 파일, 전사문과 노트는 보존됩니다.") }
@@ -123,18 +143,31 @@ struct LibraryView: View {
                 folderRow("전체 녹음", icon: "square.stack", filter: "all")
                 folderRow("미분류", icon: "tray", filter: "unfiled")
                 if !model.library.folders.isEmpty {
+                    HStack(spacing: 7) {
+                        Image(systemName: "square.stack.3d.up").font(.system(size: 10))
+                        Text("내 폴더").font(.system(size: 10, weight: .medium))
+                        Spacer()
+                        Text(dropTarget == "root" ? "최상위로 이동" : "드래그로 정리").font(.system(size: 9))
+                    }.foregroundStyle(dropTarget == "root" ? VemoTheme.ink : Color.secondary)
+                        .padding(.horizontal, 10).frame(height: 28)
+                        .background(dropTarget == "root" ? VemoTheme.wash : .clear, in: RoundedRectangle(cornerRadius: 8))
+                        .contentShape(Rectangle())
+                        .onDrop(of: [.vemoLibraryItem], delegate: dropDelegate(.root, key: "root"))
+                        .help("폴더를 여기에 드래그하면 최상위로 이동합니다")
+
                     ScrollView {
                         VStack(spacing: 3) {
                             ForEach(folderTreeRows, id: \.id) { row in
                                 treeFolderRow(row)
+                                    .transition(.opacity)
                                     .contextMenu {
                                         Button("하위 폴더 만들기…") { beginNewFolder(parentID: row.id) }.disabled(model.libraryBusy)
                                         Button("이름·상위 폴더 변경…") { beginEditing(row.folder) }.disabled(model.libraryBusy)
                                         Button("폴더 삭제…", role: .destructive) { deletingFolder = row.folder }.disabled(model.libraryBusy)
                                     }
                             }
-                        }
-                    }.frame(maxHeight: min(CGFloat(folderTreeRows.count) * 33, 180))
+                        }.animation(VemoTheme.motion(reducedMotion), value: folderTreeRows)
+                    }.frame(maxHeight: min(CGFloat(folderTreeRows.count) * 37, 200))
                 }
             }
         }.padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 12)
@@ -143,26 +176,30 @@ struct LibraryView: View {
         LibraryFolderHierarchy.rows(model.library.folders, collapsedIDs: collapsedFolderIDs)
     }
     private func treeFolderRow(_ row: LibraryFolderTreeRow) -> some View {
-        HStack(spacing: 0) {
-            if row.hasChildren {
-                Button {
-                    withAnimation(VemoTheme.motion(reducedMotion)) {
-                        if !collapsedFolderIDs.insert(row.id).inserted { collapsedFolderIDs.remove(row.id) }
-                    }
-                } label: {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .semibold))
-                        .rotationEffect(.degrees(collapsedFolderIDs.contains(row.id) ? 0 : 90))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 24, height: 30).contentShape(Rectangle())
-                }.buttonStyle(.plain).accessibilityLabel(row.folder.name + (collapsedFolderIDs.contains(row.id) ? " 하위 폴더 펼치기" : " 하위 폴더 접기"))
-            } else {
-                Color.clear.frame(width: 24, height: 30).accessibilityHidden(true)
+        VemoFolderRow(name: row.folder.name, icon: model.libraryFilter == row.id ? "folder.fill" : "folder",
+                      count: model.folderCount(row.id), depth: row.depth, selected: model.libraryFilter == row.id,
+                      targeted: dropTarget == row.id, expanded: row.hasChildren ? !collapsedFolderIDs.contains(row.id) : nil,
+                      select: { selectFolder(row.id) }, toggle: {
+            withAnimation(VemoTheme.motion(reducedMotion)) {
+                if !collapsedFolderIDs.insert(row.id).inserted { collapsedFolderIDs.remove(row.id) }
             }
-            folderRow(row.folder.name, icon: "folder", filter: row.id)
-        }
-        .padding(.leading, CGFloat(min(row.depth, 6)) * 14)
-        .help(LibraryFolderHierarchy.path(for: row.id, in: model.library.folders) + " · 직접 넣은 녹음만 표시")
+        }, drag: { dragProvider(kind: .folder, id: row.id) })
+        .onDrop(of: [.vemoLibraryItem], delegate: dropDelegate(.folder(row.id), key: row.id))
+        .help(LibraryFolderHierarchy.path(for: row.id, in: model.library.folders) + " · 드래그로 이동 · 직접 넣은 녹음만 표시")
+    }
+    private func selectFolder(_ id: String) {
+        withAnimation(VemoTheme.motion(reducedMotion)) { model.libraryFilter = id; model.reconcileLibrarySelection() }
+    }
+    private func dragProvider(kind: LibraryDragKind, id: String) -> NSItemProvider {
+        return dragSession.provider(for: model.libraryDragPayload(kind: kind, id: id))
+    }
+
+    private func dropDelegate(_ target: LibraryDropTarget, key: String) -> VemoLibraryDropDelegate {
+        VemoLibraryDropDelegate(model: model, target: target, session: dragSession,
+                                targeted: Binding(get: { dropTarget == key }, set: { if $0 { dropTarget = key } else if dropTarget == key { dropTarget = nil } }),
+                                accepted: {
+            if case .folder(let id) = target { collapsedFolderIDs.remove(id) }
+        })
     }
     private func beginNewFolder(parentID: String?) {
         editingFolderID = nil; folderName = ""; folderParentID = parentID ?? ""; folderEditor = true
@@ -170,23 +207,21 @@ struct LibraryView: View {
     private func beginEditing(_ folder: LibraryFolder) {
         editingFolderID = folder.id; folderName = folder.name; folderParentID = folder.parentID ?? ""; folderEditor = true
     }
-    private func folderRow(_ name: String, icon: String, filter: String) -> some View {
-        let active = model.libraryFilter == filter
-        return Button { withAnimation(VemoTheme.motion(reducedMotion)) { model.libraryFilter = filter; model.reconcileLibrarySelection() } } label: {
-            HStack(spacing: 9) { Image(systemName: icon).frame(width: 16); Text(name).lineLimit(1); Spacer(minLength: 4); Text("\(model.folderCount(filter))").font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
-                .font(.system(size: 12, weight: active ? .semibold : .regular))
-                .foregroundStyle(active ? VemoTheme.ink : Color.primary)
-                .padding(.horizontal, 10).padding(.vertical, 7).frame(maxWidth: .infinity)
-                .background(active ? VemoTheme.accent.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 8))
-                .contentShape(RoundedRectangle(cornerRadius: 8))
-        }.buttonStyle(.plain).accessibilityAddTraits(active ? .isSelected : []).accessibilityLabel("\(name), \(model.folderCount(filter))개 녹음")
+    @ViewBuilder private func folderRow(_ name: String, icon: String, filter: String) -> some View {
+        let row = VemoFolderRow(name: name, icon: icon, count: model.folderCount(filter), depth: 0,
+                                selected: model.libraryFilter == filter, targeted: dropTarget == filter,
+                                select: { selectFolder(filter) })
+        if filter == "unfiled" {
+            row.onDrop(of: [.vemoLibraryItem], delegate: dropDelegate(.unfiled, key: filter))
+                .help("녹음을 여기로 드래그하면 폴더 분류를 해제합니다")
+        } else { row }
     }
     private func recordingRow(_ job: Job) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(job.title).font(.system(size: 13, weight: .semibold)).lineLimit(2)
             Text([job.recording_date ?? "녹음일 확인 필요", job.duration_s.map { String(format: "%d분 %02d초", Int($0)/60, Int($0)%60) } ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
             HStack(spacing: 5) { Circle().fill(job.status == "failed" ? Color.red : job.status == "completed" ? VemoTheme.accent.opacity(0.65) : Color.secondary).frame(width: 5, height: 5); Text(job.statusLabel + (job.progress.isEmpty ? "" : " · " + job.progress)).font(.caption).foregroundStyle(.secondary) }
-        }.padding(.vertical, 8)
+        }.padding(.vertical, 8).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
     }
     private func saveFolder() {
         guard !folderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !model.libraryBusy else { return }
