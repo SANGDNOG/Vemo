@@ -49,8 +49,10 @@ class Engine:
     def flush_changed(self):
         ids=self.changed;self.changed=set()
         for jid in sorted(ids):self.emit('job_changed',{'job':self.view(self.store.get(jid))})
+    def engine_status(self):
+        return {**self.models,'paused':self.store.get_meta('paused',False),'ac_only':self.store.get_meta('ac_only',True)}
     def snapshot(self):
-        return {'jobs':[self.view(j) for j in self.store.jobs()],'engine_status':{**self.models,'paused':self.store.get_meta('paused',False),'ac_only':self.store.get_meta('ac_only',True)}}
+        return {'jobs':[self.view(j) for j in self.store.jobs()],'engine_status':self.engine_status()}
     def command(self,command):
         # Also validate direct embedding callers; service parses byte limits first.
         self.changed=set()
@@ -61,6 +63,7 @@ class Engine:
             self.changed=set();result={'ok':False,'error':failure('invalid_command',str(exc) if isinstance(exc,ValueError) else 'invalid payload')}
         self.flush_changed()
         if command.get('kind') in {'hello','snapshot'} and result['ok']:self.emit('snapshot',self.snapshot())
+        if command.get('kind') in {'pause','resume','set_policy'} and result['ok']:self.emit('engine_status',self.engine_status())
         self.emit('command_result',{'request_id':command.get('request_id',''),**result})
         if command.get('kind')=='shutdown' and result['ok']:self.stopping=True
         return result

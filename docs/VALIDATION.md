@@ -1,6 +1,6 @@
 # Public preview validation
 
-Release: `v0.1.0-preview.1`. Checks performed on an Apple Silicon M5 Pro, 24 GB RAM, macOS 27.0.1. This is evidence from one Mac, not certification of every supported system.
+Current preview: `v0.2.0-preview.1`. Checks performed on an Apple Silicon M5 Pro, 24 GB RAM, macOS 27.0.1. This is evidence from one Mac, not certification of every supported system. The first sections describe the preserved 0.1 release; 0.2 checks follow below.
 
 ## Automated checks
 
@@ -36,7 +36,7 @@ The three initial README images were captured from the actual SwiftUI app in a s
 
 ## 0.2 local development checks (2026-10-11)
 
-This feature branch adds notes and provider-independent synchronized folders. The public 0.1 release remains unchanged.
+The 0.2 preview adds notes and provider-independent synchronized folders. The earlier 0.1 release remains available unchanged.
 
 - Native UI/source/publication: **135 assertions passed**, including fabricated citations, source hash mismatch, repeated/overlapping quote timing, legacy Job decoding, dataless/iCloud readiness, folder stability and a six-file note-inclusive publication/replay. Case-insensitive aliases to not-yet-created output folders are rejected.
 - Native runtime/audio: **27 assertions passed**. Existing audio handling remains covered.
@@ -58,4 +58,15 @@ This feature branch adds notes and provider-independent synchronized folders. Th
 
 The installed build 3 retained Full Disk Access (`supported_schema` in a fresh native diagnostic). The public DMG passed checksum verification, read-only mount/content validation, bundled-runtime presence, public ID/build checks, and strict deep signing. A queued short synthetic recording completed notes and publication through the installed UI/engine; the original global pause policy was restored and the app closed for the user's requested stop.
 
-A remaining control-state issue was observed during that installed-app check: successful pause/resume commands change engine state but do not immediately publish the new policy to the UI, so the toggle label remains stale until a snapshot/reconnect. The cause is traced to engine command emission; this fix and its regression test are deferred at the user's explicit stop request. No 0.2 GitHub release has been published.
+A control-state issue was observed during that installed-app check: successful pause/resume commands changed engine state without immediately notifying the UI. Work was saved at the user's stop request and resumed from that checkpoint. The final build 4 fixes the missing notification as described below.
+
+## 0.2 final policy and package checks (2026-10-11)
+
+- Final Python suite: **74 tests passed, no skips**, with pinned bundled dependencies and the actual native audio helper. Three new regression tests cover immediate policy notification, current state on replay, and rejection without policy changes. The tests were observed failing before the fix, then passing.
+- Successful pause/resume/set_policy now emits committed current `engine_status` before the acknowledgement. An independent Team2 real-service check passed **152 assertions, 21 commands and 37 ordered events across two sessions** with synthetic empty state. The same harness failed against an isolated pre-fix source copy as expected. Running it with the final public package's interpreter and engine also passed.
+- Installed build 4 showed **처리 재개 → 새 작업 일시 중지 → 처리 재개** immediately without reconnecting. Read-only queue checks agreed with both visible states. The original paused/AC-only policy was restored; historical recordings remained unprocessed.
+- The installed app retained the same designated requirement. A fresh native diagnostic at `2026-10-11T11:49:03Z` reported `supported_schema`, `schema_verified=true`, without Full Disk Access re-registration. This applies to this Mac's fixed local certificate; the public preview still uses ad-hoc signing.
+- Final local/public release builds and strict deep signatures passed. The DMG passed `hdiutil verify`, SHA-256 verification, read-only mount/content checks, public ID/version/build checks, source-to-bundled-engine comparison and bundled engine loading outside the project with system-only PATH. The mounted volume was ejected.
+- Signed-package local note inference on synthetic content previously completed in **8.08 seconds** with exact-source quotes, outside the source tree and with network access denied to the worker. This is a smoke result, not a quality or performance benchmark. The final policy-only fix does not change note inference.
+
+Final artifact: `Vemo-0.2.0-preview.1-arm64.dmg`, app version `0.2.0`, build `4`, public bundle ID `io.github.sangdnog.vemo`. SHA-256: `eefed4f42ec06c5bbde451a2dc3827ea09f3168d7ebfc04a7181df0609b82cb6`. The preview is not Developer ID signed or notarized; second-Mac installation and real Drive/iPhone delivery remain unverified.

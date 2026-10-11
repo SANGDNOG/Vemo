@@ -110,6 +110,36 @@ class EngineTests(unittest.TestCase):
         self.send('retitle',{'job_id':j['id'],'topic':'수정 제목'});self.drain(lambda:self.job('a')['publication_id']!=pid)
         self.assertEqual(pathlib.Path(self.job('a')['artifact_path']).read_bytes(),tr)
         self.assertEqual(self.job('a')['topic'],'수정 제목');self.assertEqual(self.job('a')['recording_date'],'2026-10-10')
+    def test_policy_commands_emit_current_status_before_acknowledgement(self):
+        self.engine()
+        for kind,payload in [('pause',{}),('resume',{}),('set_policy',{'ac_only':False}),('set_policy',{'ac_only':True})]:
+            with self.subTest(kind=kind,payload=payload):
+                self.events.clear()
+                result=self.send(kind,payload)
+                self.assertTrue(result['ok'])
+                self.assertEqual([event['kind'] for event in self.events],['engine_status','command_result'])
+                self.assertEqual(self.events[0]['payload'],self.e.snapshot()['engine_status'])
+                self.assertLess(self.events[0]['sequence'],self.events[1]['sequence'])
+
+    def test_replayed_policy_command_reports_current_state_without_reapplying(self):
+        self.engine();self.send('pause',rid='pause-once');self.send('resume')
+        self.events.clear()
+        self.assertTrue(self.send('pause',rid='pause-once')['ok'])
+        self.assertFalse(self.e.store.get_meta('paused'))
+        status=[event['payload'] for event in self.events if event['kind']=='engine_status']
+        self.assertEqual(status,[self.e.snapshot()['engine_status']])
+        self.assertFalse(status[0]['paused'])
+
+    def test_rejected_policy_commands_do_not_emit_success_status_or_change_policy(self):
+        self.engine();self.send('pause',rid='used-pause')
+        before=self.e.snapshot()['engine_status']
+        for kind,payload,rid in [('set_policy',{'ac_only':'false'},'invalid-policy'),('resume',{},'used-pause')]:
+            with self.subTest(kind=kind):
+                self.events.clear()
+                self.assertFalse(self.send(kind,payload,rid)['ok'])
+                self.assertEqual([event['kind'] for event in self.events],['command_result'])
+                self.assertEqual(self.e.snapshot()['engine_status'],before)
+
     def test_pause_and_ac_gate_do_not_start_new_chunk(self):
         power=[False];self.engine(lambda:power[0]);self.send('import',{'memo':memo('a')});self.e.tick()
         self.assertEqual(self.job('a')['wait_reason'],'ac_power');self.assertFalse(any(e['kind']=='snapshot_requested' for e in self.events))
