@@ -1,6 +1,7 @@
 import SwiftUI
 import NativeCore
 import UniformTypeIdentifiers
+import AppKit
 
 extension UTType {
     static let vemoLibraryItem = UTType(exportedAs: "io.github.sangdnog.vemo.library-item", conformingTo: .data)
@@ -106,11 +107,9 @@ struct VemoParentFolderPicker: View {
                         choice(row.folder.name, id: row.id, depth: row.depth + 1, icon: "folder")
                             .help(LibraryFolderHierarchy.path(for: row.id, in: folders))
                     }
-                }.padding(6)
+                }.padding(6).background(VemoScrollAppearance())
             }
             .frame(height: min(CGFloat(LibraryFolderHierarchy.parentCandidates(for: editingID, in: folders).count + 1) * 36 + 12, 210))
-            .background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay { RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.primary.opacity(0.06), lineWidth: 1) }
             Text(selection.isEmpty ? "라이브러리의 최상위에 저장합니다." : LibraryFolderHierarchy.path(for: selection, in: folders))
                 .font(.caption).foregroundStyle(.secondary).lineLimit(2)
         }
@@ -134,35 +133,46 @@ struct VemoParentFolderPicker: View {
     }
 }
 
-/// A reference is shared with delegates before AppKit starts its drag tracking loop.
-/// A per-drag token binds the local payload to its provider, including after a cancelled drag.
+/// Uses one declared representation; actual bytes authenticate each drop after loading.
 @MainActor final class VemoLibraryDragSession {
     private(set) var payload: LibraryDragPayload?
-    private var token: String?
+    private var pendingDragID: String?
 
     func provider(for payload: LibraryDragPayload) -> NSItemProvider {
         self.payload = payload
-        let token = "io.github.sangdnog.vemo.drag-token." + UUID().uuidString.lowercased()
-        self.token = token
+        pendingDragID = nil
         let provider = NSItemProvider()
-        provider.registerDataRepresentation(forTypeIdentifier: token, visibility: .ownProcess) { completion in
-            completion(Data(), nil)
-            return nil
-        }
-        provider.registerDataRepresentation(forTypeIdentifier: UTType.vemoLibraryItem.identifier, visibility: .ownProcess) { completion in
+        provider.registerDataRepresentation(forTypeIdentifier: UTType.vemoLibraryItem.identifier, visibility: .all) { completion in
             completion(try? JSONEncoder().encode(payload), nil)
             return nil
         }
         return provider
     }
     func payload(for providers: [NSItemProvider]) -> LibraryDragPayload? {
-        guard providers.count == 1, let token, providers[0].hasItemConformingToTypeIdentifier(token) else { return nil }
+        guard pendingDragID == nil, providers.count == 1,
+              providers[0].hasItemConformingToTypeIdentifier(UTType.vemoLibraryItem.identifier) else { return nil }
         return payload
     }
-    func finish() { payload = nil; token = nil }
+    func beginDrop(providers: [NSItemProvider]) -> LibraryDragPayload? {
+        guard let candidate = payload(for: providers) else { return nil }
+        pendingDragID = candidate.dragID
+        return candidate
+    }
+    func verifiedPayload(data: Data, matching expected: LibraryDragPayload) -> LibraryDragPayload? {
+        guard data.count <= 4096, payload == expected, pendingDragID == expected.dragID,
+              let decoded = try? JSONDecoder().decode(LibraryDragPayload.self, from: data),
+              decoded == expected else { return nil }
+        return decoded
+    }
+    @discardableResult func finish(ifCurrent expected: LibraryDragPayload) -> Bool {
+        guard payload == expected else { return false }
+        finish()
+        return true
+    }
+    func finish() { payload = nil; pendingDragID = nil }
 }
 
-/// Only this app's current provider can move library metadata; fileURL import stays separate.
+/// Only the exact current drag payload can move library metadata; fileURL import stays separate.
 @MainActor struct VemoLibraryDropDelegate: DropDelegate {
     let model: AppModel
     let target: LibraryDropTarget
@@ -184,12 +194,42 @@ struct VemoParentFolderPicker: View {
     }
     func performDrop(info: DropInfo) -> Bool {
         targeted = false
-        guard let payload = session.payload(for: info.itemProviders(for: [.vemoLibraryItem])),
-              model.dropLibraryItem(payload, on: target) else { return false }
-        session.finish()
-        accepted()
-        // Acceptance means the existing serialized save was queued. Disk failures use model.problem.
+        let providers = info.itemProviders(for: [.vemoLibraryItem])
+        guard validateDrop(info: info), let expected = session.beginDrop(providers: providers) else { return false }
+        _ = providers[0].loadDataRepresentation(forTypeIdentifier: UTType.vemoLibraryItem.identifier) { data, _ in
+            Task { @MainActor in
+                defer { session.finish(ifCurrent: expected) }
+                guard let data, let verified = session.verifiedPayload(data: data, matching: expected) else {
+                    if session.payload == expected { model.problem = "이동 정보를 읽지 못했습니다. 다시 드래그해 주세요." }
+                    return
+                }
+                guard model.dropLibraryItem(verified, on: target) else {
+                    if model.libraryBusy { model.problem = "폴더 변경을 저장하고 있습니다. 잠시 후 다시 이동해 주세요." }
+                    return
+                }
+                accepted()
+            }
+        }
+        // Acceptance starts data loading; fresh rules run again before queuing the serialized save.
         return true
+    }
+}
+
+/// Scoped to these scroll areas; leaves the user's global scrollbar preference untouched.
+struct VemoScrollAppearance: NSViewRepresentable {
+    func makeNSView(context: Context) -> Surface { Surface() }
+    func updateNSView(_ view: Surface, context: Context) { view.configure() }
+    final class Surface: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func viewDidMoveToSuperview() { super.viewDidMoveToSuperview(); configure() }
+        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); configure() }
+        func configure() {
+            if let scroll = enclosingScrollView {
+                scroll.drawsBackground = false
+                scroll.scrollerStyle = .overlay
+                scroll.autohidesScrollers = true
+            }
+        }
     }
 }
 

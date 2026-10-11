@@ -32,9 +32,11 @@ struct LibraryView: View {
                 } else {
                     List(model.visibleJobs, selection: $model.selection) { job in
                         recordingRow(job).tag(job.id)
+                            .background(VemoScrollAppearance())
                             .onDrag { dragProvider(kind: .recording, id: job.id) }
                             .contextMenu { RecordingFolderMenu(model: model, jobID: job.id) }
                     }.listStyle(.sidebar)
+                        .scrollContentBackground(.hidden)
                 }
             }.frame(minWidth: 250, idealWidth: 290)
                 .navigationSplitViewColumnWidth(min: 250, ideal: 290, max: 420)
@@ -145,9 +147,8 @@ struct LibraryView: View {
                 if !model.library.folders.isEmpty {
                     HStack(spacing: 7) {
                         Image(systemName: "square.stack.3d.up").font(.system(size: 10))
-                        Text("내 폴더").font(.system(size: 10, weight: .medium))
+                        Text("폴더").font(.system(size: 10, weight: .medium))
                         Spacer()
-                        Text(dropTarget == "root" ? "최상위로 이동" : "드래그로 정리").font(.system(size: 9))
                     }.foregroundStyle(dropTarget == "root" ? VemoTheme.ink : Color.secondary)
                         .padding(.horizontal, 10).frame(height: 28)
                         .background(dropTarget == "root" ? VemoTheme.wash : .clear, in: RoundedRectangle(cornerRadius: 8))
@@ -167,6 +168,7 @@ struct LibraryView: View {
                                     }
                             }
                         }.animation(VemoTheme.motion(reducedMotion), value: folderTreeRows)
+                            .background(VemoScrollAppearance())
                     }.frame(maxHeight: min(CGFloat(folderTreeRows.count) * 37, 200))
                 }
             }

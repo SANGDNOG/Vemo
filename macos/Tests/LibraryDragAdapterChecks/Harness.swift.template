@@ -1,0 +1,287 @@
+import Foundation
+import AppKit
+import UniformTypeIdentifiers
+import Darwin
+
+// Only the SwiftUI boundary is synthetic; shipping adapters, core, providers and store are real.
+@propertyWrapper struct Binding<Value> {
+    let get: () -> Value
+    let set: (Value) -> Void
+    var wrappedValue: Value { get { get() } nonmutating set { set(newValue) } }
+}
+struct DropInfo {
+    let providers: [NSItemProvider]
+    func itemProviders(for types: [UTType]) -> [NSItemProvider] {
+        providers.filter { provider in types.contains { provider.hasItemConformingToTypeIdentifier($0.identifier) } }
+    }
+}
+enum DropOperation { case move, cancel }
+struct DropProposal { let operation: DropOperation }
+protocol DropDelegate {}
+@MainActor final class Flag { var value = false; var accepted = 0; var busyWhenAccepted = false }
+@MainActor final class AppModel {
+    var library = LibraryOrganization()
+    var libraryReady = true
+    var libraryBusy = false
+    var libraryFilter = "all"
+    var jobs: [Job] = []
+    var selection: String?
+    var search = ""
+    var transcriptIndex: [String: String] = [:]
+    var problem: String?
+    private var libraryWriteTask: Task<Void, Never>?
+    let libraryStore: LibraryFolderStore
+    init(store: LibraryFolderStore) { libraryStore = store }
+/* MODEL_METHODS */
+}
+/* SESSION */
+/* DELEGATE */
+/* SCROLL */
+@MainActor var passed = 0
+@MainActor var failed = 0
+@MainActor func check(_ yes: Bool, _ name: String) {
+    if yes { passed += 1; print("PASS: " + name) }
+    else { failed += 1; print("FAIL: " + name) }
+}
+func job(_ id: String) throws -> Job {
+    try JSONDecoder().decode(Job.self, from: JSONSerialization.data(withJSONObject: ["id":id, "uuid":id+"-different-uuid", "original_title":"Synthetic", "recorded_at":"2026-10-12", "status":"completed", "stage":"completed", "elapsed_seconds":0, "title_status":"completed", "alignment_status":"completed"]))
+}
+@MainActor func delegate(_ model: AppModel, _ session: VemoLibraryDragSession, _ target: LibraryDropTarget, _ flag: Flag) -> VemoLibraryDropDelegate {
+    VemoLibraryDropDelegate(model: model, target: target, session: session,
+        targeted: Binding(get: { flag.value }, set: { flag.value = $0 }), accepted: { flag.accepted += 1; flag.busyWhenAccepted = model.libraryBusy })
+}
+// Real NSItemProvider loader with a thread-safe release gate. No product methods are replaced.
+final class LoadGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var handler: ((Data?, Error?) -> Void)?
+    var entered: Bool { lock.lock(); defer { lock.unlock() }; return handler != nil }
+    func capture(_ callback: @escaping (Data?, Error?) -> Void) { lock.lock(); handler = callback; lock.unlock() }
+    func release(_ data: Data?, error: Error? = nil) {
+        lock.lock(); let callback = handler; handler = nil; lock.unlock(); callback?(data, error)
+    }
+}
+@MainActor func provider(_ bytes: Data) -> NSItemProvider {
+    let p = NSItemProvider()
+    p.registerDataRepresentation(forTypeIdentifier: UTType.vemoLibraryItem.identifier, visibility: .all) { done in done(bytes, nil); return nil }
+    return p
+}
+@MainActor func gated(_ gate: LoadGate) -> NSItemProvider {
+    let p = NSItemProvider()
+    p.registerDataRepresentation(forTypeIdentifier: UTType.vemoLibraryItem.identifier, visibility: .all) { done in gate.capture(done); return nil }
+    return p
+}
+@MainActor func load(_ p: NSItemProvider) async throws -> Data {
+    try await withCheckedThrowingContinuation { c in
+        _ = p.loadDataRepresentation(forTypeIdentifier: UTType.vemoLibraryItem.identifier) { data, error in
+            if let data { c.resume(returning: data) } else { c.resume(throwing: error ?? NativeFailure.invalid("missing data")) }
+        }
+    }
+}
+@MainActor func eventually(_ title: String, _ predicate: () -> Bool) async {
+    let deadline = Date().addingTimeInterval(3)
+    while !predicate() && Date() < deadline { try? await Task.sleep(for: .milliseconds(1)) }
+    check(predicate(), title)
+}
+@MainActor func callbackWindow() async { try? await Task.sleep(for: .milliseconds(75)) }
+@MainActor final class Fixture {
+    let root: URL
+    let model: AppModel
+    let a: String; let b: String; let c: String; let g: String
+    let session = VemoLibraryDragSession()
+    let flag = Flag()
+    var bytes: Data { get throws { try Data(contentsOf: root.appendingPathComponent("native/library.json")) } }
+    init() async throws {
+        root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["VEMO_DRAG_CHECK_ROOT"]!).appendingPathComponent("fixture-" + UUID().uuidString)
+        let store = LibraryFolderStore(root: root)
+        a = try await store.create(name: "Alpha").folders.last!.id
+        b = try await store.create(name: "Beta").folders.last!.id
+        c = try await store.create(name: "Child", parentID: a).folders.last!.id
+        g = try await store.create(name: "Grandchild", parentID: c).folders.last!.id
+        _ = try await store.assign(jobIDs: ["direct"], folderID: c)
+        _ = try await store.assign(jobIDs: ["descendant"], folderID: g)
+        model = AppModel(store: store); model.library = try await store.load()
+        model.jobs = [try job("job:opaque"), try job("direct"), try job("descendant")]; model.selection = "job:opaque"
+    }
+    func value(_ kind: LibraryDragKind = .recording, _ id: String = "job:opaque") -> LibraryDragPayload { model.libraryDragPayload(kind: kind, id: id) }
+    func drop(_ target: LibraryDropTarget? = nil) -> VemoLibraryDropDelegate { delegate(model, session, target ?? .folder(b), flag) }
+}
+@main struct AdapterChecks {
+    @MainActor static func main() async throws {
+        try await sessionChecks()
+        try await successChecks()
+        try await corruptChecks()
+        try await ruleGuardChecks()
+        try await loadingChecks()
+        try await hierarchyChecks()
+        scrollChecks()
+        print("RESULT: \(passed) assertions passed; \(failed) failed")
+        fflush(stdout); exit(failed == 0 ? 0 : 1)
+    }
+    @MainActor static func sessionChecks() async throws {
+        let f = try await Fixture(); let value = f.value(.folder, f.c)
+        let another = f.value(.folder, f.c)
+        check(value.dragID != another.dragID && UUID(uuidString: value.dragID) != nil, "same kind/id new payload has unique UUID drag identity")
+        let before = f.drop(); check(!before.validateDrop(info: DropInfo(providers: [])), "delegate created before drag remains inactive until source starts")
+        let original = f.session.provider(for: value)
+        let bytes = try await load(original)
+        let reconstructed = provider(bytes)
+        let info = DropInfo(providers: [reconstructed])
+        check(original.registeredTypeIdentifiers == [UTType.vemoLibraryItem.identifier], "source exposes only declared base representation without unknown token")
+        check(!original.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier), "source does not expose fileURL import representation")
+        check(try JSONDecoder().decode(LibraryDragPayload.self, from: bytes) == value, "loaded base data preserves complete exact payload including dragID")
+        check(f.session.payload(for: [original]) == value && f.session.payload(for: [reconstructed]) == value && before.validateDrop(info: info), "legitimate base-only reconstruction accepted without unknown namescope token")
+        let copied = original.copy() as! NSItemProvider
+        check(try JSONDecoder().decode(LibraryDragPayload.self, from: await load(copied)) == value && f.session.payload(for: [copied]) == value, "NSCopying provider retains current base data and candidate")
+        check(f.session.payload(for: []) == nil && f.session.payload(for: [original, reconstructed]) == nil && f.session.payload(for: [NSItemProvider()]) == nil, "empty multiple and unrelated providers rejected")
+        check(f.session.verifiedPayload(data: bytes, matching: value) == nil, "exact bytes alone cannot authenticate before beginDrop")
+        check(f.session.beginDrop(providers: [reconstructed]) == value && f.session.payload(for: [original]) == nil && f.session.beginDrop(providers: [original]) == nil, "pending load suppresses previews and duplicate beginDrop")
+        check(f.session.verifiedPayload(data: bytes, matching: value) == value, "current exact loaded payload verified while pending")
+        _ = f.session.provider(for: another)
+        check(f.session.verifiedPayload(data: bytes, matching: value) == nil && !f.session.finish(ifCurrent: value) && f.session.payload == another, "older verification and conditional finish cannot consume newer same-id drag")
+        _ = f.session.beginDrop(providers: [original]); f.session.finish()
+        check(f.session.verifiedPayload(data: bytes, matching: another) == nil && f.session.payload(for: [original]) == nil && !before.performDrop(info: info), "cancel finish rejects loaded completion and replay")
+    }
+    @MainActor static func successChecks() async throws {
+        let f = try await Fixture(); let value = f.value(); let source = f.session.provider(for: value)
+        let clone = provider(try await load(source)); let info = DropInfo(providers: [clone]); let drop = f.drop()
+        let disk = try f.bytes; let revision = f.model.library.revision
+        drop.dropEntered(info: info); check(f.flag.value, "base-only preview highlights live valid target")
+        check(drop.dropUpdated(info: info)?.operation == .move, "base-only preview proposes metadata move")
+        drop.dropExited(info: info); check(!f.flag.value && f.session.payload == value, "exit clears highlight and retains current session")
+        check(drop.performDrop(info: info), "legitimate base-only drop starts data load")
+        check(try !f.model.libraryBusy && f.flag.accepted == 0 && f.bytes == disk && !f.flag.value, "load initiation queues no save or accepted callback before verification")
+        check(!drop.performDrop(info: info), "pending same-turn duplicate cannot start another write")
+        await eventually("verified callback completes current drag", { f.session.payload == nil })
+        check(f.flag.accepted == 1 && f.flag.busyWhenAccepted, "accepted callback runs once after serialized save queued busy")
+        await f.model.flushLibraryChanges()
+        let reopened = try await LibraryFolderStore(root: f.root).load()
+        check(reopened.assignments == ["job:opaque":f.b, "direct":f.c, "descendant":f.g] && reopened.revision == revision + 1 && f.model.library == reopened, "verified drop durably moves exact opaque recording ID after reopen")
+        check(!f.model.libraryBusy && f.model.selection == "job:opaque" && !drop.performDrop(info: info) && f.flag.accepted == 1, "settled save preserves selection and finished provider cannot replay")
+        let unfile = f.value(); _ = f.session.provider(for: unfile)
+        let unfileDrop = f.drop(.unfiled)
+        check(unfileDrop.performDrop(info: DropInfo(providers: [provider(try JSONEncoder().encode(unfile))])), "verified recording unfile starts load")
+        await eventually("unfile callback finishes", { f.session.payload == nil }); await f.model.flushLibraryChanges()
+        check(f.model.library.assignments == ["direct":f.c, "descendant":f.g], "unfile save removes only moved recording assignment")
+    }
+    @MainActor static func corruptChecks() async throws {
+        for kind in ["wrong-session", "wrong-id", "wrong-version", "wrong-kind", "wrong-drag", "missing-drag", "malformed", "oversized", "oversized-valid", "stale-same-folder", "io-error"] {
+            let f = try await Fixture(); let current = f.value(.folder, f.c)
+            let old = f.value(.folder, f.c); _ = f.session.provider(for: current)
+            var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(current)) as! [String: Any]
+            switch kind {
+            case "wrong-session": object["sessionID"] = "another-process-session"
+            case "wrong-id": object["id"] = f.a
+            case "wrong-version": object["version"] = 2
+            case "wrong-kind": object["kind"] = "recording"
+            case "wrong-drag": object["dragID"] = UUID().uuidString
+            case "missing-drag": object.removeValue(forKey: "dragID")
+            case "stale-same-folder": object["dragID"] = old.dragID
+            default: break
+            }
+            var bytes = try JSONSerialization.data(withJSONObject: object)
+            if kind == "malformed" { bytes = Data("{broken".utf8) }
+            if kind == "oversized" { bytes = Data(repeating: 65, count: 4097) }
+            if kind == "oversized-valid" { bytes.append(Data(repeating: 32, count: max(1, 4097 - bytes.count))) }
+            let disk = try f.bytes; let view = f.model.library; let selection = f.model.selection
+            let gate = LoadGate(); let info = DropInfo(providers: [gated(gate)]); let drop = f.drop()
+            check(drop.validateDrop(info: info) && drop.performDrop(info: info), "\(kind) candidate may preview but only begins async authentication")
+            await eventually("\(kind) real loader waits at gate", { gate.entered })
+            if kind == "io-error" { gate.release(nil, error: NSError(domain: "synthetic-provider-error", code: 1)) } else { gate.release(bytes) }
+            await eventually("\(kind) callback finishes its current drag", { f.session.payload == nil }); await f.model.flushLibraryChanges()
+            check((try f.bytes) == disk && f.model.library == view && f.model.selection == selection && f.flag.accepted == 0 && !f.model.libraryBusy, "\(kind) loaded bytes never write or change view selection")
+            if kind == "io-error" { check(f.model.problem != nil, "current provider IO failure surfaces banner") }
+        }
+        // Valid JSON at the exact size boundary remains valid; limit must reject 4097, not 4096.
+        let f = try await Fixture(); let value = f.value(); let encoded = try JSONEncoder().encode(value)
+        _ = f.session.provider(for: value); _ = f.session.beginDrop(providers: [provider(encoded)])
+        var boundary = encoded; boundary.append(Data(repeating: 32, count: 4096 - encoded.count))
+        check(f.session.verifiedPayload(data: boundary, matching: value) == value, "4096-byte valid JSON accepted at exact loaded-data limit")
+        boundary.append(32)
+        check(f.session.verifiedPayload(data: boundary, matching: value) == nil, "4097-byte valid JSON rejected above loaded-data limit")
+    }
+    @MainActor static func ruleGuardChecks() async throws {
+        for invalid in ["foreign-model-session", "unsupported-current-version", "missing-source-id"] {
+            let f = try await Fixture()
+            let value = LibraryDragPayload(kind: .recording, id: invalid == "missing-source-id" ? "missing-recording" : "job:opaque", sessionID: invalid == "foreign-model-session" ? "foreign-model-session" : f.model.libraryDragSessionID, version: invalid == "unsupported-current-version" ? 2 : 1)
+            let p = f.session.provider(for: value); let info = DropInfo(providers: [p]); let drop = f.drop(); let disk = try f.bytes
+            check(!drop.validateDrop(info: info) && !drop.performDrop(info: info), "\(invalid) exact current provider rejected by live model rules before load")
+            await f.model.flushLibraryChanges()
+            check((try f.bytes) == disk && f.flag.accepted == 0 && f.session.payload == value, "\(invalid) rejection writes nothing and leaves unconsumed session")
+        }
+        let f = try await Fixture(); let current = f.value()
+        var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(current)) as! [String: Any]
+        object["kind"] = "unknown"
+        let unknown = try JSONSerialization.data(withJSONObject: object)
+        check((try? JSONDecoder().decode(LibraryDragPayload.self, from: unknown)) == nil, "unknown kind rejects even with present valid dragID")
+        object["kind"] = "recording"; object.removeValue(forKey: "dragID")
+        let missing = try JSONSerialization.data(withJSONObject: object)
+        check((try? JSONDecoder().decode(LibraryDragPayload.self, from: missing)) == nil, "otherwise valid pre-dragID wire payload cannot decode without dragID")
+    }
+    @MainActor static func loadingChecks() async throws {
+        for change in ["busy", "not-ready", "target-deleted", "source-deleted", "same-parent", "cycle-created", "new-drag", "cancel", "new-drag-io-error"] {
+            let f = try await Fixture(); let value = f.value(.folder, f.c); _ = f.session.provider(for: value)
+            let gate = LoadGate(); let info = DropInfo(providers: [gated(gate)]); let drop = f.drop()
+            check(drop.performDrop(info: info), "\(change) starts from valid preview")
+            await eventually("\(change) async load blocked before mutation", { gate.entered })
+            var newer: LibraryDragPayload?
+            switch change {
+            case "busy": f.model.libraryBusy = true
+            case "not-ready": f.model.libraryReady = false
+            case "target-deleted": f.model.library.folders.removeAll { $0.id == f.b }
+            case "source-deleted": f.model.library.folders.removeAll { $0.id == f.c }
+            case "same-parent": f.model.library.folders[f.model.library.folders.firstIndex { $0.id == f.c }!].parentID = f.b
+            case "cycle-created": f.model.library.folders[f.model.library.folders.firstIndex { $0.id == f.b }!].parentID = f.c
+            case "new-drag", "new-drag-io-error": newer = f.value(.folder, f.c); _ = f.session.provider(for: newer!)
+            default: f.session.finish()
+            }
+            let disk = try f.bytes; let view = f.model.library; let selection = f.model.selection
+            if change == "new-drag-io-error" { gate.release(nil, error: NSError(domain: "old-provider-error", code: 1)) } else { gate.release(try JSONEncoder().encode(value)) }
+            if newer != nil || change == "cancel" { await callbackWindow() }
+            else { await eventually("\(change) completion closes old drag", { f.session.payload == nil }) }
+            await f.model.flushLibraryChanges()
+            check((try f.bytes) == disk && f.model.library == view && f.model.selection == selection && f.flag.accepted == 0, "\(change) revalidation queues no metadata write")
+            if let newer {
+                check(f.session.payload == newer && f.model.problem == nil, "\(change) old callback never finishes or banners newer same-id drag")
+                let newInfo = DropInfo(providers: [provider(try JSONEncoder().encode(newer))])
+                check(drop.performDrop(info: newInfo), "\(change) preserved newer drag remains usable")
+                await eventually("\(change) newer valid callback completes", { f.session.payload == nil }); await f.model.flushLibraryChanges()
+                check(f.flag.accepted == 1 && f.model.library.folders.first { $0.id == f.c }?.parentID == f.b, "\(change) only newer drag persists")
+            }
+            if change == "busy" { check(f.model.problem != nil && f.model.libraryBusy, "busy after load surfaces busy banner without changing busy owner") }
+        }
+    }
+    @MainActor static func hierarchyChecks() async throws {
+        let f = try await Fixture(); let value = f.value(.folder, f.c)
+        f.model.libraryFilter = f.c; f.model.selection = "direct"
+        check(f.model.visibleJobs.map(\.id) == ["direct"], "folder query remains direct-only excluding descendant recording")
+        for target in [LibraryDropTarget.folder(f.c), .folder(f.g), .unfiled] {
+            let disk = try f.bytes
+            check(!f.model.canDropLibraryItem(value, on: target) && !f.model.dropLibraryItem(value, on: target), "self descendant-cycle and unfiled folder destinations rejected")
+            await f.model.flushLibraryChanges(); check((try f.bytes) == disk, "invalid hierarchy target writes no bytes")
+        }
+        _ = f.session.provider(for: value)
+        check(f.drop().performDrop(info: DropInfo(providers: [provider(try JSONEncoder().encode(value))])), "folder move through verified async delegate starts")
+        await eventually("folder move callback completes", { f.session.payload == nil }); await f.model.flushLibraryChanges()
+        let state = try await LibraryFolderStore(root: f.root).load()
+        check(state.folders.first { $0.id == f.c }?.parentID == f.b && state.folders.first { $0.id == f.g }?.parentID == f.c && state.assignments == ["direct":f.c, "descendant":f.g], "folder persisted move preserves subtree and recording assignments")
+        check(f.model.libraryFilter == f.c && f.model.selection == "direct" && f.model.visibleJobs.map(\.id) == ["direct"], "folder move keeps direct-only selected recording and filter")
+        let rootValue = f.value(.folder, f.c); _ = f.session.provider(for: rootValue)
+        check(f.drop(.root).performDrop(info: DropInfo(providers: [provider(try JSONEncoder().encode(rootValue))])), "root folder detach starts verified load")
+        await eventually("root folder callback completes", { f.session.payload == nil }); await f.model.flushLibraryChanges()
+        check(f.model.library.folders.first { $0.id == f.c }?.parentID == nil && !f.model.dropLibraryItem(rootValue, on: .root), "root detach persists then same-root noop queues nothing")
+        // Model valid while disk target gone: adapter accepts queue, store freshly rejects it.
+        let diskTarget = try await f.model.libraryStore.create(name: "Will disappear").folders.last!.id
+        f.model.library = try await f.model.libraryStore.load(); f.model.problem = nil
+        let recording = f.value(); _ = f.session.provider(for: recording)
+        let gate = LoadGate(); let info = DropInfo(providers: [gated(gate)]); let drop = f.drop(.folder(diskTarget))
+        check(drop.performDrop(info: info), "disk-only destination race starts from valid model preview")
+        await eventually("disk-only destination loader blocked", { gate.entered })
+        _ = try await f.model.libraryStore.delete(id: diskTarget); let disk = try f.bytes
+        gate.release(try JSONEncoder().encode(recording))
+        await eventually("disk-only destination callback queues and finishes", { f.session.payload == nil }); await f.model.flushLibraryChanges()
+        check((try f.bytes) == disk && f.model.problem != nil && !f.model.libraryBusy && f.flag.accepted == 3, "fresh store rejects vanished disk destination and surfaces save error preserving bytes")
+    }
+    @MainActor static func scrollChecks() {
+        /* SCROLL_CHECKS */
+    }
+}

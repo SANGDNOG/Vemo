@@ -9,12 +9,14 @@ public struct LibraryDragPayload: Codable, Equatable, Sendable {
     public let kind: LibraryDragKind
     public let id: String
     public let sessionID: String
+    public let dragID: String
 
-    public init(kind: LibraryDragKind, id: String, sessionID: String, version: Int = 1) {
+    public init(kind: LibraryDragKind, id: String, sessionID: String, version: Int = 1, dragID: String = UUID().uuidString) {
         self.version = version
         self.kind = kind
         self.id = id
         self.sessionID = sessionID
+        self.dragID = dragID
     }
 }
 

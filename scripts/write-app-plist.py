@@ -8,5 +8,8 @@ info = dict(CFBundleExecutable='Vemo', CFBundleIdentifier=identifier,
             LSMinimumSystemVersion='26.2', LSMultipleInstancesProhibited=True,
             NSHighResolutionCapable=True, NSHumanReadableCopyright='Copyright 2026 SANGDNOG',
             VemoDemoMode=demo == '1')
+info['UTExportedTypeDeclarations'] = [dict(
+    UTTypeIdentifier='io.github.sangdnog.vemo.library-item',
+    UTTypeDescription='Vemo library item', UTTypeConformsTo=['public.data'])]
 with (pathlib.Path(app)/'Contents/Info.plist').open('wb') as output:
     plistlib.dump(info, output)
