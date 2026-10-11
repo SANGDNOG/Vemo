@@ -40,6 +40,8 @@ func wave() -> Data {
         try rejects("failed alignment cannot export SRT") { _ = try TranscriptExport.render(failed, title: "녹음", format: "srt") }
         try check(try TranscriptExport.render(failed, title: "녹음", format: "txt").contains("보존한 원문"), "failed alignment preserves text export")
         try transcriptDisplayChecks()
+        try notesChecks()
+        try await cloudFolderChecks()
         try playbackChecks()
         guard CommandLine.arguments.contains("--broker-checks") else { print("All UI/protocol native checks passed; broker checks require --broker-checks"); return }
         let incoming = root.appendingPathComponent("incoming.wav"); try wave().write(to: incoming)
@@ -63,6 +65,7 @@ func wave() -> Data {
         let bad = root.appendingPathComponent("bad.wav"); try Data("not audio".utf8).write(to: bad)
         do { _ = try await reopened.importFile(bad); throw NativeFailure.invalid("FAIL: invalid audio accepted") } catch { try check(!(error.localizedDescription.contains("FAIL:")), "invalid media rejected") }
         try await publicationChecks(root: root)
+        try await notesPublicationChecks(root:root)
         try await lifecycleChecks(root:root)
         try await sourceChecks(root:root)
         print("All native checks passed")

@@ -33,6 +33,7 @@ public struct Job: Codable, Sendable, Identifiable {
     public var id: String; public var uuid: String; public var topic: String?; public var recording_date: String?; public var recorded_at: String?; public var duration_s: Double?
     public var status: String; public var wait_reason: String?; public var stage: String; public var completed_units: Int?; public var total_units: Int?; public var elapsed_seconds: Double
     public var artifact_path: String?; public var audio_path: String?; public var pcm_path: String?; public var error: JSONValue?; public var title_status: String; public var alignment_status: String; public var original_title: String?
+    public var notes_path: String?; public var notes_status: String?; public var notes_error: JSONValue?
     /// QTA spatial streams are not supported by AVAudioPlayer. Wait for prepared PCM.
     /// The consumer must still validate the chosen path inside its owned state root.
     public var playback_path: String? {
@@ -46,7 +47,7 @@ public struct Job: Codable, Sendable, Identifiable {
     public var title: String { let name = topic ?? original_title ?? "음성 녹음"; return recording_date.map { "\(name) — \($0)" } ?? name }
     public var progress: String { if let c = completed_units, let t = total_units, t > 0 { return "\(c)/\(t) 구간" }; return "" }
     public var statusLabel: String { Self.labels[status] ?? status }
-    private static let labels = ["unprocessed":"미처리", "waiting":"처리 대기", "preparing":"준비 중", "transcribing":"전사 중", "aligning":"시간 정렬 중", "titling":"제목 생성 중", "saving":"저장 중", "completed":"완료", "needs_recording_date":"녹음일 확인 필요", "failed":"실패", "paused":"일시 중지"]
+    private static let labels = ["unprocessed":"미처리", "waiting":"처리 대기", "preparing":"준비 중", "transcribing":"전사 중", "aligning":"시간 정렬 중", "titling":"제목 생성 중", "noting":"노트 정리 중", "saving":"저장 중", "completed":"완료", "needs_recording_date":"녹음일 확인 필요", "failed":"실패", "paused":"일시 중지"]
 }
 public struct Transcript: Codable, Sendable {
     public struct Segment: Codable, Sendable { public var start_s: Double; public var end_s: Double; public var text: String }

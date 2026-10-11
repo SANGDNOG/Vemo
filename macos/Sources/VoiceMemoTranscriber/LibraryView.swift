@@ -5,7 +5,7 @@ struct LibraryView: View {
     var body: some View {
         NavigationSplitView {
             VStack(spacing: 0) {
-                TextField("제목·전사문 검색", text: $model.search).textFieldStyle(.roundedBorder).padding(12).accessibilityLabel("녹음 검색")
+                TextField("제목·전사·키워드 검색", text: $model.search).textFieldStyle(.roundedBorder).padding(12).accessibilityLabel("녹음 검색")
                 List(model.visibleJobs, selection: $model.selection) { job in
                     VStack(alignment: .leading, spacing: 5) {
                         Text(job.title).font(.headline).lineLimit(2)

@@ -9,9 +9,10 @@ from .media import validate_owned,chunk_ranges,extract_chunk,global_segments
 from .artifacts import atomic_json,build_publication,valid_receipt,sha256
 from .models import model_status,ModelInventory
 from .process import ManagedProcess
+from .notes import validate_notes,source_chunks,source_digest
 
-JOB_FIELDS=('id','uuid','topic','recording_date','recorded_at','duration_s','status','wait_reason','stage','completed_units','total_units','elapsed_seconds','artifact_path','audio_path','pcm_path','error','title_status','alignment_status','original_title')
-RUNNING={'preparing','transcribing','aligning','titling'}
+JOB_FIELDS=('id','uuid','topic','recording_date','recorded_at','duration_s','status','wait_reason','stage','completed_units','total_units','elapsed_seconds','artifact_path','audio_path','pcm_path','error','title_status','alignment_status','original_title','notes_path','notes_status','notes_error')
+RUNNING={'preparing','transcribing','aligning','titling','noting'}
 
 def on_ac_power():
     try:
@@ -97,13 +98,13 @@ class Engine:
                 if changed and (old['queued'] or old.get('pcm_hash')):
                     old.update(refresh_requested=True,queued=True,publication_id=None,manifest_path=None)
                 if old.get('recording_date')!=prior_day and old.get('artifact_path') and old.get('topic'):
-                    old.update(revision=old['revision']+1,publication_id=None,manifest_path=None,queued=True,status='waiting',phase='publish')
+                    old.update(revision=old['revision']+1,publication_id=None,manifest_path=None,queued=True,status='waiting',phase='notes' if old['phase']=='notes' else 'publish')
                 if explicit and not old.get('pcm_hash'):old['queued']=True
                 self.save(old);continue
             job={key:None for key in JOB_FIELDS}
             recorded=memo.get('recorded_at')
             queued=explicit or (baseline and cutoff is not None and recorded is not None and dt.datetime.fromisoformat(recorded.replace('Z','+00:00')).timestamp()>cutoff)
-            job.update(id=uuid.uuid4().hex,uuid=memo['uuid'],recorded_at=memo.get('recorded_at'),recording_date=day,date_provenance=memo.get('recorded_at_source','unknown'),original_timezone=memo.get('original_timezone'),duration_s=memo.get('duration_s'),original_title=memo.get('original_title'),status='waiting' if queued else 'unprocessed',stage='snapshot',wait_reason=None,elapsed_seconds=0,title_status='pending',alignment_status='pending',queued=queued,phase='snapshot',source_reference=memo['source_reference'],completion_evidence=memo['completion_evidence'],source_kind=memo['source_kind'],media_revision=memo.get('media_revision'),pcm_hash=None,revision=0,asr_chunks=[],aligned_chunks=[],attempts={},refresh_requested=False,publication_id=None,manifest_path=None)
+            job.update(id=uuid.uuid4().hex,uuid=memo['uuid'],recorded_at=memo.get('recorded_at'),recording_date=day,date_provenance=memo.get('recorded_at_source','unknown'),original_timezone=memo.get('original_timezone'),duration_s=memo.get('duration_s'),original_title=memo.get('original_title'),status='waiting' if queued else 'unprocessed',stage='snapshot',wait_reason=None,elapsed_seconds=0,notes_status='pending',title_status='pending',alignment_status='pending',queued=queued,phase='snapshot',source_reference=memo['source_reference'],completion_evidence=memo['completion_evidence'],source_kind=memo['source_kind'],media_revision=memo.get('media_revision'),pcm_hash=None,revision=0,asr_chunks=[],aligned_chunks=[],attempts={},refresh_requested=False,publication_id=None,manifest_path=None)
             self.save(job)
         if not explicit:self.store.set_meta('baseline_seen',True)
     def apply(self,kind,payload):
@@ -138,6 +139,14 @@ class Engine:
             candidate=self.root/'work'/job['id']/'candidates'/uuid.uuid4().hex;candidate.mkdir(parents=True,exist_ok=True)
             job.update(phase='prepare',status='waiting',wait_reason=None,prepare_data={'source':str(path),'revision_before':before,'revision_after':after,'audio_path':str(candidate/('audio'+path.suffix)),'pcm_path':str(candidate/'pcm.wav')})
             self.save(job);return {'ok':True}
+        if kind=='generate_notes':
+            if not job.get('artifact_path'):raise ValueError('transcript_not_ready')
+            if (self.active and self.active['job_id']==job['id']) or job['phase'] in {'notes','prepare','snapshot','asr','align','title'} and job['status'] not in {'completed','needs_recording_date','failed'}:raise ValueError('job_busy')
+            validate_owned(self.root,job['artifact_path'])
+            job.pop('notes_checkpoint',None)
+            if not job.get('topic'):job.update(topic='음성 녹음',title_status='fallback')
+            job.update(notes_only=True,notes_prior_status=job['status'],notes_status='pending',notes_error=None,phase='notes',stage='noting',queued=True,status='waiting',wait_reason=None,error=None,attempts={},completed_units=0,total_units=None)
+            self.save(job);return {'ok':True}
         if kind=='retry':
             job.update(queued=True,error=None,wait_reason=None,status='waiting',attempts={})
             if job['phase']=='publish':job['last_publish_error']=None
@@ -155,11 +164,11 @@ class Engine:
                 job.update(topic=sanitize_topic(payload['topic']),title_status='manual');phase='publish'
             elif payload.get('generate') is True:job.update(title_status='pending');job.pop('title_checkpoint',None);phase='title'
             else:raise ValueError('topic_or_generate_required')
-            if job['phase'] in {'asr','align','title','prepare','snapshot'}:phase=job['phase']
+            if job['phase'] in {'asr','align','title','notes','prepare','snapshot'}:phase=job['phase']
             job.update(revision=job['revision']+1,publication_id=None,manifest_path=None,phase=phase,queued=True,status='waiting',wait_reason=None,error=None,attempts={})
             self.save(job);return {'ok':True}
         if kind=='publish_ack':
-            if job.get('refresh_requested') or payload['publication_id']!=job.get('publication_id'):raise ValueError('stale_publication')
+            if job['phase']!='publish' or job.get('refresh_requested') or payload['publication_id']!=job.get('publication_id'):raise ValueError('stale_publication')
             if job['status']=='completed' and 'error' in payload:return {'ok':True}
             if 'error' in payload:
                 job.update(status='saving',wait_reason='publication',error=self.safe_error(payload['error']),last_publish_error=True);self.save(job);return {'ok':True}
@@ -186,7 +195,7 @@ class Engine:
             if self.stopping:task.stop();return
             self.active={'job_id':job['id'],'op':op,'task':task,'output':out,'index':data.get('index')}
         self.started[job['id']]=time.monotonic()
-        job.update(status={'prepare':'preparing','asr':'transcribing','align':'aligning','title':'titling'}[op],stage={'prepare':'preparing','asr':'transcribing','align':'aligning','title':'titling'}[op],wait_reason=None,error=None)
+        job.update(status={'prepare':'preparing','asr':'transcribing','align':'aligning','title':'titling','notes':'noting'}[op],stage={'prepare':'preparing','asr':'transcribing','align':'aligning','title':'titling','notes':'noting'}[op],wait_reason=None,error=None)
         self.save(job)
     def complete_task(self):
         active=self.active
@@ -196,15 +205,17 @@ class Engine:
         try:
             if active['task'].proc.returncode!=0:raise ValueError('model_timeout' if active['task'].timed_out else 'worker_failed')
             result=json.loads(active['output'].read_text())
+            if not isinstance(result,dict):raise ValueError('invalid_worker_result')
             self.accept(job,op,result,active['index'])
             job['attempts'].pop(op,None)
         except (OSError,ValueError,TypeError,KeyError) as exc:
             attempts=job['attempts'].get(op,0)+1;job['attempts'][op]=attempts
             if attempts<2:job.update(status='waiting',wait_reason='retry',error=failure('worker_failed'))
             elif op=='align':
-                job.update(alignment_status='failed',aligned_chunks=[],phase='publish' if job['title_status']=='manual' else 'title',status='waiting',error=failure('alignment_failed'))
+                job.update(alignment_status='failed',aligned_chunks=[],phase=self.after_title(job) if job['title_status']=='manual' else 'title',status='waiting',error=failure('alignment_failed'))
                 self.write_transcript(job)
-            elif op=='title':job.update(topic='음성 녹음',title_status='fallback',phase='publish',status='waiting',error=failure('title_failed'))
+            elif op=='title':job.update(topic='음성 녹음',title_status='fallback',phase=self.after_title(job),status='waiting',error=failure('title_failed'))
+            elif op=='notes':self.fail_notes(job,failure('notes_failed'))
             else:job.update(status='failed',wait_reason=None,queued=False,error=failure('worker_timeout' if active['task'].timed_out else 'worker_failed'))
         self.save(job)
     def accept(self,job,op,result,index):
@@ -216,12 +227,14 @@ class Engine:
             if h==job.get('pcm_hash'):
                 # Metadata/container-only changes retain all committed model results.
                 resume=job.pop('refresh_resume',None)
-                if resume not in {'asr','align','title','publish'}:
+                if resume not in {'asr','align','title','notes','publish'}:
                     resume='publish' if job.get('topic') and job.get('artifact_path') else 'title' if job.get('alignment_status') in {'completed','failed'} else 'align' if len(job['asr_chunks'])==len(chunk_ranges(job['frames'])) else 'asr'
                 job.update(phase=resume,status='waiting',wait_reason=None)
                 return
             job.pop('title_checkpoint',None)
-            job.update(pcm_hash=h,audio_path=result['audio_path'],pcm_path=result['pcm_path'],duration_s=float(result['duration_s']),frames=result['frames'],asr_chunks=[],aligned_chunks=[],topic=None,artifact_path=None,publication_id=None,manifest_path=None,revision=job['revision']+1,title_status='pending',alignment_status='pending',phase='asr',status='waiting',completed_units=0,total_units=len(chunk_ranges(result['frames'])))
+            job.pop('notes_checkpoint',None)
+            job.pop('notes_only',None)
+            job.update(notes_status='pending',notes_path=None,notes_error=None,pcm_hash=h,audio_path=result['audio_path'],pcm_path=result['pcm_path'],duration_s=float(result['duration_s']),frames=result['frames'],asr_chunks=[],aligned_chunks=[],topic=None,artifact_path=None,publication_id=None,manifest_path=None,revision=job['revision']+1,title_status='pending',alignment_status='pending',phase='asr',status='waiting',completed_units=0,total_units=len(chunk_ranges(result['frames'])))
         elif op=='asr':
             if result.get('truncated') is not False or not isinstance(result.get('text'),str):raise ValueError('truncated_or_invalid_asr')
             if len(job['asr_chunks'])!=index:raise ValueError('checkpoint_index_mismatch')
@@ -236,7 +249,7 @@ class Engine:
             job['aligned_chunks'].append(segments)
             job.update(status='waiting',completed_units=len(job['aligned_chunks']))
             if len(job['aligned_chunks'])==len(job['asr_chunks']):
-                job.update(phase='publish' if job['title_status']=='manual' else 'title',alignment_status='completed');self.write_transcript(job)
+                job.update(phase=self.after_title(job) if job['title_status']=='manual' else 'title',alignment_status='completed');self.write_transcript(job)
         elif op=='title':
             if 'title_checkpoint' in result:
                 checkpoint=result['title_checkpoint']
@@ -246,7 +259,37 @@ class Engine:
                 job.update(title_checkpoint=str(checkpoint_path),status='waiting',completed_units=result['completed_units'],total_units=result['total_units'])
                 return
             if not isinstance(result.get('topic'),str) or not result['topic'].strip():raise ValueError('empty_title')
-            job.update(topic=sanitize_topic(result['topic']),title_status='completed',phase='publish',status='waiting',completed_units=None,total_units=None)
+            job.update(topic=sanitize_topic(result['topic']),title_status='completed',phase=self.after_title(job),status='waiting',completed_units=None,total_units=None)
+        elif op=='notes':
+            source=json.loads(validate_owned(self.root,job['artifact_path']).read_text(encoding='utf-8'))['text']
+            total=len(source_chunks(source))
+            expected=index+1
+            if type(result.get('completed_units')) is not int or result['completed_units']!=expected or type(result.get('total_units')) is not int or result['total_units']!=total:raise ValueError('invalid_notes_progress')
+            if 'notes_checkpoint' in result:
+                checkpoint=result['notes_checkpoint']
+                if not isinstance(checkpoint,dict) or checkpoint.get('index')!=expected or expected>=total or checkpoint.get('total_units')!=total or checkpoint.get('source_sha256')!=source_digest(source):raise ValueError('invalid_notes_checkpoint')
+                checkpoint['notes']=validate_notes(checkpoint.get('notes'),source)
+                path=self.root/'work'/job['id']/('notes-checkpoint-'+uuid.uuid4().hex+'.json')
+                atomic_json(path,checkpoint)
+                job.update(notes_checkpoint=str(path),status='waiting',completed_units=expected,total_units=total)
+                return
+            if expected!=total:raise ValueError('incomplete_notes_generation')
+            notes=validate_notes(result['notes'],source)
+            digest=__import__('hashlib').sha256(json.dumps(notes,sort_keys=True,ensure_ascii=False).encode('utf-8')).hexdigest()
+            path=self.root/'artifacts'/job['id']/('notes-'+digest+'.json')
+            if not path.exists():atomic_json(path,notes)
+            else:
+                if json.loads(path.read_text(encoding='utf-8'))!=notes:raise ValueError('local_artifact_conflict')
+            job.update(notes_path=str(path),notes_status='completed',notes_error=None,phase='publish',status='waiting',publication_id=None,manifest_path=None,completed_units=expected,total_units=total,error=None)
+            job.pop('notes_only',None);job.pop('notes_prior_status',None)
+    def after_title(self,job):
+        return 'notes' if job.get('notes_status')=='pending' else 'publish'
+    def fail_notes(self,job,error):
+        # A failed regeneration keeps the last good notes and immutable publication.
+        previous=job.pop('notes_prior_status',None);note_only=job.pop('notes_only',False)
+        job.update(notes_status='failed',notes_error=error,phase='publish',stage='saving',status='waiting',error=None,wait_reason=None,completed_units=None,total_units=None)
+        if note_only and previous=='completed' and job.get('publication_id'):
+            job.update(status='completed',queued=False)
     def write_transcript(self,job):
         transcript={'text':'\n'.join(c['text'] for c in job['asr_chunks']),'segments':[s for chunk in job['aligned_chunks'] for s in chunk],'alignment_status':job['alignment_status']}
         digest=__import__('hashlib').sha256(json.dumps(transcript,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
@@ -294,7 +337,8 @@ class Engine:
                 if not job.get('publication_id'):
                     try:
                         transcript=json.loads(Path(job['artifact_path']).read_text())
-                        manifest_path=build_publication(self.root,job,transcript,self.model_manifest())
+                        notes=json.loads(validate_owned(self.root,job['notes_path']).read_text(encoding='utf-8')) if job.get('notes_path') else None
+                        manifest_path=build_publication(self.root,job,transcript,self.model_manifest(),notes=notes)
                         manifest=json.loads(Path(manifest_path).read_text())
                         job.update(manifest_path=manifest_path,publication_id=manifest['publication_id'],status='saving',stage='saving',wait_reason='publication',completed_units=None,total_units=None)
                     except (OSError,ValueError,KeyError):job.update(status='failed',queued=False,error=failure('artifact_failed'))
@@ -321,13 +365,27 @@ class Engine:
                     job.update(completed_units=index,total_units=len(ranges))
                     data={'index':index,'audio_path':str(path),'duration_s':(end-start)/16000}
                     if op=='align':data.update(job['asr_chunks'][index])
+                elif job['phase']=='notes':
+                    op='notes';data={'artifact_path':job['artifact_path'],'index':0}
+                    if job.get('notes_checkpoint'):
+                        checkpoint=json.loads(validate_owned(self.root,job['notes_checkpoint']).read_text(encoding='utf-8'))
+                        if not isinstance(checkpoint,dict) or type(checkpoint.get('index')) is not int or type(checkpoint.get('total_units')) is not int:raise ValueError('invalid_notes_checkpoint')
+                        source=json.loads(validate_owned(self.root,job['artifact_path']).read_text(encoding='utf-8'))['text']
+                        total=len(source_chunks(source))
+                        if not 0<checkpoint['index']<total or checkpoint['total_units']!=total or checkpoint.get('source_sha256')!=source_digest(source):raise ValueError('invalid_notes_checkpoint')
+                        checkpoint['notes']=validate_notes(checkpoint.get('notes'),source)
+                        data.update(notes_checkpoint=checkpoint,index=checkpoint['index'])
+                    else:
+                        source=json.loads(validate_owned(self.root,job['artifact_path']).read_text(encoding='utf-8'))['text']
+                        job.update(completed_units=0,total_units=len(source_chunks(source)))
                 else:
                     op='title';data={'artifact_path':job['artifact_path']}
                     if job.get('title_checkpoint'):data['title_checkpoint']=json.loads(Path(job['title_checkpoint']).read_text())
                     else:job.update(completed_units=None,total_units=None)
                 with self.store.transaction():self.launch(job,op,data)
-            except (OSError,ValueError,KeyError,IndexError):
-                job.update(status='failed',queued=False,error=failure('pipeline_failed'))
+            except (OSError,ValueError,TypeError,KeyError,IndexError):
+                if job['phase']=='notes':self.fail_notes(job,failure('notes_failed'))
+                else:job.update(status='failed',queued=False,error=failure('pipeline_failed'))
                 with self.store.transaction():self.save(job)
             break
         self.flush_changed()

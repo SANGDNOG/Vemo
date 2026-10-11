@@ -39,7 +39,7 @@ def main():
     run([python,'-m','pip','install','--index-url','https://pypi.org/simple','-r',requirements],env=environment)
     wheels=PROJECT/'build/wheels';wheels.mkdir(parents=True,exist_ok=True)
     run([python,'-m','pip','wheel','--no-deps','--wheel-dir',wheels,PROJECT],env=environment)
-    wheel=wheels/'voice_memo_transcriber-0.1.0-py3-none-any.whl'
+    wheel=wheels/'voice_memo_transcriber-0.2.0-py3-none-any.whl'
     run([python,'-m','pip','install','--no-deps','--force-reinstall',wheel],env=environment)
     run([python,'-m','pip','check'],env=environment)
     for path in list(destination.rglob('direct_url.json')):path.unlink()

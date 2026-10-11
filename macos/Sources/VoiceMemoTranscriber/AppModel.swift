@@ -16,6 +16,11 @@ import ServiceManagement
     @Published var modelStatus = "모델 상태 확인 중"
     @Published var paused = false
     @Published var transcript: Transcript?
+    @Published var notes: RecordingNotes?
+    @Published var notesReadError: String?
+    @Published var detailMode = "transcript"
+    @Published var quoteRow: Int?
+    @Published var focusedQuote: String?
     @Published var transcriptIndex: [String:String] = [:]
     @Published var outputFolder = UserDefaults.standard.string(forKey: "outputFolder") ?? ""
     @Published var inputFolder = UserDefaults.standard.string(forKey: "inputFolder") ?? ""
@@ -51,7 +56,7 @@ import ServiceManagement
     var selected: Job? { jobs.first { $0.id == selection } }
     var visibleJobs: [Job] { jobs.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) || (transcriptIndex[$0.id] ?? "").localizedCaseInsensitiveContains(search) }.sorted { ($0.recorded_at ?? "") > ($1.recorded_at ?? "") } }
     var overallStatus: String {
-        if let j = jobs.first(where: { ["preparing", "transcribing", "aligning", "titling", "saving"].contains($0.status) }) { return "\(j.statusLabel) · \(j.progress)" }
+        if let j = jobs.first(where: { ["preparing", "transcribing", "aligning", "titling", "noting", "saving"].contains($0.status) }) { return "\(j.statusLabel) · \(j.progress)" }
         return "\(connection) · 대기 \(jobs.filter { ["waiting", "paused"].contains($0.status) }.count)개"
     }
     func start() {
@@ -106,6 +111,7 @@ import ServiceManagement
                     defer { brokerRequests.remove("publish:" + publication) }
                     do {
                         guard !outputFolder.isEmpty else { throw BrokerFailure("output_not_configured","설정에서 결과 폴더를 선택하세요. 로컬 결과는 보존됩니다.") }
+                        if sourceMode == "folder", !inputFolder.isEmpty { try FolderConnection.validate(input:URL(fileURLWithPath:inputFolder),output:URL(fileURLWithPath:outputFolder)) }
                         let receipt = try await publisher.publish(manifestPath:path,jobID:id,publicationID:publication,outputRoot:URL(fileURLWithPath:outputFolder))
                         command("publish_ack",["job_id":.string(id),"publication_id":.string(publication),"receipt":try .encoded(receipt)])
                     } catch { problem = error.localizedDescription; command("publish_ack",["job_id":.string(id),"publication_id":.string(publication),"error":brokerError(error)]) }
@@ -128,23 +134,44 @@ import ServiceManagement
         let root = stateRoot
         return try await Task.detached { let url = try Validation.owned(path, root: root); let data = try Data(contentsOf: url); return try JSONDecoder().decode(Transcript.self, from: data) }.value
     }
-    private func index(_ job: Job) async { if let path = job.artifact_path, let result = try? await readTranscript(path) { transcriptIndex[job.id] = result.text } }
+    private func readNotes(_ path: String, text: String) async throws -> RecordingNotes {
+        let root = stateRoot
+        return try await Task.detached {
+            let url = try Validation.owned(path,root:root)
+            let data = try Data(contentsOf:url)
+            guard data.count <= WireCodec.limit else { throw NativeFailure.invalid("노트 파일이 너무 큽니다.") }
+            return try NotesDisplay.validated(JSONDecoder().decode(RecordingNotes.self,from:data),text:text)
+        }.value
+    }
+    private func index(_ job: Job) async {
+        guard let path = job.artifact_path, let result = try? await readTranscript(path) else { return }
+        var text = result.text
+        if let path = job.notes_path, let note = try? await readNotes(path,text:result.text) { text += "\n" + NotesDisplay.markdown(note,title:job.title) }
+        transcriptIndex[job.id] = text
+    }
     private func indexTranscripts() async { for job in jobs { await index(job) } }
     private func loadDemoSelection() {
-        guard let job = selected else { return }; transcript = DemoContent.transcript(for:job.id); topic = job.topic ?? ""; dateInput = job.recording_date ?? ""; currentTime = 0; audioDuration = 0
+        guard let job = selected else { return }; transcript = DemoContent.transcript(for:job.id); notes = DemoContent.notes(for:job.id); quoteRow = nil; focusedQuote = nil; topic = job.topic ?? ""; dateInput = job.recording_date ?? ""; currentTime = 0; audioDuration = 0
     }
     func loadSelection() async {
         if DemoContent.enabled { loadDemoSelection(); return }
         let token = UUID(); loadID = token
-        guard let job = selected else { player?.stop(); player = nil; loadedAudioKey = nil; loadedSelection = nil; transcript = nil; playing = false; return }
+        guard let job = selected else { player?.stop(); player = nil; loadedAudioKey = nil; loadedSelection = nil; transcript = nil; notes = nil; notesReadError = nil; playing = false; return }
         if loadedSelection != job.id {
-            player?.stop(); player = nil; loadedAudioKey = nil; playing = false; currentTime = 0; audioDuration = 0; transcript = nil
+            player?.stop(); player = nil; loadedAudioKey = nil; playing = false; currentTime = 0; audioDuration = 0; transcript = nil; notes = nil; notesReadError = nil; quoteRow = nil; focusedQuote = nil
             topic = job.topic ?? ""; dateInput = job.recording_date ?? ""; loadedSelection = job.id
         }
-        if let path = job.artifact_path { do { let value = try await readTranscript(path); guard loadID == token else { return }; transcript = value } catch { problem = error.localizedDescription } }
+        if let path = job.artifact_path {
+            do { let value = try await readTranscript(path); guard loadID == token else { return }; transcript = value }
+            catch { guard loadID == token else { return }; transcript = nil; notes = nil; problem = error.localizedDescription }
+        } else { transcript = nil; notes = nil; quoteRow = nil; focusedQuote = nil }
+        if let path = job.notes_path, let transcript {
+            do { let value = try await readNotes(path,text:transcript.text); guard loadID == token else { return }; notes = value; notesReadError = nil }
+            catch { guard loadID == token else { return }; notes = nil; notesReadError = error.localizedDescription }
+        } else { notes = nil; notesReadError = nil }
         if let path = job.playback_path {
             guard loadedAudioKey != job.id + ":" + path else { return }
-            do { let url = try Validation.owned(path, root: stateRoot); let data = try await Task.detached { try Data(contentsOf: url) }.value; guard loadID == token else { return }; player = try AVAudioPlayer(data: data); audioDuration = player?.duration ?? 0; loadedAudioKey = job.id + ":" + path } catch { problem = "오디오를 열지 못했습니다: \(error.localizedDescription)" }
+            do { let url = try Validation.owned(path, root: stateRoot); let data = try await Task.detached { try Data(contentsOf: url) }.value; guard loadID == token else { return }; player = try AVAudioPlayer(data: data); audioDuration = player?.duration ?? 0; loadedAudioKey = job.id + ":" + path } catch { guard loadID == token else { return }; problem = "오디오를 열지 못했습니다: \(error.localizedDescription)" }
         } else {
             player?.stop(); player = nil; loadedAudioKey = nil; playing = false; currentTime = 0; audioDuration = 0
         }
@@ -177,9 +204,17 @@ import ServiceManagement
                     sourceDiagnostic = NSRunningApplication.runningApplications(withBundleIdentifier:"com.apple.VoiceMemos").isEmpty ? "음성 메모 연결됨 · 새 녹음은 자동 처리합니다." : "Mac 음성 메모가 열려 있습니다. 다운로드를 마친 뒤 음성 메모를 종료하면 전사를 시작합니다."
                     command("discover",["memos":try .encoded(memos)])
                 } else if !inputFolder.isEmpty {
-                    for url in try await watcher.stableFiles(in:URL(fileURLWithPath:inputFolder)) {
-                        _ = try await imports.importFile(url); await watcher.accepted(url)
+                    if !outputFolder.isEmpty { try FolderConnection.validate(input:URL(fileURLWithPath:inputFolder),output:URL(fileURLWithPath:outputFolder)) }
+                    let scan = try await watcher.scan(in:URL(fileURLWithPath:inputFolder))
+                    var failures = 0
+                    for url in scan.files {
+                        do { _ = try await imports.importFile(url); await watcher.accepted(url) }
+                        catch { failures += 1; if (error as? BrokerFailure)?.code == "invalid_media" { await watcher.rejected(url) } }
                     }
+                    let waiting = scan.waitingForDownload > 0 ? " · 다운로드 대기 \(scan.waitingForDownload)개 (Finder에서 오프라인 사용을 켜세요)" : ""
+                    let changing = scan.changingCount > 0 ? " · 안정화 대기 \(scan.changingCount)개" : ""
+                    let invalid = scan.unavailableCount + failures > 0 ? " · 가져오기 불가 \(scan.unavailableCount + failures)개" : ""
+                    sourceDiagnostic = "폴더 연결됨" + waiting + changing + invalid
                     await deliverPendingImports()
                 }
             } catch { let message = (error as? BrokerFailure)?.message ?? "입력 폴더를 읽지 못했습니다. 설정과 접근 권한을 확인하세요."; sourceDiagnostic = message; problem = message }
@@ -190,6 +225,10 @@ import ServiceManagement
     func chooseFolder(output: Bool) { guard !DemoContent.enabled else { return };
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = output
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            if output, sourceMode == "folder", !inputFolder.isEmpty { try FolderConnection.validate(input:URL(fileURLWithPath:inputFolder),output:url) }
+            if !output, !outputFolder.isEmpty { try FolderConnection.validate(input:url,output:URL(fileURLWithPath:outputFolder)) }
+        } catch { problem = error.localizedDescription; return }
         if output { outputFolder = url.path; UserDefaults.standard.set(url.path, forKey: "outputFolder"); for job in jobs where job.status == "saving" { command("retry",["job_id":.string(job.id)]) } } else { inputFolder = url.path; UserDefaults.standard.set(url.path, forKey: "inputFolder"); scanSources(force:true) }
     }
     func importFiles(_ urls: [URL]) { guard !DemoContent.enabled else { return };
@@ -200,6 +239,21 @@ import ServiceManagement
         }
     }
     func chooseFiles() { let panel = NSOpenPanel(); panel.allowsMultipleSelection = true; panel.canChooseDirectories = false; if panel.runModal() == .OK { importFiles(panel.urls) } }
+    var canGenerateNotes: Bool { transcript != nil && selected?.artifact_path != nil && selected.map { ["completed","needs_recording_date","failed"].contains($0.status) } == true }
+    func generateNotes() { guard let job = selected, canGenerateNotes else { return }; command("generate_notes",["job_id":.string(job.id)]) }
+    func revealQuote(_ quote: String) {
+        guard let transcript, let target = NotesDisplay.quoteTarget(quote,in:transcript) else { return }
+        focusedQuote = quote; quoteRow = target.row; detailMode = "transcript"
+        if let timing = target.timing { seek(timing.start_s) }
+    }
+    func copyNotes() { guard let notes, let job = selected else { return }; NSPasteboard.general.clearContents(); NSPasteboard.general.setString(NotesDisplay.markdown(notes,title:job.title),forType:.string) }
+    func exportNotes() {
+        guard let notes, let job = selected else { return }
+        let panel = NSSavePanel(); panel.nameFieldStringValue = job.title.replacingOccurrences(of:"/",with:"_") + " 노트.md"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let text = NotesDisplay.markdown(notes,title:job.title)
+        Task { do { try await Task.detached { try text.write(to:url,atomically:true,encoding:.utf8) }.value } catch { problem = error.localizedDescription } }
+    }
     func copyTranscript() { guard let transcript else { return }; NSPasteboard.general.clearContents(); NSPasteboard.general.setString(transcript.text, forType: .string) }
     func export(_ format: String) {
         guard let job = selected, let transcript else { return }

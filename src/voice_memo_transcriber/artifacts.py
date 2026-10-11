@@ -30,10 +30,15 @@ def subtitle_time(seconds,vtt=False):
     millis=round(seconds*1000); h,m=divmod(millis//1000,3600); m,s=divmod(m,60)
     return f'{h:02d}:{m:02d}:{s:02d}{"." if vtt else ","}{millis%1000:03d}'
 
-def build_publication(root,job,transcript,models):
+def build_publication(root,job,transcript,models,notes=None):
     title=display_title(job['topic'],job['recording_date'])
     revision={'number':job['revision'],'pcm_hash':job['pcm_hash'],'models':models,'recorded_at':job.get('recorded_at'),'date_provenance':job.get('date_provenance'),'original_timezone':job.get('original_timezone')}
-    identity=json.dumps([job['uuid'],revision,title,transcript],sort_keys=True,ensure_ascii=False).encode()
+    identity_parts=[job['uuid'],revision,title,transcript]
+    if notes is not None:
+        from .notes import validate_notes
+        notes=validate_notes(notes,transcript['text'])
+        identity_parts.append(notes)
+    identity=json.dumps(identity_parts,sort_keys=True,ensure_ascii=False).encode()
     publication_id=hashlib.sha256(identity).hexdigest()
     directory=Path(root)/'artifacts'/job['id']/'versions'/publication_id
     manifest_path=directory/'manifest.json'
@@ -46,6 +51,10 @@ def build_publication(root,job,transcript,models):
     if transcript['alignment_status']=='completed' and transcript['segments']:
         contents[title+'.srt']='\n\n'.join(f'{i+1}\n{subtitle_time(s["start_s"])} --> {subtitle_time(s["end_s"])}\n{s["text"]}' for i,s in enumerate(transcript['segments']))+'\n'
         contents[title+'.vtt']='WEBVTT\n\n'+'\n\n'.join(f'{subtitle_time(s["start_s"],True)} --> {subtitle_time(s["end_s"],True)}\n{s["text"]}' for s in transcript['segments'])+'\n'
+    if notes is not None:
+        from .notes import notes_markdown
+        contents[title+' 노트.md']=notes_markdown(title,notes)
+        contents[title+' 노트.json']=json.dumps(notes,ensure_ascii=False,allow_nan=False)+'\n'
     files=[]
     for name,content in contents.items():
         path=directory/name

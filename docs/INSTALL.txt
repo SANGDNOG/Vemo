@@ -13,7 +13,15 @@ Vemo — Apple Silicon preview
 
 Requirements: Apple Silicon, macOS 26.2+, 16 GB RAM recommended, approximately
 8.8 GB for model weights plus app, audio copies and generated results.
-Models are downloaded on demand; audio is transcribed locally.
+Models are downloaded on demand; audio, titles and notes are processed locally.
+
+For Google Drive, Dropbox or OneDrive, select actual Mac-synced folders:
+Vemo/Recordings for input and Vemo/Notes for output. Keep input audio available
+offline. Share recordings from iPhone Voice Memos to the input folder. Vemo
+saves transcripts and cited note Markdown in the local output folder; your
+Drive sync app handles uploads. Input and output must be separate folders.
+Click Notes to view the summary, original highlights and keyword groups.
+Older completed transcripts can generate notes without transcribing again.
 
 사용법과 예시: https://github.com/SANGDNOG/Vemo
 배포 파일: https://github.com/SANGDNOG/Vemo/releases

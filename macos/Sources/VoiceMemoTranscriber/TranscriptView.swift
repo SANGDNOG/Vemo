@@ -14,7 +14,7 @@ struct TranscriptView: View {
             if job.status == "needs_recording_date" || job.recording_date == nil {
                 HStack { TextField("녹음 시작일 YYYY-MM-DD", text: $model.dateInput).textFieldStyle(.roundedBorder); Button("날짜 확인") { model.setDate() } }.help("파일 수정일 대신 실제 녹음 시작일을 입력하세요.")
             }
-            if editingTopic { HStack { TextField("주제만 수정", text: $model.topic).textFieldStyle(.roundedBorder); Button("저장") { model.retitle(generate: false); editingTopic = false }; Button("취소") { editingTopic = false } }; Text("날짜 suffix는 녹음 시작일로 유지됩니다.").font(.caption).foregroundStyle(.secondary) }
+            if editingTopic { HStack { TextField("주제만 수정", text: $model.topic).textFieldStyle(.roundedBorder); Button("저장") { model.retitle(generate: false); editingTopic = false }; Button("취소") { editingTopic = false } }; Text("녹음일은 그대로 유지됩니다.").font(.caption).foregroundStyle(.secondary) }
             if job.status != "completed" { stage }
             if model.audioDuration > 0 {
                 HStack { Button { model.togglePlayback() } label: { Image(systemName: model.playing ? "pause.fill" : "play.fill") }.accessibilityLabel(model.playing ? "일시 정지" : "재생")
@@ -22,33 +22,41 @@ struct TranscriptView: View {
                     Text("\(clock(model.currentTime)) / \(clock(model.audioDuration))").font(.caption.monospacedDigit())
                 }
             }
+            Picker("보기",selection:$model.detailMode) { Text("전사").tag("transcript"); Text("노트").tag("notes") }.pickerStyle(.segmented).frame(width:200)
             Divider()
+            if model.detailMode == "notes" { NotesView(model:model,job:job) }
+            else {
             if let transcript = model.transcript {
                 if transcript.alignment_status != "completed" && transcript.alignment_status != "success" { Text("시간 정렬이 완료되지 않아 정밀 구간 이동과 자막 내보내기가 제한됩니다.").font(.caption).foregroundStyle(.secondary) }
                 if job.status != "completed" { Text("처리 중 결과 · 최종 게시 전").font(.caption).foregroundStyle(.secondary) }
+                ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 18) {
-                        ForEach(Array(TranscriptDisplay.rows(transcript).enumerated()), id: \.offset) { _, row in
+                        ForEach(Array(TranscriptDisplay.rows(transcript).enumerated()), id: \.offset) { index, row in
                             HStack(alignment: .top, spacing: 16) {
                                 if let timing = row.timing {
                                     Button(clock(timing.start_s)) { model.seek(timing.start_s) }.buttonStyle(.plain).font(.caption.monospacedDigit()).foregroundStyle(.tint)
                                 }
                                 Text(row.text).font(.body).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
-                            }
+                            }.padding(.vertical,4).padding(.horizontal,6).background(model.quoteRow == index ? Color.yellow.opacity(0.15) : Color.clear,in:RoundedRectangle(cornerRadius:6)).id(index)
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
                 }
+                .onAppear { if let row = model.quoteRow { proxy.scrollTo(row,anchor:.center) } }
+                .onChange(of:model.quoteRow) { _,row in if let row { withAnimation { proxy.scrollTo(row,anchor:.center) } } }
+                }
                 HStack {
                     Button("복사", systemImage: "doc.on.doc") { model.copyTranscript() }
-                    Menu("내보내기") { Button("텍스트 (.txt)") { model.export("txt") }; Button("Markdown (.md)") { model.export("md") }; if ["completed", "success"].contains(transcript.alignment_status) { Button("자막 (.srt)") { model.export("srt") }; Button("자막 (.vtt)") { model.export("vtt") } } }
+                    Menu("내보내기") { Button("텍스트 (.txt)") { model.export("txt") }; Button("Markdown (.md)") { model.export("md") }; if ["completed", "success"].contains(transcript.alignment_status) { Button("자막 (.srt)") { model.export("srt") }; Button("자막 (.vtt)") { model.export("vtt") } } }.fixedSize()
                     Button("결과 폴더", systemImage: "folder") { model.openResultFolder() }.disabled(job.status != "completed")
                 }
             } else { Spacer(); ContentUnavailableView("아직 전사문이 없습니다", systemImage: "text.alignleft", description: Text(job.status == "unprocessed" ? "전사하기를 눌러 이 녹음을 처리하세요." : "단계가 진행되면 원문을 여기에서 확인할 수 있습니다.")); Spacer() }
+            }
         }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
     var stage: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack { if ["preparing", "transcribing", "aligning", "titling", "saving"].contains(job.status) { ProgressView().controlSize(.small) }; Text(job.statusLabel + (job.progress.isEmpty ? "" : " · " + job.progress)); Spacer(); Text("경과 \(clock(job.elapsed_seconds))").font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
+            HStack { if ["preparing", "transcribing", "aligning", "titling", "noting", "saving"].contains(job.status) { ProgressView().controlSize(.small) }; Text(job.statusLabel + (job.progress.isEmpty ? "" : " · " + job.progress)); Spacer(); Text("경과 \(clock(job.elapsed_seconds))").font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
             if let reason = job.wait_reason { Text(waitReason(reason)).font(.caption).foregroundStyle(.secondary) }
             if let error = job.error, error != .null { Text(error.string ?? error.object?["message"]?.string ?? "처리 실패").foregroundStyle(.red).textSelection(.enabled) }
             HStack { if job.status == "unprocessed" { Button("전사하기") { model.command("enqueue", ["uuids": .array([.string(job.uuid)])]) } }; if ["failed", "waiting", "paused"].contains(job.status) { Button("다시 시도") { model.command("retry", ["job_id": .string(job.id)]) } } }

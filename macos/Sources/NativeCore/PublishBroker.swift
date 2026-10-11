@@ -14,7 +14,7 @@ public actor PublishBroker {
         guard Set(m.files.map(\.name)).count == m.files.count else { throw conflict() }
         for f in m.files {
             _ = try Validation.component(f.name)
-            guard f.name != "manifest.json", !f.name.hasPrefix("."), ["txt", "md", "srt", "vtt"].contains(URL(fileURLWithPath:f.name).pathExtension),
+            guard f.name != "manifest.json", !f.name.hasPrefix("."), ["txt", "md", "srt", "vtt", "json"].contains(URL(fileURLWithPath:f.name).pathExtension),
                   f.sha256.range(of: "^[a-f0-9]{64}$", options:.regularExpression) != nil else { throw conflict() }
         }
         return m

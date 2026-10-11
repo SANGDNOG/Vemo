@@ -21,7 +21,7 @@ Both languages were preserved in this short synthetic example. Alignment produce
 
 ## Documentation images
 
-The three README images were captured from the actual SwiftUI app in a separate demo bundle. The source fixture is `DemoContent.swift`; no personal audio, transcript or Apple database was used. Displayed progress is static explanatory data, not a timing measurement.
+The three initial README images were captured from the actual SwiftUI app in a separate demo bundle. The source fixture is `DemoContent.swift`; no personal audio, transcript or Apple database was used. Displayed progress is static explanatory data, not a timing measurement.
 
 ## Limits
 
@@ -32,3 +32,15 @@ The three README images were captured from the actual SwiftUI app in a separate 
 - No reference-transcript WER, diarization or cross-model benchmark. Korean-priority ASR may need further evaluation on English-heavy recordings.
 - AVFoundation codec support applies. The native helper writes standard RIFF WAV, with a 4 GiB PCM limit.
 - Recorded-date conversion uses Asia/Seoul when the source has no original timezone. Files lacking a trusted date require user entry.
+
+
+## 0.2 local development checks (2026-10-11)
+
+This feature branch adds notes and provider-independent synchronized folders. The public 0.1 release remains unchanged.
+
+- Native UI/source/publication: **135 assertions passed**, including fabricated citations, source hash mismatch, repeated/overlapping quote timing, legacy Job decoding, dataless/iCloud readiness, folder stability and a six-file note-inclusive publication/replay. Case-insensitive aliases to not-yet-created output folders are rejected.
+- Native runtime/audio: **27 assertions passed**. Existing audio handling remains covered.
+- Deterministic selection regression copies the actual `loadSelection` method into a controlled read-boundary harness: both successful and failed obsolete reads preserve the current selection, and clearing the current artifact clears the prior transcript. It was observed failing before correction, then passed.
+- Two new images (`notes.jpg`, `drive-settings.jpg`) were captured from the actual separate demo app with synthetic fixtures. Keyword filtering and citation-to-transcript navigation were inspected through the native UI. They are explanatory data, not model accuracy results.
+- Real Drive-provider upload, account login, offline-pinning behavior and iPhone arrival have not been validated end-to-end. Generic local-file transport and availability decisions are covered; Vemo's completed output receipt confirms local durability only.
+- The generated summaries are model judgments. Matching quotes are byte/source checks, not proof that every summary interpretation is supported or that every important subject is included.

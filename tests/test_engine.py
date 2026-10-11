@@ -138,7 +138,9 @@ class EngineTests(unittest.TestCase):
         self.drain(lambda:self.job(m['uuid']).get('publication_id') is not None)
         j=self.job(m['uuid']);tr=json.loads(pathlib.Path(j['artifact_path']).read_text());self.assertEqual(tr['text'],'한국어 English 42')
         self.assertEqual(j['alignment_status'],'failed');self.assertEqual(j['title_status'],'fallback');self.assertEqual(j['topic'],'음성 녹음')
-        manifest=json.loads(pathlib.Path(j['manifest_path']).read_text());self.assertEqual(len(manifest['files']),2)
+        manifest=json.loads(pathlib.Path(j['manifest_path']).read_text());self.assertEqual(len(manifest['files']),4)
+        self.assertEqual({pathlib.Path(f['name']).suffix for f in manifest['files']},{'.txt','.md','.json'})
+        self.assertEqual(j['notes_status'],'completed')
     def test_pause_mid_chunk_commits_once_and_restart_resumes_next(self):
         self.engine();self.send('import',{'memo':memo('long')});self.e.tick();self.snapshot(self.job('long'),[2]*16000*301)
         self.drain(lambda:self.e.active is not None and self.e.active['op']=='asr')

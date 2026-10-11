@@ -5,7 +5,7 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("연결") {
-                Picker("입력", selection: $model.sourceMode) { Text("음성 메모 직접 읽기").tag("voice_memos"); Text("공유한 파일 폴더").tag("folder") }
+                Picker("입력", selection: $model.sourceMode) { Text("음성 메모 직접 읽기").tag("voice_memos"); Text("Drive · 파일 폴더").tag("folder") }
                     .onChange(of: model.sourceMode) { _, value in UserDefaults.standard.set(value, forKey: "sourceMode"); model.scanSources(force:true) }
                 if model.sourceMode == "voice_memos" {
                     Text("직접 읽기에는 앱의 전체 디스크 접근 권한과 지원되는 저장소 형식이 필요합니다. 원본은 읽기 전용입니다.").font(.caption).foregroundStyle(.secondary)
@@ -13,16 +13,16 @@ struct SettingsView: View {
                     Button("접근 상태 확인") { model.checkPermissions() }
                 } else {
                     HStack { Text(model.inputFolder.isEmpty ? "입력 폴더를 선택하세요" : model.inputFolder).lineLimit(2); Spacer(); Button("선택") { model.chooseFolder(output: false) } }
-                    Text("폰에서 공유 → 파일에 저장한 녹음을 가져옵니다. 녹음일을 모르면 확인이 필요합니다.").font(.caption).foregroundStyle(.secondary)
+                    Text("iPhone 음성 메모 → 공유 → Drive의 입력 폴더에 저장하세요. Mac에서는 해당 폴더를 동기화하고 오프라인 사용을 켭니다. 녹음일이 없으면 직접 확인합니다.").font(.caption).foregroundStyle(.secondary)
                 }
                 HStack { Text(model.outputFolder.isEmpty ? "결과 폴더를 선택하세요" : model.outputFolder).lineLimit(2); Spacer(); Button("결과 폴더 선택") { model.chooseFolder(output: true) } }
                 if let problem = model.sourceDiagnostic ?? model.problem { Text(problem).font(.callout).foregroundStyle(.orange).textSelection(.enabled) }
-                Text("iCloud Drive의 Voice Transcripts 폴더를 선택하면 파일 앱에서 읽을 수 있습니다. 폰 도착은 별도 확인이 필요합니다.").font(.caption).foregroundStyle(.secondary)
+                Text("iCloud Drive · Google Drive · Dropbox · OneDrive의 Mac 동기화 폴더를 선택할 수 있습니다. 같은 Drive 안에 Recordings(입력)와 Notes(결과)를 따로 두세요. 결과는 로컬 폴더에 저장하며 폰으로의 업로드는 Drive 앱이 진행합니다.").font(.caption).foregroundStyle(.secondary)
                 HStack { Text(model.connection); Spacer(); Button("다시 연결") { model.connect() } }
             }
             Section("모델") {
                 Text(model.modelStatus)
-                Text("ASR: Qwen3-ASR-1.7B · 정렬: Qwen3-ForcedAligner-0.6B\n제목: Qwen3-4B-Instruct-2507-4bit").font(.caption).foregroundStyle(.secondary)
+                Text("ASR: Qwen3-ASR-1.7B · 정렬: Qwen3-ForcedAligner-0.6B\n제목 · 노트: Qwen3-4B-Instruct-2507-4bit").font(.caption).foregroundStyle(.secondary)
                 Button("모델 다운로드 / 재개") { model.command("download_models") }
                 Text("최초 다운로드에 네트워크와 저장 공간이 필요합니다. 처리할 때는 로컬 모델을 사용합니다.").font(.caption).foregroundStyle(.secondary)
             }
