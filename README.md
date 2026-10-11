@@ -6,9 +6,9 @@
 
 Vemo는 Apple Silicon Mac에서 한국어 중심의 음성을 전사하는 로컬 앱입니다. 영어가 섞인 녹음도 처리하며, 문장·문단으로 정리한 전사문, **내용 기반 제목 + 녹음일**, **핵심 요약·강조 문장·키워드별 노트**를 제공합니다. iPhone에서는 기본 **음성 메모와 파일 앱**을 사용합니다.
 
-> 0.2 프리뷰에 노트 정리, Drive 폴더 연결, 녹음 폴더 관리와 보라색 UI를 포함했습니다. preview.2에서는 상단·노트 정렬, 버튼 클릭 영역과 일시 중지된 작업의 재개를 개선하고 긴 노트 응답의 형식 처리를 보완했습니다.
+> 0.2 프리뷰에 노트 정리, Drive 폴더 연결, 녹음 폴더 관리와 보라색 UI를 포함했습니다. preview.2에서는 버튼 클릭 영역과 일시 중지된 작업의 재개를 개선했습니다. preview.3에서는 상단 바와 라이브러리의 칸 경계가 이어지도록 배경을 정리했습니다.
 
-**[프리뷰 DMG 다운로드](https://github.com/SANGDNOG/Vemo/releases/tag/v0.2.0-preview.2)** · [설치 안내](docs/INSTALL.txt) · [라이선스](LICENSE)
+**[프리뷰 DMG 다운로드](https://github.com/SANGDNOG/Vemo/releases/tag/v0.2.0-preview.3)** · [설치 안내](docs/INSTALL.txt) · [라이선스](LICENSE)
 
 > 현재 배포는 Developer ID 서명·Apple 공증이 없는 프리뷰입니다. macOS의 최초 실행 허용이 필요할 수 있습니다. 다른 실제 Mac에서의 검증은 아직 진행하지 않았습니다.
 
@@ -37,7 +37,7 @@ Vemo는 Apple Silicon Mac에서 한국어 중심의 음성을 전사하는 로�
 
 ## 설치와 첫 실행
 
-1. [Releases](https://github.com/SANGDNOG/Vemo/releases)에서 `Vemo-0.2.0-preview.2-arm64.dmg`를 내려받습니다.
+1. [Releases](https://github.com/SANGDNOG/Vemo/releases)에서 `Vemo-0.2.0-preview.3-arm64.dmg`를 내려받습니다.
 2. DMG를 열고 **Vemo.app → Applications**로 드래그합니다.
 3. Vemo를 실행합니다. macOS가 차단하면 **시스템 설정 → 개인정보 보호 및 보안 → 차단된 Vemo의 ‘확인 없이 열기’**에서 실행을 허용합니다. 이후 표시되는 열기 확인도 승인합니다. Gatekeeper를 끌 필요는 없습니다.
 4. **Vemo → 설정…**에서 **모델 다운로드 / 재개**를 누릅니다. 다운로드 완료 후 로컬에서 처리합니다.

@@ -102,3 +102,20 @@ Installed build6 preserved Full Disk Access in a fresh diagnostic at `2026-10-11
 Final public build6 passed strict deep signing, DMG verification/read-only mount, Applications link and installation-notice checks. Every bundled engine source module matched the final project source. Bundled engine/MLX imports and the synthetic terminal-repair/missing-closure rejection checks passed outside the project with system-only PATH.
 
 Artifact: `Vemo-0.2.0-preview.2-arm64.dmg`, app version `0.2.0`, build `6`, public ID `io.github.sangdnog.vemo`. Size: **290199679 bytes**. SHA-256: `53163590d3b4f7591d3cd0129cd8ca60c29f3ff14440496cf6eb29b694cdf5e3`. Developer ID/notarization, another physical Mac and real Drive/iPhone delivery remain unverified. Prior releases are preserved.
+
+
+## 0.2 preview.3 column-boundary correction (2026-10-11)
+
+The user clarified that the remaining mismatch was the width/boundary of the toolbar's sidebar section versus the library pane below. Earlier control/inset checks did not establish this alignment. An initial build7 adjusted title and button insets instead; it was installed temporarily, then rejected by the user and superseded. It was never released publicly.
+
+A temporary synthetic-only native geometry probe showed a 290pt sidebar and a 1pt divider, while AppKit's detail titlebar background began at x=288pt and its 5pt blocking region overlapped the divider. The final change hides only the toolbar background with the supported SwiftUI API, allowing the full-height split panes to supply a continuous boundary. Toolbar controls remain native. The probe and its attachment were removed before packaging; no private AppKit view manipulation is shipped.
+
+A fresh profile also reproduced a 144pt initial sidebar despite the declared 250–420pt column range. An explicit sidebar frame minimum now enforces 250pt. A fresh final demo showed 250pt with an intact library header; the existing installed profile retained 264pt. CUA screenshots of both final views showed a continuous boundary from the toolbar through the library. Installed hide/show restored the sidebar and its original width. These checks ran at the default 1040×720pt window size; the final build was not checked on another display or physical Mac. The earlier narrow-window check applied to the superseded build7 and is not final-build evidence.
+
+Independent source review found no blocking API/layout issue and confirmed probe removal; it did not independently run the UI. The final product patch changes only LibraryView layout. Python, NativeCore and processing behavior are unchanged from preview.2, whose 76-test Python and 223-assertion native results remain prior evidence; these suites were not repeated for this layout-only correction.
+
+Local/public build8 and strict deep signatures passed. The local designated requirement exactly matches the prior installed app. A fresh installed diagnostic at `2026-10-11T13:59:02Z` returned `supported_schema`, `schema_verified=true`, without Full Disk Access re-registration. Policy remained `paused=false`, `ac_only=false`, with 5 completed jobs and 9 historical unprocessed jobs. The two unresolved long-note failures remain; this update does not retry or correct them.
+
+The DMG passed verification and read-only mount checks, version/build/public-ID checks, binary equality with the public app, Applications link/notices, all 14 bundled engine source modules matching project source, and bundled engine/MLX imports outside the project with system-only PATH. The image was ejected.
+
+Artifact: `Vemo-0.2.0-preview.3-arm64.dmg`, version `0.2.0`, build `8`, size **288051590 bytes**. SHA-256: `58b8c7e9c769494cdc0d48cc361f04441884c494ffd715ffc31136305ce64231`. The new transcript example uses only synthetic fixtures; other gallery images remain examples from preview.2. Developer ID/notarization, second-Mac installation and real Drive/iPhone delivery remain unverified.

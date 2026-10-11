@@ -30,7 +30,8 @@ struct LibraryView: View {
                             .contextMenu { RecordingFolderMenu(model: model, jobID: job.id) }
                     }.listStyle(.sidebar)
                 }
-            }.navigationSplitViewColumnWidth(min: 250, ideal: 290, max: 420)
+            }.frame(minWidth: 250, idealWidth: 290)
+                .navigationSplitViewColumnWidth(min: 250, ideal: 290, max: 420)
                 .toolbar(removing: .sidebarToggle)
                 .toolbar {
                     if columnVisibility != .detailOnly {
@@ -45,6 +46,8 @@ struct LibraryView: View {
             else { onboarding }
         }
         .toolbar(removing: .sidebarToggle)
+        // Let the full-height split panes draw one continuous column boundary.
+        .toolbarBackground(.hidden, for: .windowToolbar)
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 if columnVisibility == .detailOnly { sidebarToggle }
