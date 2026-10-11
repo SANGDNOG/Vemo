@@ -6,7 +6,7 @@
 
 Vemo는 Apple Silicon Mac에서 한국어 중심의 음성을 전사하는 로컬 앱입니다. 영어가 섞인 녹음도 처리하며, 문장·문단으로 정리한 전사문과 **내용 기반 제목 + 녹음일**을 제공합니다. iPhone에서는 기본 **음성 메모와 파일 앱**을 사용합니다.
 
-**[프리뷰 DMG 다운로드](https://github.com/SANGDNOG/Vemo/releases/latest)** · [설치 안내](docs/INSTALL.txt) · [라이선스](LICENSE)
+**[프리뷰 DMG 다운로드](https://github.com/SANGDNOG/Vemo/releases/tag/v0.1.0-preview.1)** · [설치 안내](docs/INSTALL.txt) · [라이선스](LICENSE)
 
 > 현재 배포는 Developer ID 서명·Apple 공증이 없는 프리뷰입니다. macOS의 최초 실행 허용이 필요할 수 있습니다. 다른 실제 Mac에서의 검증은 아직 진행하지 않았습니다.
 
