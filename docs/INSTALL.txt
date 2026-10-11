@@ -1,0 +1,19 @@
+Vemo — Apple Silicon preview
+
+1. Drag Vemo.app into Applications.
+2. Open Vemo. This preview is not signed with an Apple Developer ID or notarized.
+   If macOS blocks first launch, open System Settings > Privacy & Security,
+   find the blocked Vemo entry and choose Open Anyway, then confirm Open.
+   Do not disable Gatekeeper or remove system security protections.
+3. In Vemo settings, download the models and select a result folder.
+4. For direct Apple Voice Memos access, add the installed Vemo.app to
+   Privacy & Security > Full Disk Access, then quit and reopen Vemo.
+   Direct database support has been checked on macOS 27.0.1 only.
+   On other versions, use Import or the shared-files folder option.
+
+Requirements: Apple Silicon, macOS 26.2+, 16 GB RAM recommended, approximately
+8.8 GB for model weights plus app, audio copies and generated results.
+Models are downloaded on demand; audio is transcribed locally.
+
+사용법과 예시: https://github.com/SANGDNOG/Vemo
+배포 파일: https://github.com/SANGDNOG/Vemo/releases

@@ -1,0 +1,7 @@
+{
+  "release": "20261009",
+  "asset": "cpython-3.12.15+20261009-aarch64-apple-darwin-pgo+lto-full.tar.zst",
+  "sha256": "e291d81a598012deacfd813710e37d3001e7b3b156207a26c772e13404cbe719",
+  "source": "https://github.com/astral-sh/python-build-standalone/releases/tag/20261009",
+  "purpose": "Unmodified upstream license files for standalone Python and embedded dependencies."
+}

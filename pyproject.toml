@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "voice-memo-transcriber"
+version = "0.1.0"
+description = "Local Voice Memo transcription engine"
+requires-python = ">=3.12"
+dependencies = ["mlx==0.32.3", "mlx-qwen3-asr[aligner]==0.4.4", "mlx-lm==0.32.0"]
+
+[project.optional-dependencies]
+test = ["pytest==9.1.1"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

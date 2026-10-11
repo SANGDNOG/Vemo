@@ -1,0 +1,14 @@
+.worktrees/
+.superpowers/
+.venv/
+.build/
+build/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.DS_Store
+local-validation/
+
+assets/*.iconset/
+dist/

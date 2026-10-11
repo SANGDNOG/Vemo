@@ -1,0 +1,7 @@
+# Direct runtime pins. Root records the resolved environment with pip freeze;
+# this file does not claim a transitive/hash-complete lock.
+mlx==0.32.3
+mlx-qwen3-asr[aligner]==0.4.4
+mlx-lm==0.32.0
+huggingface-hub==2.2.0
+pytest==9.1.1
