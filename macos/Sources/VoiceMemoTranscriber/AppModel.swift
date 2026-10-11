@@ -10,6 +10,12 @@ import ServiceManagement
     @Published var jobs: [Job] = []
     @Published var selection: String?
     @Published var search = ""
+    @Published var library = LibraryOrganization()
+    @Published var libraryFilter = "all"
+    @Published var libraryReady = false
+    @Published var libraryBusy = false
+    private var libraryWriteTask: Task<Void, Never>?
+    private lazy var libraryStore = LibraryFolderStore(root: stateRoot)
     @Published var connection = "엔진 연결 준비 중"
     @Published var problem: String?
     @Published var modelsReady = false
@@ -54,13 +60,53 @@ import ServiceManagement
     private var loadedAudioKey: String?
     private var loadedSelection: String?
     var selected: Job? { jobs.first { $0.id == selection } }
-    var visibleJobs: [Job] { jobs.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) || (transcriptIndex[$0.id] ?? "").localizedCaseInsensitiveContains(search) }.sorted { ($0.recorded_at ?? "") > ($1.recorded_at ?? "") } }
+    var visibleJobs: [Job] { LibraryQuery.visible(jobs, assignments: library.assignments, filter: libraryFilter, search: search, index: transcriptIndex) }
+    var libraryTitle: String { libraryFilter == "all" ? "전체 녹음" : libraryFilter == "unfiled" ? "미분류" : library.folders.first { $0.id == libraryFilter }?.name ?? "전체 녹음" }
+    func folderCount(_ filter: String) -> Int { LibraryQuery.visible(jobs, assignments: library.assignments, filter: filter, search: "", index: [:]).count }
+    func folderName(for jobID: String) -> String { library.folders.first { $0.id == library.assignments[jobID] }?.name ?? "미분류" }
+    func reconcileLibrarySelection() { if selection == nil || !visibleJobs.contains(where: { $0.id == selection }) { selection = visibleJobs.first?.id } }
+    func loadLibrary() {
+        let store = libraryStore
+        Task {
+            do {
+                var value = try await store.load()
+                if DemoContent.enabled && value.folders.isEmpty {
+                    value = try await store.create(name: "회의")
+                    if let folder = value.folders.first { value = try await store.assign(jobIDs: ["demo-completed", "demo-progress"], folderID: folder.id) }
+                    value = try await store.create(name: "강의")
+                }
+                if value.revision >= library.revision { library = value }
+                libraryReady = true; reconcileLibrarySelection()
+            } catch { libraryReady = false; problem = "폴더 분류를 읽지 못했습니다. 기존 분류 파일은 보존됩니다. " + error.localizedDescription }
+        }
+    }
+    private func changeLibrary(_ operation: @escaping @Sendable (LibraryFolderStore) async throws -> LibraryOrganization) {
+        guard libraryReady, !libraryBusy else { return }
+        libraryBusy = true
+        let store = libraryStore
+        libraryWriteTask = Task {
+            defer { libraryBusy = false }
+            do {
+                let value = try await operation(store)
+                if value.revision >= library.revision { library = value }
+                if libraryFilter != "all", libraryFilter != "unfiled", !library.folders.contains(where: { $0.id == libraryFilter }) { libraryFilter = "all" }
+                reconcileLibrarySelection()
+            } catch { problem = error.localizedDescription }
+        }
+    }
+    func flushLibraryChanges() async { await libraryWriteTask?.value }
+    func createLibraryFolder(_ name: String) { changeLibrary { try await $0.create(name: name) } }
+    func renameLibraryFolder(_ id: String, name: String) { changeLibrary { try await $0.rename(id: id, name: name) } }
+    func deleteLibraryFolder(_ id: String) {
+        changeLibrary { try await $0.delete(id: id) }
+    }
+    func moveRecording(_ jobID: String, to folderID: String?) { changeLibrary { try await $0.assign(jobIDs: [jobID], folderID: folderID) } }
     var overallStatus: String {
         if let j = jobs.first(where: { ["preparing", "transcribing", "aligning", "titling", "noting", "saving"].contains($0.status) }) { return "\(j.statusLabel) · \(j.progress)" }
         return "\(connection) · 대기 \(jobs.filter { ["waiting", "paused"].contains($0.status) }.count)개"
     }
     func start() {
-        guard !started else { return }; started = true
+        guard !started else { return }; started = true; loadLibrary()
         if DemoContent.enabled { jobs = DemoContent.jobs; selection = jobs.first?.id; connection = "예시 화면 · 실제 작업 아님"; modelsReady = true; modelStatus = "예시 화면 · 모델 다운로드 전"; loadDemoSelection(); return }; connect()
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in Task { @MainActor in self?.tick() } }
     }
@@ -87,9 +133,9 @@ import ServiceManagement
                 if let value = event.payload["jobs"] { jobs = try value.decoded([Job].self); await indexTranscripts() }
                 if let status = event.payload["engine_status"]?.object { updateEngine(status) }
                 let first = !connected; connected = true
-                connection = "로컬 엔진 연결됨"; if selection == nil { selection = jobs.first?.id }; await loadSelection(); if first { scanSources(force:true); await deliverPendingImports() }
+                connection = "로컬 엔진 연결됨"; reconcileLibrarySelection(); await loadSelection(); if first { scanSources(force:true); await deliverPendingImports() }
             case "job_changed":
-                if let value = event.payload["job"] { let job = try value.decoded(Job.self); if let i = jobs.firstIndex(where: { $0.id == job.id }) { jobs[i] = job } else { jobs.append(job) }; await index(job); if selection == nil { selection = job.id }; if selection == job.id { await loadSelection() } }
+                if let value = event.payload["job"] { let job = try value.decoded(Job.self); if let i = jobs.firstIndex(where: { $0.id == job.id }) { jobs[i] = job } else { jobs.append(job) }; await index(job); reconcileLibrarySelection(); if selection == job.id { await loadSelection() } }
             case "engine_status": updateEngine(event.payload["engine_status"]?.object ?? event.payload)
             case "model_progress":
                 modelStatus = ModelProgress.description(event.payload)
@@ -151,7 +197,7 @@ import ServiceManagement
     }
     private func indexTranscripts() async { for job in jobs { await index(job) } }
     private func loadDemoSelection() {
-        guard let job = selected else { return }; transcript = DemoContent.transcript(for:job.id); notes = DemoContent.notes(for:job.id); quoteRow = nil; focusedQuote = nil; topic = job.topic ?? ""; dateInput = job.recording_date ?? ""; currentTime = 0; audioDuration = 0
+        guard let job = selected else { transcript = nil; notes = nil; quoteRow = nil; focusedQuote = nil; return }; transcript = DemoContent.transcript(for:job.id); notes = DemoContent.notes(for:job.id); quoteRow = nil; focusedQuote = nil; topic = job.topic ?? ""; dateInput = job.recording_date ?? ""; currentTime = 0; audioDuration = 0
     }
     func loadSelection() async {
         if DemoContent.enabled { loadDemoSelection(); return }

@@ -11,6 +11,7 @@ func wave() -> Data {
         do { try await run() } catch { try? FileHandle.standardError.write(contentsOf: Data("FAIL: \(error.localizedDescription)\n".utf8)); exit(1) }
     }
     static func run() async throws {
+        if CommandLine.arguments.contains("--library-folder-checks") { try await libraryFolderChecks(); print("All library folder checks passed"); return }
         if CommandLine.arguments.contains("--runtime-audio-checks") { try runtimePathChecks(); try await audioNormalizationChecks(); print("All runtime/audio checks passed"); return }
         if CommandLine.arguments.contains("--transcript-display-checks") { try transcriptDisplayChecks(); print("All transcript display checks passed"); return }
         if CommandLine.arguments.contains("--playback-checks") { try playbackChecks(); print("All playback checks passed"); return }
@@ -41,6 +42,8 @@ func wave() -> Data {
         try check(try TranscriptExport.render(failed, title: "녹음", format: "txt").contains("보존한 원문"), "failed alignment preserves text export")
         try transcriptDisplayChecks()
         try notesChecks()
+        try await libraryFolderChecks()
+        try libraryQueryChecks()
         try await cloudFolderChecks()
         try playbackChecks()
         guard CommandLine.arguments.contains("--broker-checks") else { print("All UI/protocol native checks passed; broker checks require --broker-checks"); return }

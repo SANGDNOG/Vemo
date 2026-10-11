@@ -18,7 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !terminating else { return .terminateNow }; terminating = true
-        Task { await AppModel.shared.engine.shutdown(); NSApp.reply(toApplicationShouldTerminate: true) }; return .terminateLater
+        Task { await AppModel.shared.flushLibraryChanges(); await AppModel.shared.engine.shutdown(); NSApp.reply(toApplicationShouldTerminate: true) }; return .terminateLater
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { if !flag { sender.windows.first(where: { $0.canBecomeMain })?.makeKeyAndOrderFront(nil) }; return true }
 }
@@ -27,9 +27,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @StateObject private var model = AppModel.shared
     @Environment(\.openWindow) private var openWindow
     var body: some Scene {
-        WindowGroup("Vemo", id: "library") { LibraryView(model: model).frame(minWidth: 760, minHeight: 540).task { if !ProcessInfo.processInfo.arguments.contains("--diagnostic-only") { model.start() } } }.defaultSize(width: 1040, height: 720)
+        WindowGroup("Vemo", id: "library") { LibraryView(model: model).tint(VemoTheme.accent).buttonStyle(VemoButtonStyle()).frame(minWidth: 760, minHeight: 540).task { if !ProcessInfo.processInfo.arguments.contains("--diagnostic-only") { model.start() } } }.defaultSize(width: 1040, height: 720)
             .commands { CommandGroup(replacing: .newItem) { Button("파일 가져오기…") { model.chooseFiles() }.keyboardShortcut("o"); Button("앱 열기") { openWindow(id: "library"); NSApp.activate(ignoringOtherApps: true) } } }
-        Settings { SettingsView(model: model) }
+        Settings { SettingsView(model: model).tint(VemoTheme.accent).buttonStyle(VemoButtonStyle()) }
         MenuBarExtra("Vemo", systemImage: "waveform") {
             Text(model.overallStatus)
             Button("앱 열기") { openWindow(id: "library"); NSApp.activate(ignoringOtherApps: true) }

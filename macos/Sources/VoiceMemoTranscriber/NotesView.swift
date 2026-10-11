@@ -5,6 +5,7 @@ struct NotesView: View {
     @ObservedObject var model: AppModel
     let job: Job
     @ViewState private var keyword: String?
+    @Environment(\.accessibilityReduceMotion) private var reducedMotion
     var body: some View {
         VStack(alignment:.leading,spacing:14) {
             if let notes = model.notes {
@@ -19,7 +20,7 @@ struct NotesView: View {
                         }
                         section("강조 문장", icon:"highlighter") {
                             ForEach(Array(notes.highlights.enumerated()),id:\.offset) { _,item in
-                                quote(item.quote).padding(10).frame(maxWidth:.infinity,alignment:.leading).background(.yellow.opacity(0.10),in:RoundedRectangle(cornerRadius:8))
+                                quote(item.quote).padding(10).frame(maxWidth:.infinity,alignment:.leading).background(VemoTheme.wash,in:RoundedRectangle(cornerRadius:10))
                             }
                         }
                         section("키워드별 정리",icon:"number") {
@@ -38,15 +39,17 @@ struct NotesView: View {
                 }
                 HStack {
                     Button("노트 복사",systemImage:"doc.on.doc") { model.copyNotes() }
-                    Button("Markdown 내보내기") { model.exportNotes() }
+                    Menu("내보내기") {
+                        Button("Markdown (.md)") { model.exportNotes() }
+                        Button("결과 폴더 열기") { model.openResultFolder() }.disabled(job.status != "completed")
+                    }.vemoMenuSurface()
                     Spacer()
                     Button("다시 생성",systemImage:"arrow.clockwise") { model.generateNotes() }.disabled(!model.canGenerateNotes)
-                    Button("결과 폴더",systemImage:"folder") { model.openResultFolder() }.disabled(job.status != "completed")
                 }
             } else {
                 Spacer()
                 ContentUnavailableView(job.status == "noting" ? "노트를 정리하고 있습니다" : "이 녹음의 노트를 만들어 보세요",systemImage:"note.text",description:Text(model.notesReadError ?? (job.notes_status == "failed" ? "노트 생성에 실패했습니다. 원문은 보존되어 있으며 다시 생성할 수 있습니다." : "핵심 요약, 중요한 문장, 키워드별 내용을 Mac에서 정리합니다.")))
-                if model.canGenerateNotes { Button("노트 생성",systemImage:"sparkles") { model.generateNotes() }.buttonStyle(.borderedProminent).frame(maxWidth:.infinity) }
+                if model.canGenerateNotes { Button("노트 생성",systemImage:"sparkles") { model.generateNotes() }.buttonStyle(VemoButtonStyle(emphasis: .primary)).frame(maxWidth:.infinity) }
                 Spacer()
             }
         }.frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
@@ -64,6 +67,6 @@ struct NotesView: View {
         }.buttonStyle(.plain).help("전사 원문에서 확인")
     }
     func keywordButton(_ title:String,value:String?) -> some View {
-        Button { keyword = value } label: { Text(title).font(.caption).padding(.horizontal,10).padding(.vertical,5).background(keyword == value ? Color.accentColor.opacity(0.15) : Color.secondary.opacity(0.08),in:Capsule()) }.buttonStyle(.plain)
+        Button { withAnimation(VemoTheme.motion(reducedMotion)) { keyword = value } } label: { Text(title).font(.caption).padding(.horizontal,10).padding(.vertical,5).background(keyword == value ? VemoTheme.accent.opacity(0.14) : Color.secondary.opacity(0.08),in:Capsule()) }.buttonStyle(.plain).foregroundStyle(keyword == value ? VemoTheme.ink : Color.secondary).accessibilityAddTraits(keyword == value ? .isSelected : [])
     }
 }
