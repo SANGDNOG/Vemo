@@ -12,8 +12,8 @@ func libraryFolderChecks() async throws {
     let file = root.appendingPathComponent("native/library.json")
     let store = LibraryFolderStore(root: root)
     let empty = try await store.load()
-    try check(empty.schema_version == 1 && empty.revision == 0 && empty.folders.isEmpty && empty.assignments.isEmpty,
-              "missing library loads empty version one without writing")
+    try check(empty.schema_version == 2 && empty.revision == 0 && empty.folders.isEmpty && empty.assignments.isEmpty,
+              "missing library loads empty version two without writing")
     try check(!FileManager.default.fileExists(atPath: file.path), "load does not create library")
     let created = try await store.create(name: "  Work  ")
     try check(created.revision == 1 && created.folders.count == 1 && created.folders.first?.name == "Work",
@@ -60,7 +60,7 @@ func libraryFolderChecks() async throws {
               "mutation rereads valid external replacement")
     let badStates = [
         "{broken json\n",
-        #"{"schema_version":2,"revision":0,"folders":[],"assignments":{}}"#,
+        #"{"schema_version":3,"revision":0,"folders":[],"assignments":{}}"#,
         #"{"schema_version":1,"revision":-1,"folders":[],"assignments":{}}"#,
         #"{"schema_version":1,"revision":0,"folders":[{"id":"same","name":"A"},{"id":"same","name":"B"}],"assignments":{}}"#,
         #"{"schema_version":1,"revision":0,"folders":[{"id":"a","name":"A"},{"id":"b","name":"a"}],"assignments":{}}"#,

@@ -2,7 +2,7 @@
 set -euo pipefail
 project_root="$(cd "$(dirname "$0")/.." && pwd)"
 app_path="${1:-$project_root/dist/Vemo.app}"
-dmg_path="${2:-$project_root/dist/Vemo-0.2.0-preview.3-arm64.dmg}"
+dmg_path="${2:-$project_root/dist/Vemo-0.2.0-preview.4-arm64.dmg}"
 if [ -e "$dmg_path" ]; then
     printf '%s\n' "DMG destination exists: $dmg_path" >&2
     exit 1

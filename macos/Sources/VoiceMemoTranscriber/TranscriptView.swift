@@ -12,7 +12,7 @@ struct TranscriptView: View {
                 Spacer()
                 Menu { RecordingFolderMenu(model: model, jobID: job.id); Divider(); Button("주제 수정") { editingTopic = true }; Button("제목 다시 생성") { model.retitle(generate: true) } } label: { Image(systemName: "ellipsis.circle") }.vemoMenuSurface().accessibilityLabel("녹음 메뉴")
             }
-            Label(model.folderName(for: job.id), systemImage: "folder").font(.caption).foregroundStyle(VemoTheme.ink)
+            Label(model.folderName(for: job.id), systemImage: "folder").font(.caption).foregroundStyle(VemoTheme.ink).lineLimit(1).help(model.folderName(for: job.id))
             if job.status == "needs_recording_date" || job.recording_date == nil {
                 HStack { TextField("녹음 시작일 YYYY-MM-DD", text: $model.dateInput).textFieldStyle(.roundedBorder); Button("날짜 확인") { model.setDate() }.buttonStyle(VemoButtonStyle(emphasis: .primary)) }.help("파일 수정일 대신 실제 녹음 시작일을 입력하세요.")
             }

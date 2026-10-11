@@ -61,9 +61,12 @@ import ServiceManagement
     private var loadedSelection: String?
     var selected: Job? { jobs.first { $0.id == selection } }
     var visibleJobs: [Job] { LibraryQuery.visible(jobs, assignments: library.assignments, filter: libraryFilter, search: search, index: transcriptIndex) }
-    var libraryTitle: String { libraryFilter == "all" ? "전체 녹음" : libraryFilter == "unfiled" ? "미분류" : library.folders.first { $0.id == libraryFilter }?.name ?? "전체 녹음" }
+    var libraryTitle: String { libraryFilter == "all" ? "전체 녹음" : libraryFilter == "unfiled" ? "미분류" : LibraryFolderHierarchy.path(for: libraryFilter, in: library.folders) }
     func folderCount(_ filter: String) -> Int { LibraryQuery.visible(jobs, assignments: library.assignments, filter: filter, search: "", index: [:]).count }
-    func folderName(for jobID: String) -> String { library.folders.first { $0.id == library.assignments[jobID] }?.name ?? "미분류" }
+    func folderName(for jobID: String) -> String {
+        guard let id = library.assignments[jobID] else { return "미분류" }
+        return LibraryFolderHierarchy.path(for: id, in: library.folders)
+    }
     func reconcileLibrarySelection() { if selection == nil || !visibleJobs.contains(where: { $0.id == selection }) { selection = visibleJobs.first?.id } }
     func loadLibrary() {
         let store = libraryStore
@@ -72,7 +75,15 @@ import ServiceManagement
                 var value = try await store.load()
                 if DemoContent.enabled && value.folders.isEmpty {
                     value = try await store.create(name: "회의")
-                    if let folder = value.folders.first { value = try await store.assign(jobIDs: ["demo-completed", "demo-progress"], folderID: folder.id) }
+                    if let meetings = value.folders.first {
+                        value = try await store.create(name: "프로젝트", parentID: meetings.id)
+                        if let project = value.folders.last {
+                            value = try await store.assign(jobIDs: ["demo-completed"], folderID: project.id)
+                            value = try await store.create(name: "스프린트", parentID: project.id)
+                            if let sprint = value.folders.last { value = try await store.assign(jobIDs: ["demo-progress"], folderID: sprint.id) }
+                        }
+                        value = try await store.assign(jobIDs: ["demo-empty"], folderID: meetings.id)
+                    }
                     value = try await store.create(name: "강의")
                 }
                 if value.revision >= library.revision { library = value }
@@ -95,8 +106,9 @@ import ServiceManagement
         }
     }
     func flushLibraryChanges() async { await libraryWriteTask?.value }
-    func createLibraryFolder(_ name: String) { changeLibrary { try await $0.create(name: name) } }
+    func createLibraryFolder(_ name: String, parentID: String? = nil) { changeLibrary { try await $0.create(name: name, parentID: parentID) } }
     func renameLibraryFolder(_ id: String, name: String) { changeLibrary { try await $0.rename(id: id, name: name) } }
+    func updateLibraryFolder(_ id: String, name: String, parentID: String?) { changeLibrary { try await $0.update(id: id, name: name, parentID: parentID) } }
     func deleteLibraryFolder(_ id: String) {
         changeLibrary { try await $0.delete(id: id) }
     }
