@@ -14,7 +14,7 @@ class EngineTests(unittest.TestCase):
     def engine(self,power=lambda:True):
         try:from voice_memo_transcriber.engine import Engine
         except ImportError:self.fail('durable Engine has not been implemented')
-        self.e=Engine(self.root,self.root/'models',self.events.append,power_check=power,readiness=lambda:{'models_ready':True,'model_status':{}},worker_command=[sys.executable,str(pathlib.Path(__file__).parent/'fake_worker.py')])
+        self.e=Engine(self.root,self.root/'models',self.events.append,power_check=power,readiness=lambda:{'models_ready':True,'notes_ready':True,'model_status':{}},worker_command=[sys.executable,str(pathlib.Path(__file__).parent/'fake_worker.py')])
         return self.e
     def send(self,kind,payload=None,rid=None):
         return self.e.command({'protocol_version':1,'request_id':rid or str(time.time_ns()),'kind':kind,'payload':payload or {}})

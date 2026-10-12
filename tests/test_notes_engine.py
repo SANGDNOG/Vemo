@@ -52,13 +52,20 @@ class NotesEngineTests(unittest.TestCase):
         self.assertTrue(self.send('generate_notes',{'job_id':job['id']})['ok'])
         self.drain(lambda:self.e.store.get(job['id'])['notes_status']=='completed')
     def test_notes_pause_restart_checkpoint_does_not_replay_committed_chunk(self):
-        self.engine();self.send('import',{'memo':memo('checkpoint-notes')});self.e.tick();self.snapshot(self.job('checkpoint-notes'))
+        self.engine();self.send('import',{'memo':memo('checkpoint-notes')})
+        job=self.job('checkpoint-notes');job['notes_protocol']='legacy'
+        with self.e.store.transaction():self.e.store.put(job)
+        self.e.tick();self.snapshot(self.job('checkpoint-notes'))
         self.drain(lambda:self.e.active is not None and self.e.active['op']=='notes')
         self.send('pause');self.drain(lambda:self.e.active is None)
         job=self.job('checkpoint-notes');self.assertEqual(job['phase'],'notes');self.assertEqual(job['completed_units'],1)
-        checkpoint=pathlib.Path(job['notes_checkpoint']).read_bytes();self.e.close();self.engine();self.e.tick();self.assertIsNone(self.e.active)
+        checkpoint_path=pathlib.Path(job['notes_checkpoint']);checkpoint=checkpoint_path.read_bytes()
+        # A pre-study database has a committed checkpoint but no protocol field.
+        job.pop('notes_protocol',None)
+        with self.e.store.transaction():self.e.store.put(job)
+        self.e.close();self.engine();self.e.tick();self.assertIsNone(self.e.active)
         self.send('resume');self.drain(lambda:self.job('checkpoint-notes').get('publication_id') is not None)
-        job=self.job('checkpoint-notes');self.assertEqual(job['notes_status'],'completed');self.assertEqual(pathlib.Path(job['notes_checkpoint']).read_bytes(),checkpoint)
+        job=self.job('checkpoint-notes');self.assertEqual(job['notes_status'],'completed');self.assertEqual(checkpoint_path.read_bytes(),checkpoint)
         requests=[json.loads(p.read_text()) for p in (self.root/'work'/job['id']/'tasks').glob('*/request.json')]
         self.assertEqual(sum(r['op']=='asr' for r in requests),1);self.assertEqual(sum(r['op']=='notes' for r in requests),2)
     def test_generate_notes_rejects_unready_or_busy_jobs(self):
@@ -112,7 +119,7 @@ class NotesEngineTests(unittest.TestCase):
             with self.subTest(checkpoint=bad):
                 self.assertTrue(self.send('generate_notes',{'job_id':job['id']})['ok'])
                 path=self.root/f'bad-checkpoint-{index}.json';atomic_json(path,bad)
-                current=self.job('checkpoint-notes');current['notes_checkpoint']=str(path)
+                current=self.job('checkpoint-notes');current['notes_checkpoint']=str(path);current['notes_protocol']='legacy'
                 with self.e.store.transaction():self.e.store.put(current)
                 self.e.tick();after=self.job('checkpoint-notes')
                 self.assertIsNone(self.e.active);self.assertEqual(after['notes_status'],'failed');self.assertEqual(after['status'],'completed')

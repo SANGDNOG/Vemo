@@ -17,17 +17,37 @@ struct NotesView: View {
         let notesStage = job.stage == "noting" || job.stage == "notes"
         guard job.status == "noting" || (pending && notesStage && ["waiting", "paused"].contains(job.status)) else { return nil }
         if job.status == "paused" || job.wait_reason == "paused" || (model.paused && job.status == "waiting") { return "노트 생성이 일시 중지되었습니다" }
-        return job.status == "noting" ? "노트를 정리하고 있습니다" : "노트 생성 대기 중"
+        return job.status == "noting" ? (job.progress.isEmpty ? "전체 내용 정리 중" : "노트를 정리하고 있습니다") : "노트 생성 대기 중"
     }
     private var notesProgressText: String? {
         notesProgressTitle.map { $0 + (job.progress.isEmpty ? "" : " · " + job.progress) }
     }
+    private var notesFailureText: String? {
+        guard job.notes_status == "failed" else { return nil }
+        switch job.notes_error?.object?["code"]?.string {
+        case "input_too_long", "notes_input_too_long": return "원문이 모델의 입력 한도를 넘었습니다. 원문과 이전 노트는 보존되어 있습니다."
+        case "output_truncated", "notes_output_truncated": return "노트 출력이 끝까지 생성되지 않았습니다. 이전 노트는 보존되어 있으며 다시 생성할 수 있습니다."
+        case "model_missing", "notes_model_missing": return "상세 노트 모델이 필요합니다. 설정에서 다운로드하세요. 원문과 이전 노트는 보존되어 있습니다."
+        default: return "노트 생성에 실패했습니다. 원문과 이전 노트는 보존되어 있으며 다시 생성할 수 있습니다."
+        }
+    }
     var body: some View {
         VStack(alignment:.leading,spacing:14) {
+            Text("AI는 내용을 누락하거나 조건을 잘못 요약할 수 있습니다. 중요한 내용은 원문 근거를 확인하세요.")
+                .font(.caption).foregroundStyle(.secondary)
+            if notesProgressTitle != nil {
+                Text("중단하면 현재 분석은 처음부터 다시 시작합니다. 이전 노트는 보존됩니다.").font(.caption).foregroundStyle(.secondary)
+            }
+            if !DemoContent.enabled && model.notesModelState == "missing_or_invalid" {
+                HStack {
+                    Text("상세 노트 모델이 필요합니다.").font(.caption).foregroundStyle(.secondary)
+                    SettingsLink { Text("설정에서 다운로드") }
+                }
+            }
             if let notes = model.notes {
                 Text("AI가 정리한 노트 · 근거를 펼친 뒤 인용을 누르면 원문으로 이동합니다.").font(.caption).foregroundStyle(.secondary)
                 if let progress = notesProgressText { Text(progress).font(.caption).foregroundStyle(VemoTheme.ink) }
-                if job.notes_status == "failed" { Text("노트 갱신에 실패했습니다. 이전 노트는 보존되어 있습니다.").font(.caption).foregroundStyle(.orange) }
+                if let failure = notesFailureText { Text(failure).font(.caption).foregroundStyle(.orange) }
                 ScrollView {
                     LazyVStack(alignment:.leading,spacing:24) {
                         section("핵심 요약", icon:"text.alignleft") {
@@ -85,7 +105,7 @@ struct NotesView: View {
                 VStack(spacing: 14) {
                     Image(systemName: "note.text").font(.system(size: 40)).foregroundStyle(.secondary).accessibilityHidden(true)
                     Text(notesProgressTitle ?? (job.notes_status == "failed" ? "노트 생성에 실패했습니다" : "이 녹음의 노트를 만들어 보세요")).font(.title2.weight(.semibold))
-                    Text(notesProgressTitle != nil ? job.progress : (model.notesReadError ?? (job.notes_status == "failed" ? "원문은 보존되어 있으며 다시 생성할 수 있습니다." : "핵심 요약, 중요한 문장, 키워드별 내용을 Mac에서 정리합니다.")))
+                    Text(notesProgressTitle != nil ? (job.progress.isEmpty ? "잠시 기다려 주세요. 길이에 따라 몇 분 걸릴 수 있습니다." : job.progress) : (model.notesReadError ?? notesFailureText ?? "핵심 요약, 중요한 문장, 키워드별 내용을 Mac에서 정리합니다."))
                         .font(.callout).foregroundStyle(.secondary)
                     if notesProgressTitle == nil && model.canGenerateNotes {
                         Button(model.manualProcessingTitle(job.notes_status == "failed" ? "노트 다시 생성" : "노트 생성"), systemImage: job.notes_status == "failed" ? "arrow.clockwise" : "plus") { model.generateNotes() }.buttonStyle(VemoButtonStyle(emphasis: .primary))

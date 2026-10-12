@@ -13,6 +13,6 @@ Vemo's own source and vector icon are MIT licensed. Bundled and downloaded compo
 
 ## Models downloaded separately
 
-No model weights are in the DMG. Vemo downloads the pinned Qwen3-ASR-1.7B, Qwen3-ForcedAligner-0.6B and Qwen3-4B-Instruct-2507 models on request. Model licenses are available in the upstream repositories; quantized community weights retain the originating model's license. See [ASR](https://huggingface.co/Qwen/Qwen3-ASR-1.7B), [ForcedAligner](https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B), and [title model](https://huggingface.co/mlx-community/Qwen3-4B-Instruct-2507-4bit).
+No model weights are in the DMG. Vemo downloads the pinned Qwen3-ASR-1.7B, Qwen3-ForcedAligner-0.6B and Qwen3-4B-Instruct-2507 models on request. Model licenses are available in the upstream repositories; quantized community weights retain the originating model's license. See [ASR](https://huggingface.co/Qwen/Qwen3-ASR-1.7B), [ForcedAligner](https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B), [title model](https://huggingface.co/mlx-community/Qwen3-4B-Instruct-2507-4bit), and optional [detailed notes model](https://huggingface.co/mlx-community/Qwen3.5-27B-4bit) ([Qwen3.5-27B upstream](https://huggingface.co/Qwen/Qwen3.5-27B), Apache-2.0). The optional notes revision is `45797d2985a12c55e6473686e9ea91b95e959553` and is downloaded separately from the transcription models.
 
 The release provenance records exact standalone Python and engine wheel checksums.

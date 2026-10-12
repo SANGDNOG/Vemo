@@ -121,7 +121,7 @@ class NotesWorkerBoundaryTests(unittest.TestCase):
             root=pathlib.Path(td);model=root/'models'/'title';model.mkdir(parents=True)
             (model/'config.json').write_text('{}');(model/'fixture.safetensors').write_bytes(b'synthetic')
             artifact=root/'transcript.json';artifact.write_text(json.dumps({'text':source}),encoding='utf-8')
-            request={'state_root':td,'model_root':str(root/'models'),'artifact_path':str(artifact)}
+            request={'state_root':td,'model_root':str(root/'models'),'artifact_path':str(artifact),'notes_protocol':'legacy'}
             before=artifact.read_bytes()
             with patch('mlx_lm.load',return_value=(object(),Tokenizer())),patch('mlx_lm.generate',return_value='API | 출시 결정 | 2,1,2'):
                 result=worker.notes(request)
@@ -161,7 +161,7 @@ class NotesWorkerBoundaryTests(unittest.TestCase):
             root=pathlib.Path(td);model=root/'models'/'title';model.mkdir(parents=True)
             (model/'config.json').write_text('{}');(model/'fixture.safetensors').write_bytes(b'synthetic')
             artifact=root/'transcript.json';artifact.write_text(json.dumps({'text':source}),encoding='utf-8')
-            request={'state_root':td,'model_root':str(root/'models'),'artifact_path':str(artifact)}
+            request={'state_root':td,'model_root':str(root/'models'),'artifact_path':str(artifact),'notes_protocol':'legacy'}
             with patch('mlx_lm.load',return_value=(object(),Tokenizer())) as load,patch('mlx_lm.generate',side_effect=generate):
                 result={}
                 while 'notes' not in result:

@@ -89,7 +89,7 @@ def title(request):
         return generate(model,tokenizer,prompt=prompt,max_tokens=budget,sampler=make_sampler(temp=0),verbose=False)
     return title_unit(state,lambda c,b:produce(c,b,True),lambda c,b:produce(c,b),lambda text:tokenizer.encode(text,add_special_tokens=False))
 
-def notes(request):
+def legacy_notes(request):
     from mlx_lm import load,generate
     from mlx_lm.sample_utils import make_sampler
     from .notes import notes_unit,source_chunks,source_passages,decode_notes_lines,finalize_notes
@@ -115,6 +115,19 @@ def notes(request):
         return finalize_notes(accumulated,text)
     return notes_unit(transcript,request.get('notes_checkpoint'),produce)
 
+def notes(request):
+    protocol=request.get('notes_protocol')
+    if protocol not in (None,'legacy','study_v1'):raise ValueError('unknown_notes_protocol')
+    if protocol=='legacy' or (protocol is None and request.get('notes_checkpoint')):
+        return legacy_notes(request)
+    if request.get('notes_checkpoint'):raise ValueError('study_checkpoint_not_supported')
+    from .study_notes import run_study_notes,StudyNotesError
+    transcript=json.loads(validate_owned(Path(request['state_root']).resolve(),request['artifact_path']).read_text(encoding='utf-8'))['text']
+    try:path=local_model(request,'notes')
+    except ValueError:raise StudyNotesError('notes_model_missing')
+    result=run_study_notes(transcript,path)
+    return {'notes_protocol':'study_v1','notes':result,'completed_units':None,'total_units':None}
+
 def main():
     if len(sys.argv)!=3:return 2
     os.environ.update(HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',HF_DATASETS_OFFLINE='1',TOKENIZERS_PARALLELISM='false')
@@ -126,5 +139,11 @@ def main():
         result={'prepare':prepare,'asr':asr,'align':align,'title':title,'notes':notes}[op](request)
         atomic_json(sys.argv[2],result);return 0
     except Exception as exc:
+        if locals().get('op')=='notes':
+            from .study_notes import StudyNotesError
+            code=exc.code if isinstance(exc,StudyNotesError) else 'notes_failed'
+            atomic_json(sys.argv[2],{'notes_protocol':(request.get('notes_protocol') or ('legacy' if request.get('notes_checkpoint') else 'study_v1')),
+                'notes_error_code':code,'completed_units':None,'total_units':None})
+            return 0
         print('local_worker_failed: '+type(exc).__name__,file=sys.stderr);return 1
 if __name__=='__main__':sys.exit(main())

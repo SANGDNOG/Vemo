@@ -5,6 +5,7 @@ import AppKit
 struct VemoLibraryItemInteraction: NSViewRepresentable {
     let label: String
     var selected = false
+    var suppressFocusRing = false
     var recordingCount: Int?
     var select: (() -> Void)?
     var dragData: (() -> Data?)?
@@ -16,6 +17,7 @@ struct VemoLibraryItemInteraction: NSViewRepresentable {
     func makeNSView(context: Context) -> Surface { Surface() }
     func updateNSView(_ view: Surface, context: Context) {
         view.input = self
+        view.focusRingType = suppressFocusRing ? .none : .default
         view.setAccessibilityLabel(label + (recordingCount.map { ", \($0)개 녹음" } ?? ""))
         view.setAccessibilityRole(select == nil ? .group : .button)
         view.setAccessibilityValue(selected ? "선택됨" : "")

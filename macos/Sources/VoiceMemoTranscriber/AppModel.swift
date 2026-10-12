@@ -21,6 +21,9 @@ import ServiceManagement
     @Published var problem: String?
     @Published var modelsReady = false
     @Published var modelStatus = "모델 상태 확인 중"
+    @Published var notesModelReady = false
+    @Published var notesModelState = "verifying"
+    @Published var notesModelStatus = "노트 모델 상태 확인 중"
     @Published var paused = false
     @Published var transcript: Transcript?
     @Published var notes: RecordingNotes?
@@ -204,7 +207,10 @@ import ServiceManagement
                 if let value = event.payload["job"] { let job = try value.decoded(Job.self); if let i = jobs.firstIndex(where: { $0.id == job.id }) { jobs[i] = job } else { jobs.append(job) }; await index(job); reconcileLibrarySelection(); if selection == job.id { await loadSelection() } }
             case "engine_status": updateEngine(event.payload["engine_status"]?.object ?? event.payload)
             case "model_progress":
-                modelStatus = ModelProgress.description(event.payload)
+                if event.payload["model"]?.string == "notes" {
+                    notesModelState = event.payload["state"]?.string ?? notesModelState
+                    notesModelStatus = ModelProgress.description(event.payload)
+                } else { modelStatus = ModelProgress.description(event.payload) }
                 if let e = event.payload["error"], e != .null { problem = "모델 다운로드가 중단되었습니다. 설정에서 다운로드 / 재개를 선택하세요." }
             case "snapshot_requested":
                 guard let id = event.payload["job_id"]?.string, let reference = event.payload["source_reference"]?.string, !brokerRequests.contains("snapshot:" + id) else { break }
@@ -238,10 +244,21 @@ import ServiceManagement
     }
     private func updateEngine(_ status: [String:JSONValue]) {
         modelsReady = status["models_ready"]?.bool ?? modelsReady; paused = status["paused"]?.bool ?? paused
-        if modelsReady { modelStatus = "로컬 모델 준비됨" }
-        else if let states = status["model_status"]?.object, states.values.contains(where:{ $0.object?["state"]?.string == "verifying" }) { modelStatus = "모델 파일 검증 중" }
-        else if !modelStatus.contains("다운로드 중") && !modelStatus.contains("기다리는 중") { modelStatus = "모델 다운로드가 필요합니다." }
+        let states = status["model_status"]?.object ?? [:]
+        if modelsReady { modelStatus = "전사 · 정렬 · 제목 모델 준비됨" }
+        else if ["asr","aligner","title"].contains(where:{ states[$0]?.object?["state"]?.string == "verifying" }) { modelStatus = "필수 모델 파일 검증 중" }
+        else if !modelStatus.contains("다운로드 중") && !modelStatus.contains("기다리는 중") { modelStatus = "필수 모델 다운로드가 필요합니다." }
+        if let ready = status["notes_ready"]?.bool { notesModelReady = ready }
+        if let state = states["notes"]?.object?["state"]?.string {
+            // Inventory snapshots can arrive while the explicit downloader is still active.
+            let downloading = ["resolving","downloading","stalled"].contains(notesModelState)
+            if !downloading || state == "ready" {
+                notesModelState = state
+                notesModelStatus = state == "ready" ? "상세 노트 모델 준비됨" : state == "verifying" ? "상세 노트 모델 파일 검증 중" : "상세 노트 모델 다운로드가 필요합니다."
+            }
+        }
     }
+    func downloadNotesModel() { command("download_models",["notes_only":.bool(true)]) }
     private func readTranscript(_ path: String) async throws -> Transcript {
         let root = stateRoot
         return try await Task.detached { let url = try Validation.owned(path, root: root); let data = try Data(contentsOf: url); return try JSONDecoder().decode(Transcript.self, from: data) }.value

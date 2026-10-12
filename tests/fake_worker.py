@@ -24,7 +24,18 @@ elif op=='notes':
         if uid=='fail-notes':return '{}'
         quote=text[:80]
         return {'summary':[{'text':'핵심 요약','quotes':[quote]}],'highlights':[{'quote':quote}],'topics':[{'keyword':'테스트','summary':'키워드 정리','quotes':[quote]}]}
-    result=[] if uid=='malformed-notes' else notes_unit(source,request.get('notes_checkpoint'),produce)
+    if request.get('notes_protocol')=='study_v1':
+        from voice_memo_transcriber.notes import validate_notes
+        if uid=='interrupted-notes':time.sleep(.15)
+        if uid=='malformed-notes':result=[]
+        elif uid=='fail-notes':result={'notes_protocol':'study_v1','notes_error_code':'notes_failed','completed_units':None,'total_units':None}
+        elif uid.startswith('typed-notes-'):
+            result={'notes_protocol':'study_v1','notes_error_code':uid.removeprefix('typed-notes-'),'completed_units':None,'total_units':None}
+        else:
+            notes=validate_notes(produce(source,8192),source)
+            if uid=='wrong-source-notes':notes['source_sha256']='0'*64
+            result={'notes_protocol':'study_v1','notes':notes,'completed_units':None,'total_units':None}
+    else:result=[] if uid=='malformed-notes' else notes_unit(source,request.get('notes_checkpoint'),produce)
 
 else:sys.exit(3)
 atomic_json(sys.argv[2],result)

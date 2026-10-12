@@ -10,8 +10,9 @@ from .artifacts import atomic_json,build_publication,valid_receipt,sha256
 from .models import model_status,ModelInventory
 from .process import ManagedProcess
 from .notes import validate_notes,source_chunks,source_digest
+from .study_notes import ERROR_CODES
 
-JOB_FIELDS=('id','uuid','topic','recording_date','recorded_at','duration_s','status','wait_reason','stage','completed_units','total_units','elapsed_seconds','artifact_path','audio_path','pcm_path','error','title_status','alignment_status','original_title','notes_path','notes_status','notes_error')
+JOB_FIELDS=('id','uuid','topic','recording_date','recorded_at','duration_s','status','wait_reason','stage','completed_units','total_units','elapsed_seconds','artifact_path','audio_path','pcm_path','error','title_status','alignment_status','original_title','notes_path','notes_status','notes_error','notes_protocol')
 RUNNING={'preparing','transcribing','aligning','titling','noting'}
 
 def on_ac_power():
@@ -115,11 +116,22 @@ class Engine:
         if kind=='discover':self.discover(payload['memos']);return {'ok':True}
         if kind=='import':self.discover([payload['memo']],True);return {'ok':True}
         if kind in {'pause','resume'}:
-            self.store.set_meta('paused',kind=='pause');return {'ok':True}
+            self.store.set_meta('paused',kind=='pause')
+            if kind=='pause' and self.active and self.active['op']=='notes':
+                active=self.active;job=self.store.get(active['job_id'])
+                if job.get('notes_protocol')=='study_v1':
+                    active['task'].stop();self.active=None
+                    job['elapsed_seconds']+=time.monotonic()-self.started.pop(job['id'],time.monotonic())
+                    job.update(status='paused',wait_reason='paused',completed_units=None,total_units=None)
+                    self.save(job)
+            return {'ok':True}
         if kind=='set_policy':
             if type(payload.get('ac_only')) is not bool:raise ValueError('ac_only_must_be_boolean')
             self.store.set_meta('ac_only',payload['ac_only']);return {'ok':True}
         if kind=='download_models':
+            notes_only=payload.get('notes_only',False)
+            if type(notes_only) is not bool:raise ValueError('notes_only_must_be_boolean')
+            self.store.set_meta('download_notes_only',notes_only)
             self.store.set_meta('download_requested',True);return {'ok':True}
         if kind in {'enqueue','backfill'}:
             ids=payload['uuids']
@@ -148,7 +160,7 @@ class Engine:
             validate_owned(self.root,job['artifact_path'])
             job.pop('notes_checkpoint',None)
             if not job.get('topic'):job.update(topic='음성 녹음',title_status='fallback')
-            job.update(notes_only=True,notes_prior_status=job['status'],notes_status='pending',notes_error=None,phase='notes',stage='noting',queued=True,status='waiting',wait_reason=None,error=None,attempts={},completed_units=0,total_units=None)
+            job.update(notes_protocol='study_v1',notes_only=True,notes_prior_status=job['status'],notes_status='pending',notes_error=None,phase='notes',stage='noting',queued=True,status='waiting',wait_reason=None,error=None,attempts={},completed_units=None,total_units=None)
             self.save(job);return {'ok':True}
         if kind=='retry':
             job.update(queued=True,error=None,wait_reason=None,status='waiting',attempts={})
@@ -265,18 +277,31 @@ class Engine:
             job.update(topic=sanitize_topic(result['topic']),title_status='completed',phase=self.after_title(job),status='waiting',completed_units=None,total_units=None)
         elif op=='notes':
             source=json.loads(validate_owned(self.root,job['artifact_path']).read_text(encoding='utf-8'))['text']
-            total=len(source_chunks(source))
-            expected=index+1
-            if type(result.get('completed_units')) is not int or result['completed_units']!=expected or type(result.get('total_units')) is not int or result['total_units']!=total:raise ValueError('invalid_notes_progress')
-            if 'notes_checkpoint' in result:
-                checkpoint=result['notes_checkpoint']
-                if not isinstance(checkpoint,dict) or checkpoint.get('index')!=expected or expected>=total or checkpoint.get('total_units')!=total or checkpoint.get('source_sha256')!=source_digest(source):raise ValueError('invalid_notes_checkpoint')
-                checkpoint['notes']=validate_notes(checkpoint.get('notes'),source)
-                path=self.root/'work'/job['id']/('notes-checkpoint-'+uuid.uuid4().hex+'.json')
-                atomic_json(path,checkpoint)
-                job.update(notes_checkpoint=str(path),status='waiting',completed_units=expected,total_units=total)
-                return
-            if expected!=total:raise ValueError('incomplete_notes_generation')
+            protocol=(job.get('notes_protocol') or ('legacy' if job.get('notes_checkpoint') else 'study_v1'))
+            if result.get('notes_error_code') is not None:
+                code=result['notes_error_code']
+                if code not in ERROR_CODES or 'notes' in result or 'notes_checkpoint' in result:
+                    raise ValueError('invalid_notes_error')
+                self.fail_notes(job,failure(code));return
+            if protocol=='study_v1':
+                if (result.get('notes_protocol')!='study_v1' or 'notes_checkpoint' in result
+                        or 'completed_units' not in result or result['completed_units'] is not None
+                        or 'total_units' not in result or result['total_units'] is not None):
+                    raise ValueError('invalid_study_notes_progress')
+                expected=None;total=None
+            elif protocol=='legacy':
+                total=len(source_chunks(source));expected=index+1
+                if type(result.get('completed_units')) is not int or result['completed_units']!=expected or type(result.get('total_units')) is not int or result['total_units']!=total:raise ValueError('invalid_notes_progress')
+                if 'notes_checkpoint' in result:
+                    checkpoint=result['notes_checkpoint']
+                    if not isinstance(checkpoint,dict) or checkpoint.get('index')!=expected or expected>=total or checkpoint.get('total_units')!=total or checkpoint.get('source_sha256')!=source_digest(source):raise ValueError('invalid_notes_checkpoint')
+                    checkpoint['notes']=validate_notes(checkpoint.get('notes'),source)
+                    path=self.root/'work'/job['id']/('notes-checkpoint-'+uuid.uuid4().hex+'.json')
+                    atomic_json(path,checkpoint)
+                    job.update(notes_checkpoint=str(path),notes_protocol='legacy',status='waiting',completed_units=expected,total_units=total)
+                    return
+                if expected!=total:raise ValueError('incomplete_notes_generation')
+            else:raise ValueError('unknown_notes_protocol')
             notes=validate_notes(result['notes'],source)
             digest=__import__('hashlib').sha256(json.dumps(notes,sort_keys=True,ensure_ascii=False).encode('utf-8')).hexdigest()
             path=self.root/'artifacts'/job['id']/('notes-'+digest+'.json')
@@ -284,7 +309,7 @@ class Engine:
             else:
                 if json.loads(path.read_text(encoding='utf-8'))!=notes:raise ValueError('local_artifact_conflict')
             job.update(notes_path=str(path),notes_status='completed',notes_error=None,phase='publish',status='waiting',publication_id=None,manifest_path=None,completed_units=expected,total_units=total,error=None)
-            job.pop('notes_only',None);job.pop('notes_prior_status',None)
+            job.pop('notes_only',None);job.pop('notes_prior_status',None);job.pop('notes_checkpoint',None)
     def after_title(self,job):
         return 'notes' if job.get('notes_status')=='pending' else 'publish'
     def fail_notes(self,job,error):
@@ -347,12 +372,20 @@ class Engine:
                     except (OSError,ValueError,KeyError):job.update(status='failed',queued=False,error=failure('artifact_failed'))
                     with self.store.transaction():self.save(job)
                 self.replay(job);continue
-            reason='paused' if paused else 'ac_power' if self.store.get_meta('ac_only',True) and not self.power else 'models' if not self.models['models_ready'] else 'source_incomplete' if job['completion_evidence']!='finished' else None
+            reason='paused' if paused else 'ac_power' if self.store.get_meta('ac_only',True) and not self.power else 'models' if not self.models['models_ready'] and not (job['phase']=='notes' and not job.get('notes_checkpoint') and (job.get('notes_protocol') or 'study_v1')=='study_v1') else 'source_incomplete' if job['completion_evidence']!='finished' else None
             if reason:
                 status='paused' if paused else 'waiting'
                 if job['status']!=status or job['wait_reason']!=reason:
                     job.update(status=status,wait_reason=reason)
                     with self.store.transaction():self.save(job)
+                continue
+            if job['phase']=='notes' and not job.get('notes_checkpoint') and (job.get('notes_protocol') or 'study_v1')=='study_v1' and not self.models.get('notes_ready',False):
+                if self.models.get('model_status',{}).get('notes',{}).get('state')=='verifying':
+                    job.update(status='waiting',stage='noting',wait_reason='models',completed_units=None,total_units=None)
+                    with self.store.transaction():self.save(job)
+                    continue
+                self.fail_notes(job,failure('notes_model_missing'))
+                with self.store.transaction():self.save(job)
                 continue
             if job['phase']=='snapshot':
                 if job['status']!='preparing':
@@ -369,18 +402,23 @@ class Engine:
                     data={'index':index,'audio_path':str(path),'duration_s':(end-start)/16000}
                     if op=='align':data.update(job['asr_chunks'][index])
                 elif job['phase']=='notes':
-                    op='notes';data={'artifact_path':job['artifact_path'],'index':0}
-                    if job.get('notes_checkpoint'):
-                        checkpoint=json.loads(validate_owned(self.root,job['notes_checkpoint']).read_text(encoding='utf-8'))
-                        if not isinstance(checkpoint,dict) or type(checkpoint.get('index')) is not int or type(checkpoint.get('total_units')) is not int:raise ValueError('invalid_notes_checkpoint')
+                    op='notes';protocol=(job.get('notes_protocol') or ('legacy' if job.get('notes_checkpoint') else 'study_v1'))
+                    data={'artifact_path':job['artifact_path'],'notes_protocol':protocol,'index':0}
+                    job['notes_protocol']=protocol
+                    if protocol=='study_v1':
+                        if job.get('notes_checkpoint'):raise ValueError('study_checkpoint_not_supported')
+                        job.update(completed_units=None,total_units=None)
+                    elif protocol=='legacy':
                         source=json.loads(validate_owned(self.root,job['artifact_path']).read_text(encoding='utf-8'))['text']
                         total=len(source_chunks(source))
-                        if not 0<checkpoint['index']<total or checkpoint['total_units']!=total or checkpoint.get('source_sha256')!=source_digest(source):raise ValueError('invalid_notes_checkpoint')
-                        checkpoint['notes']=validate_notes(checkpoint.get('notes'),source)
-                        data.update(notes_checkpoint=checkpoint,index=checkpoint['index'])
-                    else:
-                        source=json.loads(validate_owned(self.root,job['artifact_path']).read_text(encoding='utf-8'))['text']
-                        job.update(completed_units=0,total_units=len(source_chunks(source)))
+                        if job.get('notes_checkpoint'):
+                            checkpoint=json.loads(validate_owned(self.root,job['notes_checkpoint']).read_text(encoding='utf-8'))
+                            if not isinstance(checkpoint,dict) or type(checkpoint.get('index')) is not int or type(checkpoint.get('total_units')) is not int:raise ValueError('invalid_notes_checkpoint')
+                            if not 0<checkpoint['index']<total or checkpoint['total_units']!=total or checkpoint.get('source_sha256')!=source_digest(source):raise ValueError('invalid_notes_checkpoint')
+                            checkpoint['notes']=validate_notes(checkpoint.get('notes'),source)
+                            data.update(notes_checkpoint=checkpoint,index=checkpoint['index'])
+                        else:job.update(completed_units=0,total_units=total)
+                    else:raise ValueError('unknown_notes_protocol')
                 else:
                     op='title';data={'artifact_path':job['artifact_path']}
                     if job.get('title_checkpoint'):data['title_checkpoint']=json.loads(Path(job['title_checkpoint']).read_text())
@@ -419,7 +457,9 @@ class Engine:
             path=directory/'progress.jsonl'
             with self.lifecycle_lock:
                 if self.stopping:return
-                with open(path,'wb') as out:task=ManagedProcess([sys.executable,'-m','voice_memo_transcriber.download_models','--model-root',str(self.model_root)],timeout=6*3600,stdout=out)
+                arguments=[sys.executable,'-m','voice_memo_transcriber.download_models','--model-root',str(self.model_root)]
+                if self.store.get_meta('download_notes_only',False):arguments.append('--notes-only')
+                with open(path,'wb') as out:task=ManagedProcess(arguments,timeout=6*3600,stdout=out)
                 if self.stopping:task.stop();return
                 self.download={'task':task,'progress':path,'offset':0}
     def request_stop(self):

@@ -47,9 +47,15 @@ struct SettingsView: View {
             }
             Section("모델") {
                 Text(model.modelStatus)
-                Text("ASR: Qwen3-ASR-1.7B · 정렬: Qwen3-ForcedAligner-0.6B\n제목 · 노트: Qwen3-4B-Instruct-2507-4bit").font(.caption).foregroundStyle(.secondary)
+                Text("ASR: Qwen3-ASR-1.7B · 정렬: Qwen3-ForcedAligner-0.6B\n제목: Qwen3-4B-Instruct-2507-4bit").font(.caption).foregroundStyle(.secondary)
                 Button("모델 다운로드 / 재개") { model.command("download_models") }
                 Text("최초 다운로드에 네트워크와 저장 공간이 필요합니다. 처리할 때는 로컬 모델을 사용합니다.").font(.caption).foregroundStyle(.secondary)
+            }
+            Section("상세 노트 모델 · 선택 다운로드") {
+                Text(model.notesModelStatus)
+                Text("Qwen3.5-27B-4bit · 다운로드 약 16 GB · 메모리 24 GB 이상 권장").font(.caption).foregroundStyle(.secondary)
+                Button("상세 노트 모델 다운로드 / 재개") { model.downloadNotesModel() }
+                Text("노트 생성에만 사용합니다. 전사 · 시간 정렬 · 제목 생성에는 필요하지 않습니다. 다운로드 후 로컬에서 처리합니다.").font(.caption).foregroundStyle(.secondary)
             }
             Section("동작") {
                 Toggle("전원 연결 시에만 처리", isOn: $model.acOnly).onChange(of: model.acOnly) { _, value in model.setPolicy(value) }

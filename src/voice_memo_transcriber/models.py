@@ -7,17 +7,22 @@ PINS={
  'aligner':{'repo_id':'Qwen/Qwen3-ForcedAligner-0.6B','revision':'c7cbfc2048c462b0d63a45797104fc9db3ad62b7'},
  'title':{'repo_id':'mlx-community/Qwen3-4B-Instruct-2507-4bit','revision':'50d427756c6b1b2fe0c0a10f67fbda1fc8e82c1b'}}
 
+# Optional notes inference must never block ASR, alignment or title processing.
+OPTIONAL_PINS={
+ 'notes':{'repo_id':'mlx-community/Qwen3.5-27B-4bit','revision':'45797d2985a12c55e6473686e9ea91b95e959553'}}
+ALL_PINS={**PINS,**OPTIONAL_PINS}
+
 class ModelInventory:
     """Read-only hashing on a daemon; all engine DB writes stay on its owner thread."""
     def __init__(self,root):
-        self.root=Path(root);self.result={'models_ready':False,'model_status':{name:{'state':'verifying','revision':pin['revision']} for name,pin in PINS.items()}}
+        self.root=Path(root);self.result={'models_ready':False,'notes_ready':False,'model_status':{name:{'state':'verifying','revision':pin['revision']} for name,pin in ALL_PINS.items()}}
         self.running=False;self.start()
     def start(self):
         if self.running:return
         self.running=True
         def run():
             try:self.result=model_status(self.root)
-            except Exception:self.result={'models_ready':False,'model_status':{name:{'state':'invalid','revision':pin['revision']} for name,pin in PINS.items()}}
+            except Exception:self.result={'models_ready':False,'notes_ready':False,'model_status':{name:{'state':'invalid','revision':pin['revision']} for name,pin in ALL_PINS.items()}}
             finally:self.running=False
         threading.Thread(target=run,daemon=True).start()
     def snapshot(self):return self.result
@@ -39,12 +44,15 @@ def model_status(root,verify_hashes=True):
     root=Path(root)
     try:manifest=json.loads((root/'models.json').read_text()); entries=manifest['models']
     except (OSError,ValueError,KeyError):entries={}
+    if not isinstance(entries,dict):entries={}
     states={}
-    for name,pin in PINS.items():
+    for name,pin in ALL_PINS.items():
         entry=entries.get(name,{})
+        if not isinstance(entry,dict):entry={}
         ready=all(entry.get(k)==v for k,v in pin.items())
         files=entry.get('files',[])
-        names={f.get('path') for f in files if isinstance(f,dict)}
+        if not isinstance(files,list):files=[]
+        names={f.get('path') for f in files if isinstance(f,dict) and isinstance(f.get('path'),str)}
         ready=ready and 'config.json' in names and 'tokenizer_config.json' in names and any(str(n).endswith('.safetensors') for n in names)
         for item in files:
             try:
@@ -52,4 +60,4 @@ def model_status(root,verify_hashes=True):
                 if relative.is_absolute() or '..' in relative.parts or path.is_symlink() or not path.is_file() or path.stat().st_size!=item['size'] or (verify_hashes and not verified_hash(path,item['sha256'])):ready=False
             except (OSError,KeyError,TypeError):ready=False
         states[name]={'state':'ready' if ready else 'missing_or_invalid','revision':pin['revision']}
-    return {'models_ready':all(s['state']=='ready' for s in states.values()),'model_status':states}
+    return {'models_ready':all(states[name]['state']=='ready' for name in PINS),'notes_ready':states['notes']['state']=='ready','model_status':states}

@@ -2,7 +2,7 @@
 """Explicit online bootstrap. Operational inference never calls this implicitly."""
 import argparse,json,os,sys,threading,time
 from pathlib import Path
-from voice_memo_transcriber.models import PINS,write_manifest
+from voice_memo_transcriber.models import PINS,OPTIONAL_PINS,write_manifest
 from voice_memo_transcriber.artifacts import sha256
 
 def observed_bytes(root):
@@ -27,7 +27,7 @@ def verified_files(local,siblings):
     return files
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--model-root',type=Path,required=True);parser.add_argument('--disable-xet',action='store_true');args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--model-root',type=Path,required=True);parser.add_argument('--disable-xet',action='store_true');parser.add_argument('--notes-only',action='store_true');args=parser.parse_args()
     if args.disable_xet:os.environ['HF_HUB_DISABLE_XET']='1'
     from huggingface_hub import HfApi,snapshot_download
     args.model_root.mkdir(parents=True,exist_ok=True)
@@ -37,7 +37,7 @@ def main():
         payload={'model':name,'downloaded_bytes':downloaded,'total_bytes':total,'state':state}
         if error:payload['error']=error
         print(json.dumps({'kind':'model_progress','payload':payload}),flush=True)
-    for name,pin in PINS.items():
+    for name,pin in (OPTIONAL_PINS if args.notes_only else PINS).items():
         local=args.model_root/name;local.mkdir(parents=True,exist_ok=True);total=None;done=threading.Event()
         emit(name,observed_bytes(local),None,'resolving')
         try:

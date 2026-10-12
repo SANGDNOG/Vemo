@@ -32,6 +32,8 @@ struct LibraryView: View {
                 } else {
                     List(model.visibleJobs, selection: $model.selection) { job in
                         recordingRow(job).tag(job.id)
+                            .listRowBackground(model.selection == job.id ? VemoTheme.accent.opacity(0.14) : Color.clear)
+                            .background(VemoRecordingSelectionAppearance())
                             .background(VemoScrollAppearance())
                             .overlay(recordingInput(job))
                             .contextMenu { RecordingFolderMenu(model: model, jobID: job.id) }
@@ -248,7 +250,7 @@ struct LibraryView: View {
                                          key: filter, select: { selectFolder(filter) }))
     }
     private func recordingInput(_ job: Job) -> VemoLibraryItemInteraction {
-        VemoLibraryItemInteraction(label: job.title, selected: model.selection == job.id,
+        VemoLibraryItemInteraction(label: job.title, selected: model.selection == job.id, suppressFocusRing: true,
             select: { model.selection = job.id },
             dragData: {
                 let payload = model.libraryDragPayload(kind: .recording, id: job.id)
@@ -304,5 +306,28 @@ struct RecordingFolderMenu: View {
                 Button { model.moveRecording(jobID, to: row.id) } label: { Label(LibraryFolderHierarchy.path(for: row.id, in: model.library.folders), systemImage: model.library.assignments[jobID] == row.id ? "checkmark" : "folder") }
             }
         }.disabled(!model.libraryReady || model.libraryBusy)
+    }
+}
+
+/// Disable AppKit's active/inactive selection paint only in the recording list.
+/// Selection binding, keyboard handling and the native drag surface stay intact.
+private struct VemoRecordingSelectionAppearance: NSViewRepresentable {
+    func makeNSView(context: Context) -> Surface { Surface() }
+    func updateNSView(_ view: Surface, context: Context) { view.configure() }
+    final class Surface: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func viewDidMoveToSuperview() { super.viewDidMoveToSuperview(); configure() }
+        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); configure() }
+        func configure() {
+            var ancestor = superview
+            while let view = ancestor {
+                if let table = view as? NSTableView {
+                    table.selectionHighlightStyle = .none
+                    table.focusRingType = .none
+                    return
+                }
+                ancestor = view.superview
+            }
+        }
     }
 }

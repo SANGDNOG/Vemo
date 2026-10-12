@@ -15,4 +15,6 @@ def parse_command(line):
     if not isinstance(obj.get('request_id'),str) or not 0<len(obj['request_id'])<=256:
         raise ValueError('invalid_request_id')
     if not isinstance(obj.get('payload'),dict): raise ValueError('invalid_payload')
+    if obj['kind']=='download_models' and 'notes_only' in obj['payload'] and type(obj['payload']['notes_only']) is not bool:
+        raise ValueError('notes_only_must_be_boolean')
     return obj

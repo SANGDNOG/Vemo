@@ -10,6 +10,7 @@ SOURCE_TOKENS=3000
 # Exact citations can repeat across summary, highlights and keyword cards.
 # Keep a hard bound while allowing those validated JSON objects to close.
 OUTPUT_TOKENS=3072
+MAX_EVIDENCE_QUOTES=64
 
 def source_digest(source):
     return hashlib.sha256(source.encode('utf-8')).hexdigest()
@@ -119,7 +120,8 @@ def validate_notes(raw,source,item_limit=None):
                 if quote(item.get('quote')):result[kind].append({'quote':item['quote']})
                 continue
             quotes=item.get('quotes')
-            if not isinstance(quotes,list) or len(quotes)>8:continue
+            if not isinstance(quotes,list):continue
+            if len(quotes)>MAX_EVIDENCE_QUOTES:raise ValueError('notes_evidence_budget_exceeded')
             quotes=list(dict.fromkeys(q for q in quotes if quote(q)))
             field='text' if kind=='summary' else 'summary'
             if not quotes or not text(item.get(field),1000):continue
@@ -167,13 +169,45 @@ def notes_unit(source,state,produce):
     if index==len(chunks):return {'notes':finalize_notes(acc,source),'completed_units':index,'total_units':len(chunks)}
     return {'notes_checkpoint':{'source_sha256':digest,'index':index,'total_units':len(chunks),'notes':acc},'completed_units':index,'total_units':len(chunks)}
 
+def evidence_highlights(items):
+    """Rank all exact evidence sentences against the synthesized facts.
+
+    Eojeol overlap is deliberately a bounded lexical heuristic, not a semantic
+    verifier. Stable source order breaks ties; no quote text is synthesized.
+    """
+    def words(text):
+        return {word.casefold() for word in re.findall(r'[가-힣A-Za-z0-9]+',text) if len(word)>1}
+    facts=[words(item.get('text',item.get('summary',''))) for item in items]
+    candidates=[];seen=set()
+    for item in items:
+        for quote in item['quotes']:
+            for match in re.finditer(r'[^.!?。！？\n]+[.!?。！？](?=\s|$)',quote):
+                sentence=match.group().strip()
+                if not sentence or len(sentence)>180 or sentence in seen:continue
+                seen.add(sentence)
+                tokens=words(sentence)
+                overlaps=[len(tokens & fact) for fact in facts]
+                score=(max(overlaps,default=0),sum(overlaps))
+                candidates.append((score,len(candidates),sentence))
+    candidates.sort(key=lambda item:(-item[0][0],-item[0][1],item[1]))
+    return [{'quote':sentence} for score,_,sentence in candidates[:3] if score[0]>0]
+
+
 def notes_markdown(title,notes):
-    lines=['# '+title,'','AI가 생성한 노트 · 인용은 원문과 대조했습니다.','','## 핵심 요약','']
-    for item in notes['summary']:
-        lines.extend(['- '+item['text']]+['  > '+q.replace('\n','\n  > ') for q in item['quotes']])
-    lines.extend(['','## 중요한 원문',''])
-    for item in notes['highlights']:lines.extend(['> '+item['quote'].replace('\n','\n> '),''])
+    evidence=list(dict.fromkeys(
+        [q for kind in ('summary','topics') for item in notes[kind] for q in item['quotes']]
+        +[item['quote'] for item in notes['highlights']]))
+    def refs(quotes):return ' '.join(f'[근거 {evidence.index(q)+1}](#evidence-{evidence.index(q)+1})' for q in quotes)
+    lines=['# '+title,'','AI가 정리한 노트입니다. 중요한 내용은 인용한 원문에서 확인하세요.','','## 핵심 요약','']
+    for item in notes['summary']:lines.extend(['- '+item['text']+' '+refs(item['quotes']),''])
     lines.extend(['## 키워드별 정리',''])
     for item in notes['topics']:
-        lines.extend(['### '+item['keyword'],'',item['summary'],'']+['> '+q.replace('\n','\n> ') for q in item['quotes']]+[''])
+        lines.extend(['### '+item['keyword'],'',item['summary'],'',refs(item['quotes']),''])
+    lines.extend(['## 강조 문장','','<details>','<summary>중요한 원문 보기</summary>',''])
+    for item in notes['highlights']:lines.extend(['> '+item['quote'].replace('\n','\n> '),'',refs([item['quote']]),''])
+    lines.extend(['</details>','','## 원문 근거','','<details>','<summary>원문 근거 보기</summary>',''])
+    for index,quote in enumerate(evidence,1):
+        lines.extend([f'<a id="evidence-{index}"></a>',f'### 근거 {index}','',
+                      '> '+quote.replace('\n','\n> '),''])
+    lines.append('</details>')
     return '\n'.join(lines)+'\n'
