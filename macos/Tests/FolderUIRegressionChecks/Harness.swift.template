@@ -1,0 +1,126 @@
+import AppKit
+import SwiftUI
+import Foundation
+import Darwin
+
+/* SCROLL_HELPER */
+
+@MainActor final class FixtureState: ObservableObject {
+    @Published var rows = 0
+    @Published var revision = 0
+}
+struct HostedFixture: View {
+    @ObservedObject var state: FixtureState
+    let kind: String
+    var body: some View {
+        VStack(spacing: 0) {
+            Text("Synthetic fixture revision \(state.revision)")
+            if state.rows > 0 {
+                if kind == "list" {
+                    List(0..<state.rows, id: \.self) { index in
+                        Text("Synthetic \(index)").frame(height: 34)
+                            .background(VemoScrollAppearance())
+                    }.listStyle(.sidebar).scrollContentBackground(.hidden)
+                } else {
+                    ScrollView {
+                        VStack(spacing: 3) {
+                            ForEach(0..<state.rows, id: \.self) { index in
+                                Text("Synthetic \(index)").frame(maxWidth: .infinity, minHeight: 34)
+                            }
+                        }.background(VemoScrollAppearance())
+                    }.frame(maxHeight: min(CGFloat(state.rows) * 37, 200))
+                }
+            }
+            Spacer(minLength: 0)
+        }.frame(width: 290, height: 300).background(Color(red: 0.91, green: 0.93, blue: 0.94))
+    }
+}
+@MainActor func descendants(_ view: NSView) -> [NSView] {
+    [view] + view.subviews.flatMap { descendants($0) }
+}
+@MainActor func ancestors(_ view: NSView) -> [String] {
+    var names: [String] = []; var next = view.superview
+    while let v = next { names.append(String(describing: type(of: v))); next = v.superview }
+    return names
+}
+@MainActor func settle(_ host: NSView) {
+    let deadline = Date().addingTimeInterval(0.20)
+    repeat {
+        host.layoutSubtreeIfNeeded()
+        _ = RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01))
+    } while Date() < deadline
+}
+@MainActor var passed = 0
+@MainActor var failed = 0
+@MainActor func check(_ condition: Bool, _ title: String) {
+    if condition { passed += 1; print("PASS: " + title) }
+    else { failed += 1; print("FAIL: " + title) }
+}
+@MainActor func observe(_ host: NSView, label: String) {
+    let all = descendants(host)
+    let scrolls = all.compactMap { $0 as? NSScrollView }
+    let helpers = all.compactMap { $0 as? VemoScrollAppearance.Surface }
+    print("OBSERVE \(label): scrolls=\(scrolls.count) helpers=\(helpers.count)")
+    for (i, scroll) in scrolls.enumerated() {
+        print("SCROLL \(i): class=\(type(of: scroll)) draws=\(scroll.drawsBackground) clipDraws=\(scroll.contentView.drawsBackground) background=\(scroll.backgroundColor) clipBackground=\(scroll.contentView.backgroundColor) style=\(scroll.scrollerStyle.rawValue) autohide=\(scroll.autohidesScrollers) frame=\(scroll.frame) clipFrame=\(scroll.contentView.frame)")
+    }
+    for (i, helper) in helpers.enumerated() {
+        print("HELPER \(i): enclosing=\(helper.enclosingScrollView != nil) ancestors=\(ancestors(helper).joined(separator: " > "))")
+        check(helper.hitTest(.zero) == nil, "\(label) helper \(i) declines hit testing")
+    }
+    if label.contains("settled") && !label.contains("empty") {
+        check(!scrolls.isEmpty, "\(label) real hosting scroll exists")
+        check(!helpers.isEmpty, "\(label) helper materialized in hosting hierarchy")
+        check(helpers.allSatisfy { $0.enclosingScrollView != nil }, "\(label) every helper reaches actual enclosing scroll")
+        check(scrolls.allSatisfy { !$0.drawsBackground && $0.scrollerStyle == .overlay && $0.autohidesScrollers }, "\(label) actual hosting scroll appearance configured")
+        check(scrolls.allSatisfy { [$0.verticalScroller, $0.horizontalScroller].compactMap { $0 }.allSatisfy { $0 is VemoScrollAppearance.Surface.TracklessScroller } }, "\(label) mounted scrollers use scoped trackless subclass")
+        check(scrolls.allSatisfy { !$0.contentView.drawsBackground }, "\(label) actual hosting clip does not draw inherited background")
+        check(scrolls.allSatisfy { abs($0.contentView.frame.width - $0.bounds.width) < 0.5 }, "\(label) no reserved vertical scroller gutter in hosting geometry")
+    }
+}
+@main struct FolderUIChecks {
+    @MainActor static func main() {
+        let app = NSApplication.shared
+        app.setActivationPolicy(.prohibited)
+        print("ENV macOS=\(ProcessInfo.processInfo.operatingSystemVersionString); preferredScrollerStyle=\(NSScroller.preferredScrollerStyle.rawValue)")
+        for kind in ["scroll", "list"] {
+            let state = FixtureState()
+            let host = NSHostingView(rootView: HostedFixture(state: state, kind: kind))
+            host.frame = NSRect(x: 0, y: 0, width: 290, height: 300)
+            let window = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = host
+            settle(host); observe(host, label: "\(kind)-empty-settled")
+            state.rows = 1; state.revision += 1
+            host.layoutSubtreeIfNeeded(); observe(host, label: "\(kind)-one-immediate")
+            settle(host); observe(host, label: "\(kind)-one-settled")
+            state.rows = 30; state.revision += 1
+            settle(host); observe(host, label: "\(kind)-many-settled")
+            state.rows = 0; state.revision += 1
+            settle(host); observe(host, label: "\(kind)-empty-again-settled")
+            window.contentView = nil
+            window.close()
+        }
+        // Explicit hosting ancestors between helper and NSClipView, rather than direct NSView-only control.
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 160, height: 100))
+        scroll.scrollerStyle = .legacy; scroll.drawsBackground = true; scroll.autohidesScrollers = false
+        scroll.contentView.drawsBackground = true; scroll.contentView.backgroundColor = .white
+        let host = NSHostingView(rootView: Text("Synthetic control").frame(width: 160, height: 400).background(VemoScrollAppearance()))
+        host.frame = NSRect(x: 0, y: 0, width: 160, height: 400)
+        scroll.documentView = host
+        let window = NSWindow(contentRect: scroll.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = scroll
+        settle(host); observe(scroll, label: "explicit-white-clip-settled")
+        let beforeScroller = scroll.verticalScroller
+        for helper in descendants(host).compactMap({ $0 as? VemoScrollAppearance.Surface }) { helper.configure() }
+        check(scroll.verticalScroller === beforeScroller, "trackless replacement idempotent across repeated configure")
+        check(VemoScrollAppearance.Surface.TracklessScroller.isCompatibleWithOverlayScrollers, "trackless subclass remains compatible with native overlay knob")
+        // Adversarial ancestor repaint after configuration records if a subsequent configure corrects it.
+        scroll.contentView.drawsBackground = true; scroll.contentView.backgroundColor = .white
+        for helper in descendants(host).compactMap({ $0 as? VemoScrollAppearance.Surface }) { helper.configure() }
+        print("OBSERVE explicit-white-clip-reapply: scrollDraws=\(scroll.drawsBackground) clipDraws=\(scroll.contentView.drawsBackground)")
+        window.contentView = nil; window.close()
+        print("RESULT: \(passed) assertions passed; \(failed) failed")
+        fflush(stdout); exit(failed == 0 ? 0 : 1)
+    }
+}

@@ -1,0 +1,229 @@
+import AppKit
+import SwiftUI
+import UniformTypeIdentifiers
+import OSLog
+import ObjectiveC
+import Foundation
+import Darwin
+
+typealias ViewState<Value> = SwiftUI.State<Value>
+enum DemoContent { static let enabled = false }
+/* SESSION_SOURCE */
+/* ROW_SOURCE */
+
+@MainActor var passed = 0
+@MainActor var failed = 0
+@MainActor func check(_ yes: Bool, _ title: String) {
+    if yes { passed += 1; print("PASS: " + title) }
+    else { failed += 1; print("FAIL: " + title) }
+    fflush(stdout)
+}
+@MainActor final class Sink {
+    static let shared = Sink()
+    var selections = 0
+    var dataRequests = 0
+    var started = 0
+    var received = 0
+    var ended = 0
+    var captured: Data?
+    var highlight = false
+    var dropAllowed = true
+    let fakeSession = NSDraggingSession()
+}
+// Process-local ObjC override on the product Surface class ONLY. It captures the AppKit
+// session-start call and returns an inert constructed session; no native drag or global event.
+@MainActor func installSessionCapture() -> Bool {
+    let selector = #selector(NSView.beginDraggingSession(with:event:source:))
+    guard let method = class_getInstanceMethod(NSView.self, selector), let encoding = method_getTypeEncoding(method) else { return false }
+    let body: @MainActor @convention(block) (AnyObject, NSArray, NSEvent, AnyObject) -> NSDraggingSession = { _, items, _, _ in
+        let sink = Sink.shared
+        sink.started += 1
+        if let item = items.firstObject as? NSDraggingItem, let p = item.item as? NSPasteboardItem {
+            sink.captured = p.data(forType: VemoLibraryItemInteraction.Surface.itemType)
+        }
+        return sink.fakeSession
+    }
+    return class_addMethod(VemoLibraryItemInteraction.Surface.self, selector, imp_implementationWithBlock(body), encoding)
+}
+@MainActor func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap { descendants($0) } }
+@MainActor func event(_ type: NSEvent.EventType, _ point: NSPoint, _ window: NSWindow) -> NSEvent {
+    NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+}
+@MainActor func key(_ code: UInt16, _ window: NSWindow) -> NSEvent {
+    NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, characters: code == 49 ? " " : "\r", charactersIgnoringModifiers: code == 49 ? " " : "\r", isARepeat: false, keyCode: code)!
+}
+@MainActor func pump(_ host: NSView) {
+    let deadline = Date().addingTimeInterval(0.25)
+    repeat { host.layoutSubtreeIfNeeded(); _ = RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01)) } while Date() < deadline
+}
+struct InteractionHost: View {
+    let input: VemoLibraryItemInteraction
+    var body: some View {
+        VemoFolderRow(name: "Synthetic row", icon: "folder", count: 0, depth: 0, selected: false,
+                      select: {}, input: input)
+            .contextMenu { Button("Synthetic context") {} }
+            .frame(width: 290, height: 34)
+    }
+}
+@MainActor func pasteboard(_ items: [(NSPasteboard.PasteboardType, Data)]) -> NSPasteboard {
+    let p = NSPasteboard(name: NSPasteboard.Name("vemo-fixture-" + UUID().uuidString))
+    p.clearContents()
+    let values = items.map { type, bytes in let item = NSPasteboardItem(); item.setData(bytes, forType: type); return item }
+    p.writeObjects(values)
+    return p
+}
+@main struct NativeInteractionChecks {
+    @MainActor static func main() throws {
+        NSApplication.shared.setActivationPolicy(.prohibited)
+        let sink = Sink.shared
+        let captureInstalled = installSessionCapture()
+        check(captureInstalled, "process-local AppKit session-start capture installed on product Surface only")
+        guard captureInstalled else { exit(2) }
+        let session = VemoLibraryDragSession()
+        let payload = LibraryDragPayload(kind: .folder, id: "synthetic-folder", sessionID: "synthetic-session")
+        let bytes = try JSONEncoder().encode(payload)
+        _ = session.provider(for: payload)
+        let input = VemoLibraryItemInteraction(label: "Synthetic row", recordingCount: 7, select: { sink.selections += 1 },
+            dragData: { sink.dataRequests += 1; return bytes },
+            dragEnded: { data in sink.ended += 1; if let decoded = try? JSONDecoder().decode(LibraryDragPayload.self, from: data) { session.finish(ifCurrent: decoded) } },
+            canDrop: { data in session.matchingPayload(data: data) != nil && sink.dropAllowed },
+            receiveDrop: { data in guard let current = session.matchingPayload(data: data) else { return false }; sink.received += 1; session.finish(ifCurrent: current); return true },
+            targeted: { sink.highlight = $0 })
+        let host = NSHostingView(rootView: InteractionHost(input: input))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 290, height: 34), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = host
+        pump(host)
+        let surfaces = descendants(host).compactMap { $0 as? VemoLibraryItemInteraction.Surface }
+        check(surfaces.count == 1, "actual folder row materializes one native interaction overlay")
+        guard let control = surfaces.first else { exit(2) }
+        check(control.accessibilityLabel() == "Synthetic row, 7개 녹음", "actual hosted native accessibility label includes recording count")
+        print("BOUNDS overlay=\(control.frame) bounds=\(control.bounds) host=\(host.bounds)")
+        check(abs(control.bounds.width - 265) < 0.5 && abs(control.bounds.height - 34) < 0.5, "overlay covers selection label and leaves 25px leading disclosure slot")
+        for x: CGFloat in [40, 100, 200, 278] {
+            let point = host.convert(NSPoint(x: x, y: 17), to: host.superview)
+            check(host.hitTest(point) === control, "hosted row x=\(x) hits native overlay")
+        }
+        let leading = host.convert(NSPoint(x: 12, y: 17), to: host.superview)
+        check(host.hitTest(leading) !== control, "leading disclosure slot excluded from selection overlay")
+        check(control.registeredDraggedTypes == [VemoLibraryItemInteraction.Surface.itemType], "destination registers only exact library item pasteboard type")
+        check(control.acceptsFirstMouse(for: nil), "non-key parent first mouse accepted without separate activation click")
+        check(control.isAccessibilityElement(), "native row exposed as accessibility element")
+        let menuPoint = control.convert(NSPoint(x: 80, y: 17), to: nil)
+        let menuEvent = event(.rightMouseDown, menuPoint, window)
+        let contextMenu = control.menu(for: menuEvent)
+        print("MENU native overlay menu=\(contextMenu != nil) items=\(contextMenu?.numberOfItems ?? 0)")
+        var menuAncestor = control.superview
+        while let ancestor = menuAncestor {
+            let menu = ancestor.menu(for: menuEvent)
+            print("MENU ancestor=\(type(of: ancestor)) menu=\(menu != nil) items=\(menu?.numberOfItems ?? 0)")
+            menuAncestor = ancestor.superview
+        }
+        check(contextMenu != nil && (contextMenu?.numberOfItems ?? 0) > 0, "native overlay forwards hosted SwiftUI context menu for right mouse event")
+        let local = NSPoint(x: 80, y: 17)
+        let origin = control.convert(local, to: nil)
+        control.mouseUp(with: event(.leftMouseUp, origin, window))
+        check(sink.selections == 0, "orphan mouseUp never selects")
+        control.mouseDown(with: event(.leftMouseDown, origin, window))
+        let outside = control.convert(NSPoint(x: -10, y: 17), to: nil)
+        control.mouseUp(with: event(.leftMouseUp, outside, window))
+        check(sink.selections == 0, "release outside overlay never selects")
+        control.mouseUp(with: event(.leftMouseUp, origin, window))
+        check(sink.selections == 0, "outside release clears press state and prevents orphan reselection")
+        control.mouseDown(with: event(.leftMouseDown, origin, window))
+        check(window.firstResponder === control && sink.selections == 0, "mouseDown focuses native overlay without premature selection")
+        control.mouseUp(with: event(.leftMouseUp, origin, window))
+        check(sink.selections == 1, "stationary click selects exactly once")
+        control.keyDown(with: key(36, window)); control.keyDown(with: key(49, window)); control.keyDown(with: key(76, window))
+        check(sink.selections == 4, "Return Space keypad Enter have click selection parity")
+        control.keyDown(with: key(0, window))
+        control.keyDown(with: key(53, window))
+        check(sink.selections == 4, "unsupported letter and Escape keys never invoke selection")
+        check(control.accessibilityPerformPress() && sink.selections == 5, "accessibility press has same select callback")
+        control.mouseDown(with: event(.leftMouseDown, origin, window))
+        control.mouseDragged(with: event(.leftMouseDragged, NSPoint(x: origin.x + 3.99, y: origin.y), window))
+        check(sink.dataRequests == 0 && sink.started == 0, "under-4px drag neither requests data nor starts session")
+        control.mouseUp(with: event(.leftMouseUp, origin, window))
+        check(sink.selections == 6, "sub-threshold motion still selects on mouseUp")
+        control.mouseDown(with: event(.leftMouseDown, origin, window))
+        control.mouseDragged(with: event(.leftMouseDragged, NSPoint(x: origin.x + 4, y: origin.y), window))
+        check(sink.dataRequests == 1 && sink.started == 1 && sink.captured == bytes, "4px starts one intercepted session with exact library JSON bytes")
+        control.mouseDragged(with: event(.leftMouseDragged, NSPoint(x: origin.x + 20, y: origin.y), window))
+        check(sink.started == 1 && sink.dataRequests == 1, "repeated drag updates cannot start duplicate source session")
+        control.mouseUp(with: event(.leftMouseUp, origin, window))
+        check(sink.selections == 6, "mouseUp after started drag never selects")
+        control.draggingSession(sink.fakeSession, endedAt: .zero, operation: [])
+        check(sink.ended == 1 && session.payload == nil, "cancelled source end conditionally finishes exact current payload")
+        control.draggingSession(sink.fakeSession, endedAt: .zero, operation: [])
+        check(sink.ended == 1, "duplicate source end has no second captured-data callback")
+        _ = session.provider(for: payload)
+        control.mouseDown(with: event(.leftMouseDown, origin, window))
+        control.mouseDragged(with: event(.leftMouseDragged, NSPoint(x: origin.x + 4, y: origin.y), window))
+        let newer = LibraryDragPayload(kind: .folder, id: "synthetic-folder", sessionID: "synthetic-session")
+        _ = session.provider(for: newer)
+        control.draggingSession(sink.fakeSession, endedAt: .zero, operation: [])
+        check(session.payload == newer, "older native drag end cannot consume newer same-id session")
+        let savedInput = control.input
+        let startsBeforeInvalid = sink.started
+        control.input = VemoLibraryItemInteraction(label: "Synthetic invalid source", select: { sink.selections += 1 }, dragData: { Data(repeating: 1, count: 4097) })
+        control.mouseDown(with: event(.leftMouseDown, origin, window))
+        control.mouseDragged(with: event(.leftMouseDragged, NSPoint(x: origin.x + 4, y: origin.y), window))
+        check(sink.started == startsBeforeInvalid, "oversized source data never starts native session")
+        control.mouseUp(with: event(.leftMouseUp, origin, window))
+        let afterInvalid = sink.selections
+        control.input = VemoLibraryItemInteraction(label: "Synthetic no source", select: { sink.selections += 1 })
+        control.mouseDown(with: event(.leftMouseDown, origin, window))
+        control.mouseDragged(with: event(.leftMouseDragged, NSPoint(x: origin.x + 10, y: origin.y), window))
+        control.mouseUp(with: event(.leftMouseUp, origin, window))
+        check(sink.started == startsBeforeInvalid && sink.selections == afterInvalid + 1, "no drag provider leaves direct click selection available")
+        control.input = VemoLibraryItemInteraction(label: "Synthetic root target")
+        check(!control.acceptsFirstResponder && !control.accessibilityPerformPress(), "nonselectable root surface does not claim focus or accessibility press")
+        control.input = savedInput
+        _ = session.provider(for: payload)
+        check(session.matchingPayload(data: bytes) == payload && session.payload == payload, "exact data preview matching is read-only")
+        let provider = session.provider(for: payload)
+        _ = session.beginDrop(providers: [provider])
+        check(session.matchingPayload(data: bytes) == nil, "native exact-data route rejects while SwiftUI provider load pending")
+        session.finish(); _ = session.provider(for: payload)
+        let type = VemoLibraryItemInteraction.Surface.itemType
+        let publicData = NSPasteboard.PasteboardType("public.data")
+        let oversized = bytes + Data(repeating: 32, count: 4097 - bytes.count)
+        let wrong = try JSONEncoder().encode(newer)
+        let cases: [(String, [(NSPasteboard.PasteboardType, Data)])] = [
+            ("public-data-only", [(publicData, bytes)]), ("empty", []),
+            ("two-items", [(type, bytes), (type, bytes)]), ("oversized", [(type, oversized)]),
+            ("malformed", [(type, Data("broken".utf8))]), ("different-drag", [(type, wrong)])]
+        for (label, items) in cases {
+            let board = pasteboard(items); defer { board.releaseGlobally() }
+            let info = SyntheticDraggingInfo(pasteboard: board, window: window)
+            let received = sink.received
+            check(control.draggingEntered(info) == [] && !sink.highlight, label + " cannot highlight or propose native move")
+            check(!control.prepareForDragOperation(info) && !control.performDragOperation(info) && sink.received == received, label + " rejected before receive callback")
+            check(session.payload == payload, label + " rejection preserves active source payload")
+        }
+        let board = pasteboard([(type, bytes)]); defer { board.releaseGlobally() }
+        let info = SyntheticDraggingInfo(pasteboard: board, window: window)
+        check(control.draggingEntered(info) == .move && sink.highlight, "exact active native item invokes valid destination highlight")
+        control.draggingExited(info); check(!sink.highlight, "exit clears highlight without consuming payload")
+        check(control.draggingUpdated(info) == .move && control.prepareForDragOperation(info), "exact item update and prepare invoke read-only canDrop")
+        sink.dropAllowed = false
+        check(!control.performDragOperation(info) && sink.received == 0 && !sink.highlight, "rules invalidated after preview rechecked before receive")
+        sink.dropAllowed = true
+        check(control.performDragOperation(info) && sink.received == 1 && session.payload == nil && !sink.highlight, "exact item delivers once and consumed session clears target")
+        check(!control.performDragOperation(info) && sink.received == 1, "consumed exact pasteboard bytes cannot replay drop")
+        let boundary = bytes + Data(repeating: 32, count: 4096 - bytes.count)
+        _ = session.provider(for: payload)
+        let boundaryBoard = pasteboard([(type, boundary)]); defer { boundaryBoard.releaseGlobally() }
+        let boundaryInfo = SyntheticDraggingInfo(pasteboard: boundaryBoard, window: window)
+        check(control.draggingEntered(boundaryInfo) == .move && session.matchingPayload(data: boundary) == payload, "4096-byte exact valid JSON boundary accepted")
+        check(control.draggingSession(sink.fakeSession, sourceOperationMaskFor: .withinApplication) == .move && control.draggingSession(sink.fakeSession, sourceOperationMaskFor: .outsideApplication) == [], "source operations restricted to within-application move")
+        let rootInput = VemoLibraryItemInteraction(label: "Synthetic root")
+        host.rootView = InteractionHost(input: rootInput)
+        pump(host)
+        let updatedRoot = descendants(host).compactMap { $0 as? VemoLibraryItemInteraction.Surface }.first
+        check(updatedRoot?.accessibilityLabel() == "Synthetic root", "root accessibility label omits absent recording count after update")
+        check(updatedRoot?.registeredDraggedTypes.isEmpty == true, "destination types unregister after input update removes canDrop")
+        window.contentView = nil; window.close()
+        print("RESULT: \(passed) assertions passed; \(failed) failed")
+        fflush(stdout); exit(failed == 0 ? 0 : 1)
+    }
+}

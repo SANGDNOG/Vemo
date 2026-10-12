@@ -128,17 +128,17 @@ public actor LibraryFolderStore {
         return try update(id: id, name: folder.name, parentID: parentID)
     }
 
-    /// Removes the folder and its assignments; never opens, moves or deletes recordings.
+    /// Removes the entire folder subtree and its assignments in one metadata transaction.
+    /// Never opens, moves or deletes recordings, transcripts or notes.
     public func delete(id: String) throws -> LibraryOrganization {
         try mutate { organization in
             guard organization.folders.contains(where: { $0.id == id }) else {
                 throw LibraryFolderStoreError.unknownFolder(id)
             }
-            guard !organization.folders.contains(where: { $0.parentID == id }) else {
-                throw LibraryFolderStoreError.folderHasChildren
-            }
-            organization.folders.removeAll { $0.id == id }
-            organization.assignments = organization.assignments.filter { $0.value != id }
+            var removedIDs = LibraryFolderHierarchy.descendantIDs(of: id, in: organization.folders)
+            removedIDs.insert(id)
+            organization.folders.removeAll { removedIDs.contains($0.id) }
+            organization.assignments = organization.assignments.filter { !removedIDs.contains($0.value) }
         }
     }
 

@@ -108,11 +108,15 @@ func libraryHierarchyChecks() async throws {
     try await hierarchyPreserves("Unicode normalized sibling update rejects", root: root) { _ = try await store.update(id: same, name: "CAFE\u{0301}", parentID: work) }
     let otherCafe = try await store.create(name: "Cafe\u{0301}", parentID: personal)
     try check(otherCafe.folders.last?.name == "Café" && otherCafe.folders.last?.parentID == personal, "Unicode normalized names remain allowed under different parents")
-    try await hierarchyPreserves("nonleaf delete rejects", root: root) { _ = try await store.delete(id: child) }
-    state = try await store.delete(id: grandchild)
-    try check(!state.folders.contains(where: { $0.id == grandchild }) && state.assignments["at-grandchild"] == nil && state.assignments["at-child"] == child && state.assignments["at-other"] == same, "leaf deletion unfiles only direct assignments")
+    let beforeDelete = try await store.load()
     state = try await store.delete(id: child)
-    try check(state.assignments["at-child"] == nil && state.assignments["at-root"] == work && state.assignments["at-other"] == same && state.folders.contains(where: { $0.id == topSame }), "former parent becomes deletable after last child removal")
+    try check(state.folders == beforeDelete.folders.filter { $0.id != child && $0.id != grandchild }
+              && state.assignments == ["at-root": work, "at-other": same],
+              "nonleaf deletion removes child subtree and unfiles its assignments only")
+    let afterDeleteRestart = try await LibraryFolderStore(root: root).load()
+    try check(state.revision == beforeDelete.revision + 1 && afterDeleteRestart == state,
+              "nonleaf deletion commits once and survives restart")
+    try check(state.folders.contains(where: { $0.id == topSame }), "subtree deletion preserves unrelated root with same name")
 
     // A valid externally replaced v2 graph must also be reread rather than overwritten.
     let external = root.appendingPathComponent("external-v2")
@@ -219,6 +223,7 @@ private func hierarchyInvalidFileChecks(root: URL) async throws {
         let store = LibraryFolderStore(root: destination)
         try await hierarchyPreserves("v\(version) revision guard rejects create", root: destination) { _ = try await store.create(name: "New", parentID: "a") }
         try await hierarchyPreserves("v\(version) revision guard rejects update", root: destination) { _ = try await store.update(id: "a", name: "New", parentID: nil) }
+        try await hierarchyPreserves("v\(version) revision guard rejects delete", root: destination) { _ = try await store.delete(id: "a") }
         try check(!FileManager.default.fileExists(atPath: destination.appendingPathComponent("native/library-v1-backup.json").path), "v\(version) revision exhaustion creates no backup")
     }
 }

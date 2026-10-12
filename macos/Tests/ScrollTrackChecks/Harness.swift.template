@@ -1,0 +1,80 @@
+import AppKit
+import SwiftUI
+import ObjectiveC.runtime
+/* HELPER */
+@main struct Checks {
+    @MainActor static func main() {
+        _ = NSApplication.shared
+        var passed = 0, failed = 0
+        func check(_ value: Bool, _ name: String) {
+            if value { passed += 1; print("PASS: " + name) }
+            else { failed += 1; print("FAIL: " + name) }
+        }
+        let preference = NSScroller.preferredScrollerStyle
+        let unrelated = NSScrollView(frame: NSRect(x: 0, y: 0, width: 160, height: 160))
+        unrelated.hasVerticalScroller = true
+        unrelated.scrollerStyle = .legacy
+        let unrelatedScroller = unrelated.verticalScroller
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 160, height: 160))
+        scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = true
+        let document = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 400))
+        let surface = VemoScrollAppearance.Surface(frame: document.bounds)
+        document.addSubview(surface)
+        scroll.documentView = document
+        surface.configure()
+        let vertical = scroll.verticalScroller!, horizontal = scroll.horizontalScroller!
+        check(type(of: vertical) != NSScroller.self && type(of: horizontal) == type(of: vertical), "both matched scrollers use trackless subclass")
+        check(type(of: vertical).isCompatibleWithOverlayScrollers, "custom scroller explicitly supports overlay")
+        surface.configure()
+        check(scroll.verticalScroller === vertical && scroll.horizontalScroller === horizontal, "reconfiguration preserves scroller identity")
+        check(scroll.scrollerStyle == .overlay && !scroll.drawsBackground && scroll.autohidesScrollers, "matched ancestor keeps transparent overlay autohide settings")
+        check(unrelated.scrollerStyle == .legacy && unrelated.verticalScroller === unrelatedScroller && NSScroller.preferredScrollerStyle == preference, "unrelated scroll and global preference unchanged")
+        check(surface.hitTest(.zero) == nil, "appearance helper remains passive")
+        let standalone = VemoScrollAppearance.Surface(); standalone.configure()
+        check(standalone.enclosingScrollView == nil, "unattached helper is safe")
+        func render(_ scroller: NSScroller, knob: Bool, highlight: Bool) -> (Int, Int) {
+            let size = scroller.frame.size
+            let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width), pixelsHigh: Int(size.height), bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+            let context = NSGraphicsContext(bitmapImageRep: bitmap)!
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = context
+            NSColor(calibratedRed: 0.18, green: 0.36, blue: 0.62, alpha: 1).setFill()
+            NSRect(origin: .zero, size: size).fill()
+            context.cgContext.flush()
+            let before = Data(bytes: bitmap.bitmapData!, count: bitmap.bytesPerRow * bitmap.pixelsHigh)
+            if knob { scroller.drawKnob() }
+            else { scroller.drawKnobSlot(in: scroller.bounds, highlight: highlight) }
+            context.cgContext.flush()
+            let after = Data(bytes: bitmap.bitmapData!, count: before.count)
+            NSGraphicsContext.restoreGraphicsState()
+            let changed = zip(before, after).filter { $0 != $1 }.count
+            return (changed, before.count)
+        }
+        let standard = NSScroller(frame: NSRect(x: 0, y: 0, width: 16, height: 180))
+        standard.scrollerStyle = .overlay; standard.knobProportion = 0.35; standard.doubleValue = 0.5
+        for highlight in [false, true] {
+            print("OBSERVED: standard overlay slot highlight=\(highlight) changedBytes=\(render(standard, knob: false, highlight: highlight).0)")
+        }
+        for (axis, scroller, frame) in [("vertical", vertical, NSRect(x: 0, y: 0, width: 16, height: 180)), ("horizontal", horizontal, NSRect(x: 0, y: 0, width: 180, height: 16))] {
+            scroller.frame = frame; scroller.scrollerStyle = .overlay
+            scroller.isEnabled = true; scroller.knobProportion = 0.35; scroller.doubleValue = 0.5
+            check(!scroller.rect(for: .knob).isEmpty, axis + " inherited knob has usable geometry")
+            for style in [NSScroller.Style.overlay, .legacy] {
+                scroller.scrollerStyle = style
+                for highlight in [false, true] {
+                    check(render(scroller, knob: false, highlight: highlight).0 == 0, axis + " slot preserves contrasting pixels for \(style) highlight=\(highlight)")
+                }
+            }
+            scroller.scrollerStyle = .overlay; scroller.knobStyle = .light
+            let selector = #selector(NSScroller.drawKnob)
+            let inherited = class_getInstanceMethod(type(of: scroller), selector)!
+            let original = class_getInstanceMethod(NSScroller.self, selector)!
+            check(method_getImplementation(inherited) == method_getImplementation(original), axis + " knob drawing remains AppKit inherited implementation")
+            let changed = render(scroller, knob: true, highlight: false).0
+            print("OBSERVED: \(axis) inherited knob changedBytes=\(changed)")
+            check(changed > 0, axis + " inherited knob renders on contrasting bitmap")
+        }
+        print("RESULT: \(passed) assertions passed; \(failed) failed")
+        exit(failed == 0 ? 0 : 1)
+    }
+}

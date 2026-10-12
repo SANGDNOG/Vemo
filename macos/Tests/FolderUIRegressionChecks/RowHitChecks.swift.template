@@ -1,0 +1,64 @@
+import AppKit
+import SwiftUI
+import UniformTypeIdentifiers
+import OSLog
+import Foundation
+import Darwin
+
+typealias ViewState<Value> = SwiftUI.State<Value>
+enum DemoContent { static let enabled = false }
+/* ROW_SOURCE */
+struct RowHost: View {
+    let dragEnabled: Bool
+    var body: some View {
+        ScrollView {
+            VemoFolderRow(name: "Synthetic folder", icon: "folder", count: 0, depth: 0, selected: false,
+                          select: {}, drag: dragEnabled ? { NSItemProvider() } : nil)
+                .contextMenu { Button("Synthetic menu") {} }
+        }.frame(width: 290, height: 100)
+    }
+}
+@MainActor func descendants(_ v: NSView) -> [NSView] { [v] + v.subviews.flatMap { descendants($0) } }
+@MainActor func describe(_ hit: NSView?) -> String {
+    guard let hit else { return "nil" }
+    var names: [String] = []; var next: NSView? = hit
+    while let v = next { names.append(String(describing: type(of: v))); next = v.superview }
+    return names.joined(separator: " > ")
+}
+@main struct RowHitChecks {
+    @MainActor static func main() {
+        NSApplication.shared.setActivationPolicy(.prohibited)
+        var passed = 0; var failed = 0
+        for drag in [false, true] {
+            let host = NSHostingView(rootView: RowHost(dragEnabled: drag))
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 290, height: 100), styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false; window.contentView = host
+            let deadline = Date().addingTimeInterval(0.3)
+            repeat {
+                host.layoutSubtreeIfNeeded()
+                _ = RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01))
+            } while Date() < deadline
+            print("ROW drag=\(drag) hostAcceptsFirstResponder=\(host.acceptsFirstResponder)")
+            for x: CGFloat in [12, 40, 100, 200, 278] {
+                let p = host.convert(NSPoint(x: x, y: 17), to: host.superview)
+                let hit = host.hitTest(p)
+                print("HIT x=\(x) y=17 path=\(describe(hit))")
+                if x >= 40 {
+                    if hit != nil { passed += 1; print("PASS: row selection region native hit route nonnil") }
+                    else { failed += 1; print("FAIL: row selection region native hit route nonnil") }
+                }
+            }
+            for view in descendants(host) where !view.gestureRecognizers.isEmpty {
+                for gesture in view.gestureRecognizers {
+                    print("GESTURE view=\(type(of:view)) class=\(type(of:gesture)) enabled=\(gesture.isEnabled) state=\(gesture.state.rawValue)")
+                }
+            }
+            for button in descendants(host).compactMap({ $0 as? NSButton }) {
+                print("BUTTON class=\(type(of:button)) enabled=\(button.isEnabled) frame=\(button.frame)")
+            }
+            window.contentView = nil; window.close()
+        }
+        print("RESULT: \(passed) assertions passed; \(failed) failed")
+        fflush(stdout); exit(failed == 0 ? 0 : 1)
+    }
+}

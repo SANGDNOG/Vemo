@@ -7,6 +7,7 @@ private func folderRejects(_ name: String, _ action: () async throws -> Void) as
 }
 
 func libraryFolderChecks() async throws {
+    try await libraryFolderSubtreeDeletionChecks()
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("LibraryFolderChecks-" + UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let file = root.appendingPathComponent("native/library.json")
@@ -113,4 +114,61 @@ func libraryFolderChecks() async throws {
     try check(Set(object.keys) == ["schema_version", "revision", "folders", "assignments"], "library uses exact versioned public JSON fields")
     let children = try FileManager.default.contentsOfDirectory(atPath: concurrentRoot.path)
     try check(children == ["native"], "logical organization writes only native state and no recording artifacts")
+}
+
+private func libraryFolderSubtreeDeletionChecks() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("LibrarySubtreeChecks-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let file = root.appendingPathComponent("native/library.json")
+    try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+    // Children precede parents; the removed branch has siblings and a grandchild.
+    let folders = [
+        LibraryFolder(id: "grandchild", name: "Grandchild", parentID: "child"),
+        LibraryFolder(id: "peer-child", name: "Child", parentID: "peer"),
+        LibraryFolder(id: "child", name: "Child", parentID: "branch"),
+        LibraryFolder(id: "sibling", name: "Sibling", parentID: "branch"),
+        LibraryFolder(id: "branch", name: "Branch", parentID: "ancestor"),
+        LibraryFolder(id: "peer", name: "Peer", parentID: "ancestor"),
+        LibraryFolder(id: "ancestor", name: "Ancestor"),
+        LibraryFolder(id: "other-root", name: "Other")
+    ]
+    let original = LibraryOrganization(revision: 40, folders: folders, assignments: [
+        "branch-job": "branch", "child-job": "child", "grandchild-job": "grandchild", "sibling-job": "sibling",
+        "ancestor-job": "ancestor", "peer-job": "peer", "peer-child-job": "peer-child", "other-job": "other-root"
+    ])
+    try JSONEncoder().encode(original).write(to: file, options: .atomic)
+    // Synthetic recording/output sentinels: unfiling must preserve actual artifacts.
+    let artifacts = ["recordings/child.m4a", "outputs/grandchild/transcript.txt", "outputs/grandchild/notes.md"]
+    for path in artifacts {
+        let url = root.appendingPathComponent(path)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(("synthetic " + path).utf8).write(to: url)
+    }
+    let store = LibraryFolderStore(root: root)
+    let deleted = try await store.delete(id: "branch")
+    let expected = LibraryOrganization(revision: 41, folders: [folders[1], folders[5], folders[6], folders[7]], assignments: [
+        "ancestor-job": "ancestor", "peer-job": "peer", "peer-child-job": "peer-child", "other-job": "other-root"
+    ])
+    try check(deleted == expected, "subtree deletion removes all descendants and assignments in one revision, preserving ancestors and peers")
+    try check(try JSONDecoder().decode(LibraryOrganization.self, from: Data(contentsOf: file)) == expected,
+              "subtree deletion durably commits folders and assignments together")
+    try check(try await LibraryFolderStore(root: root).load() == expected, "subtree deletion survives a fresh store restart")
+    for path in artifacts {
+        try check(try Data(contentsOf: root.appendingPathComponent(path)) == Data(("synthetic " + path).utf8),
+                  "subtree deletion preserves synthetic recording/transcript/notes bytes")
+    }
+    let bytes = try Data(contentsOf: file)
+    for id in ["missing", "", "branch", "grandchild"] {
+        do {
+            _ = try await store.delete(id: id)
+            throw NativeFailure.invalid("FAIL: unknown/deleted subtree deletion must reject")
+        } catch LibraryFolderStoreError.unknownFolder(let rejected) {
+            try check(rejected == id, "unknown/deleted subtree target reports its ID")
+        }
+        try check(try Data(contentsOf: file) == bytes, "unknown/deleted subtree target preserves durable bytes and revision")
+    }
+    let rootDeleted = try await store.delete(id: "ancestor")
+    try check(rootDeleted == LibraryOrganization(revision: 42, folders: [folders[7]], assignments: ["other-job": "other-root"]),
+              "root deletion removes remaining descendant branches while preserving unrelated root")
+    try check(try await LibraryFolderStore(root: root).load() == rootDeleted, "root subtree deletion survives restart")
 }

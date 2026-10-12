@@ -1,0 +1,205 @@
+import AppKit
+import SwiftUI
+import Foundation
+import Darwin
+
+typealias FixtureViewState<Value> = SwiftUI.State<Value>
+
+/* SCROLL_HELPER */
+
+@MainActor final class LifecycleState: ObservableObject {
+    @Published var rows: [Int] = []
+    @Published var busy = false
+    @Published var revision = 0
+    var present: (() -> Void)?
+    var dismiss: (() -> Void)?
+    var dismissCount = 0
+    var initialRoutes: [String: String] = [:]
+}
+struct InputWitness: NSViewRepresentable {
+    let id: String
+    func makeNSView(context: Context) -> NSTextField {
+        let field = NSTextField(string: "Synthetic " + id)
+        field.identifier = NSUserInterfaceItemIdentifier(id)
+        field.isEditable = true; field.isSelectable = true
+        return field
+    }
+    func updateNSView(_ field: NSTextField, context: Context) {}
+}
+struct LifecycleView: View {
+    @ObservedObject var state: LifecycleState
+    @FixtureViewState private var editor = false
+    @FixtureViewState private var name = "Synthetic folder"
+    @FixtureViewState private var search = ""
+    @FixtureViewState private var visibility = NavigationSplitViewVisibility.all
+    var body: some View {
+        NavigationSplitView(columnVisibility: $visibility) {
+            VStack(spacing: 4) {
+                HStack {
+                    Text("Synthetic library")
+                    Spacer()
+                    Button("New") { editor = true }.disabled(state.busy)
+                }
+                if !state.rows.isEmpty {
+                    ScrollView {
+                        VStack(spacing: 3) {
+                            ForEach(state.rows, id: \.self) { row in
+                                Text("Synthetic folder \(row)")
+                                    .frame(maxWidth: .infinity, minHeight: 34)
+                                    .contentShape(Rectangle()).onTapGesture {}
+                                    .transition(.opacity)
+                            }
+                        }.animation(.easeOut(duration: 0.18), value: state.rows)
+                            .background(VemoScrollAppearance())
+                    }.frame(maxHeight: min(CGFloat(state.rows.count) * 37, 200))
+                }
+                TextField("Synthetic search", text: $search)
+                InputWitness(id: "sidebar-input").frame(height: 26)
+                Spacer()
+            }.padding(12).frame(minWidth: 250, idealWidth: 290)
+                .navigationSplitViewColumnWidth(min: 250, ideal: 290, max: 420)
+        } detail: {
+            VStack {
+                Text("Synthetic detail revision \(state.revision)")
+                InputWitness(id: "detail-input").frame(width: 180, height: 26)
+                Spacer()
+            }.padding(20)
+        }
+        .sheet(isPresented: $editor, onDismiss: { state.dismissCount += 1 }) {
+            VStack(alignment: .leading, spacing: 20) {
+                Text("Synthetic new folder")
+                TextField("Synthetic folder name", text: $name)
+                InputWitness(id: "sheet-input").frame(height: 26)
+                ScrollView {
+                    VStack(spacing: 3) {
+                        Text("Synthetic top level")
+                        ForEach(state.rows, id: \.self) { row in Text("Synthetic parent \(row)") }
+                    }.padding(6).background(VemoScrollAppearance())
+                }.frame(height: min(CGFloat(state.rows.count + 1) * 36 + 12, 210))
+                HStack {
+                    Spacer()
+                    Button("Cancel") { editor = false }.keyboardShortcut(.cancelAction)
+                    Button("Create") { editor = false }.keyboardShortcut(.defaultAction).disabled(state.busy)
+                }
+            }.padding(24).frame(width: 400)
+        }
+        .onAppear {
+            state.present = { editor = true }
+            state.dismiss = { editor = false }
+        }
+    }
+}
+@MainActor func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap { descendants($0) } }
+@MainActor var passed = 0
+@MainActor var failed = 0
+@MainActor func check(_ yes: Bool, _ title: String) {
+    if yes { passed += 1; print("PASS: " + title) }
+    else { failed += 1; print("FAIL: " + title) }
+    fflush(stdout)
+}
+@MainActor func pump(_ host: NSView, seconds: TimeInterval, until: (() -> Bool)? = nil) {
+    let deadline = Date().addingTimeInterval(seconds)
+    repeat {
+        host.layoutSubtreeIfNeeded()
+        _ = RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        if until?() == true { break }
+    } while Date() < deadline
+}
+@MainActor func snapshot(_ window: NSWindow, _ state: LifecycleState, _ label: String) {
+    let sheet = window.attachedSheet
+    let sheetLink = sheet?.sheetParent === window
+    let responder = window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
+    let responderWindow = (window.firstResponder as? NSView)?.window === window
+    print("WINDOW \(label): attachedSheet=\(sheet != nil) childSheetParent=\(sheetLink) parentSheetParent=\(window.sheetParent != nil) key=\(window.isKeyWindow) main=\(window.isMainWindow) visible=\(window.isVisible) sheetKey=\(sheet?.isKeyWindow ?? false) responder=\(responder) responderInParent=\(responderWindow) dismissCount=\(state.dismissCount) rows=\(state.rows.count) busy=\(state.busy)")
+    if let sheet { print("SHEET \(label): visible=\(sheet.isVisible) responder=\(sheet.firstResponder.map { String(describing: type(of: $0)) } ?? "nil")") }
+    if let content = window.contentView {
+        for field in descendants(content).compactMap({ $0 as? NSTextField }) {
+            let id = field.identifier?.rawValue ?? "framework-textfield"
+            let point = field.convert(NSPoint(x: field.bounds.midX, y: field.bounds.midY), to: content.superview)
+            let hit = content.hitTest(point)
+            print("HIT \(label): id=\(id) hidden=\(field.isHiddenOrHasHiddenAncestor) enabled=\(field.isEnabled) editable=\(field.isEditable) acceptsResponder=\(field.acceptsFirstResponder) point=\(point) hit=\(hit.map { String(describing: type(of: $0)) } ?? "nil") hitIsField=\(hit === field) hitInField=\(hit?.isDescendant(of: field) ?? false) fieldInHit=\(hit.map { field.isDescendant(of: $0) } ?? false)")
+        }
+        for scroll in descendants(content).compactMap({ $0 as? NSScrollView }) {
+            print("SCROLL \(label): class=\(type(of: scroll)) style=\(scroll.scrollerStyle.rawValue) draws=\(scroll.drawsBackground) clipDraws=\(scroll.contentView.drawsBackground) width=\(scroll.bounds.width) clipWidth=\(scroll.contentView.frame.width)")
+        }
+    }
+    fflush(stdout)
+}
+@MainActor func inspectInputs(_ window: NSWindow, _ state: LifecycleState, _ label: String) {
+    guard let content = window.contentView else { check(false, label + " has content"); return }
+    let fields = descendants(content).compactMap { $0 as? NSTextField }.filter { $0.identifier?.rawValue.hasSuffix("-input") == true }
+    check(fields.count == 2, label + " sidebar and detail witnesses mounted")
+    for field in fields {
+        let id = field.identifier!.rawValue
+        let point = field.convert(NSPoint(x: field.bounds.midX, y: field.bounds.midY), to: content.superview)
+        let hit = content.hitTest(point)
+        check(!field.isHiddenOrHasHiddenAncestor && field.isEnabled && field.isEditable, label + " " + id + " visible enabled editable")
+        let route = hit.map { String(describing: type(of: $0)) } ?? "nil"
+        if label.hasSuffix("-initial") { state.initialRoutes[id] = route }
+        check(hit === field || hit?.isDescendant(of: field) == true || hit.map { field.isDescendant(of: $0) } == true, label + " " + id + " native route contains field or its hosting ancestor")
+        check(state.initialRoutes[id] == route, label + " " + id + " native hit route matches pre-sheet baseline")
+        let localPoint = field.convert(NSPoint(x: field.bounds.midX, y: field.bounds.midY), to: field.superview)
+        let directHit = field.hitTest(localPoint)
+        check(directHit === field || directHit?.isDescendant(of: field) == true, label + " " + id + " direct native field hit-test accepts center")
+        let accepts = window.makeFirstResponder(field)
+        let responder = window.firstResponder
+        let editor = field.currentEditor()
+        check(accepts && (responder === field || (editor != nil && responder === editor)), label + " " + id + " accepts programmatic first responder")
+        check((responder as? NSView)?.window === window, label + " " + id + " responder belongs to parent window")
+        _ = window.makeFirstResponder(nil)
+    }
+}
+@main struct SheetLifecycleChecks {
+    @MainActor static func main() {
+        let app = NSApplication.shared
+        app.setActivationPolicy(.prohibited)
+        print("ENV macOS=\(ProcessInfo.processInfo.operatingSystemVersionString) preferredScrollerStyle=\(NSScroller.preferredScrollerStyle.rawValue); owned windows ordered offscreen without activation or synthesized input")
+        for mode in ["publish-before-dismiss", "dismiss-before-publish", "async-publish", "async-dismiss"] {
+            print("BEGIN " + mode); fflush(stdout)
+            let state = LifecycleState()
+            let host = NSHostingView(rootView: LifecycleView(state: state))
+            let window = NSWindow(contentRect: NSRect(x: -12000, y: -12000, width: 900, height: 600), styleMask: [.titled, .resizable, .closable], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false; window.animationBehavior = .none
+            window.contentView = host
+            // Sheet attachment requires an ordered parent. Never activate, raise, or operate another app.
+            window.orderFront(nil)
+            pump(host, seconds: 0.6, until: { state.present != nil })
+            snapshot(window, state, mode + "-initial")
+            inspectInputs(window, state, mode + "-initial")
+            var previousSheet: NSWindow?
+            for cycle in 1...2 {
+                state.present?()
+                pump(host, seconds: 1.0, until: { window.attachedSheet != nil })
+                let label = mode + "-cycle\(cycle)"
+                previousSheet = window.attachedSheet
+                snapshot(window, state, label + "-presented")
+                check(previousSheet != nil && previousSheet?.sheetParent === window, label + " real sheet attached to parent")
+                state.busy = true
+                let publish = { state.rows = Array(0..<(cycle == 1 ? 30 : 31)); state.revision += 1; state.busy = false }
+                switch mode {
+                case "publish-before-dismiss": publish(); state.dismiss?()
+                case "dismiss-before-publish": state.dismiss?(); publish()
+                case "async-publish": state.dismiss?(); DispatchQueue.main.async { publish() }
+                default: publish(); DispatchQueue.main.async { state.dismiss?() }
+                }
+                snapshot(window, state, label + "-same-turn")
+                pump(host, seconds: 1.2, until: { window.attachedSheet == nil && state.dismissCount >= cycle && state.rows.count >= 30 })
+                // Allow tree and dismissal animations to finish before declaring residual blockers.
+                pump(host, seconds: 0.3)
+                snapshot(window, state, label + "-dismissed")
+                print("DETACHED \(label): formerSheetParent=\(previousSheet?.sheetParent != nil) formerSheetVisible=\(previousSheet?.isVisible ?? false) formerSheetKey=\(previousSheet?.isKeyWindow ?? false)")
+                check(window.attachedSheet == nil, label + " parent sheet cleared after dismissal")
+                check(previousSheet?.sheetParent == nil, label + " former sheet parent cleared after dismissal")
+                check(state.dismissCount == cycle, label + " onDismiss exactly once per cycle")
+                check(state.rows.count == (cycle == 1 ? 30 : 31) && !state.busy, label + " async publication and busy settle")
+                inspectInputs(window, state, label + "-dismissed")
+                let scrolls = descendants(host).compactMap { $0 as? NSScrollView }
+                check(!scrolls.isEmpty && scrolls.allSatisfy { !$0.drawsBackground && !$0.contentView.drawsBackground && $0.scrollerStyle == .overlay }, label + " split tree scroll appearance preserved")
+            }
+            _ = window.makeFirstResponder(nil); window.orderOut(nil); window.contentView = nil; window.close()
+            previousSheet = nil
+        }
+        print("RESULT: \(passed) assertions passed; \(failed) failed")
+        fflush(stdout); exit(failed == 0 ? 0 : 1)
+    }
+}

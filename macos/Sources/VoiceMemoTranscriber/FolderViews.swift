@@ -19,6 +19,7 @@ struct VemoFolderRow: View {
     let select: () -> Void
     var toggle: (() -> Void)? = nil
     var drag: (() -> NSItemProvider)? = nil
+    var input: VemoLibraryItemInteraction? = nil
     @Environment(\.accessibilityReduceMotion) private var reducedMotion
     @Environment(\.colorSchemeContrast) private var contrast
     @ViewState private var hovered = false
@@ -52,18 +53,14 @@ struct VemoFolderRow: View {
         .animation(VemoTheme.motion(reducedMotion), value: targeted)
         .animation(VemoTheme.motion(reducedMotion), value: selected)
     }
-    private var selectionSurface: some View {
-        rowLabel
-            .onTapGesture(perform: select)
-            .modifier(VemoDragSource(provider: drag))
-            .focusable()
-            .onKeyPress(.space) { select(); return .handled }
-            .onKeyPress(.return) { select(); return .handled }
-            .accessibilityElement(children: .ignore)
-            .accessibilityAddTraits(.isButton)
-            .accessibilityAction { select() }
-            .accessibilityLabel(name + (count.map { ", \($0)개 녹음" } ?? ""))
-            .accessibilityAddTraits(selected ? .isSelected : [])
+    @ViewBuilder private var selectionSurface: some View {
+        if let input {
+            rowLabel.accessibilityHidden(true).overlay(input)
+        } else {
+            Button(action: select) { rowLabel }.buttonStyle(.plain)
+                .accessibilityLabel(name + (count.map { ", \($0)개 녹음" } ?? ""))
+                .accessibilityAddTraits(selected ? .isSelected : [])
+        }
     }
     private var rowLabel: some View {
         HStack(spacing: 9) {
@@ -164,6 +161,12 @@ struct VemoParentFolderPicker: View {
               decoded == expected else { return nil }
         return decoded
     }
+    func matchingPayload(data: Data) -> LibraryDragPayload? {
+        guard pendingDragID == nil, data.count <= 4096,
+              let decoded = try? JSONDecoder().decode(LibraryDragPayload.self, from: data),
+              decoded == payload else { return nil }
+        return decoded
+    }
     @discardableResult func finish(ifCurrent expected: LibraryDragPayload) -> Bool {
         guard payload == expected else { return false }
         finish()
@@ -220,11 +223,35 @@ struct VemoScrollAppearance: NSViewRepresentable {
     func makeNSView(context: Context) -> Surface { Surface() }
     func updateNSView(_ view: Surface, context: Context) { view.configure() }
     final class Surface: NSView {
+        // Suppress only the slot; AppKit retains knob drawing and interaction.
+        final class TracklessScroller: NSScroller {
+            override class var isCompatibleWithOverlayScrollers: Bool { true }
+            override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) {}
+        }
+
+        private func trackless(_ scroller: NSScroller) -> TracklessScroller {
+            let replacement = TracklessScroller(frame: scroller.frame)
+            replacement.controlSize = scroller.controlSize
+            replacement.knobStyle = scroller.knobStyle
+            replacement.isEnabled = scroller.isEnabled
+            replacement.doubleValue = scroller.doubleValue
+            replacement.knobProportion = scroller.knobProportion
+            replacement.target = scroller.target
+            replacement.action = scroller.action
+            return replacement
+        }
+
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
         override func viewDidMoveToSuperview() { super.viewDidMoveToSuperview(); configure() }
         override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); configure() }
         func configure() {
             if let scroll = enclosingScrollView {
+                if let scroller = scroll.verticalScroller, !(scroller is TracklessScroller) {
+                    scroll.verticalScroller = trackless(scroller)
+                }
+                if let scroller = scroll.horizontalScroller, !(scroller is TracklessScroller) {
+                    scroll.horizontalScroller = trackless(scroller)
+                }
                 scroll.drawsBackground = false
                 scroll.scrollerStyle = .overlay
                 scroll.autohidesScrollers = true
@@ -236,6 +263,8 @@ struct VemoScrollAppearance: NSViewRepresentable {
 struct VemoDragSource: ViewModifier {
     let provider: (() -> NSItemProvider)?
     @ViewBuilder func body(content: Content) -> some View {
-        if let provider { content.onDrag(provider) } else { content }
+        if let provider { content.onDrag {
+            return provider()
+        } } else { content }
     }
 }

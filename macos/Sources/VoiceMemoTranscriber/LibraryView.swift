@@ -101,12 +101,19 @@ struct LibraryView: View {
 
         .confirmationDialog("폴더를 삭제할까요?", isPresented: Binding(get: { deletingFolder != nil }, set: { if !$0 { deletingFolder = nil } }), titleVisibility: .visible) {
             if let folder = deletingFolder { Button("폴더 삭제", role: .destructive) { model.deleteLibraryFolder(folder.id); deletingFolder = nil }; Button("취소", role: .cancel) { deletingFolder = nil } }
-        } message: { Text("이 폴더에 직접 넣은 녹음은 미분류로 돌아갑니다. 하위 폴더가 있으면 먼저 이동하거나 삭제해 주세요. 녹음 파일, 전사문과 노트는 보존됩니다.") }
+        } message: { Text(folderDeletionMessage) }
         .safeAreaInset(edge: .bottom) {
             if let problem = model.problem {
                 HStack(alignment: .top) { Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange); Text(problem).font(.callout).textSelection(.enabled); Spacer(); Button("닫기") { model.problem = nil } }.padding(12).background(.thinMaterial)
             }
         }
+    }
+
+    private var folderDeletionMessage: String {
+        guard let folder = deletingFolder else { return "" }
+        let count = LibraryFolderHierarchy.descendantIDs(of: folder.id, in: model.library.folders).count
+        let scope = count == 0 ? "이 폴더를 삭제합니다." : "이 폴더와 하위 폴더 \(count)개를 함께 삭제합니다."
+        return scope + " 안에 있던 녹음은 미분류로 돌아가며, 녹음 파일·전사문·노트는 보존됩니다."
     }
 
     private var sidebarToggle: some View {
@@ -153,7 +160,7 @@ struct LibraryView: View {
                         .padding(.horizontal, 10).frame(height: 28)
                         .background(dropTarget == "root" ? VemoTheme.wash : .clear, in: RoundedRectangle(cornerRadius: 8))
                         .contentShape(Rectangle())
-                        .onDrop(of: [.vemoLibraryItem], delegate: dropDelegate(.root, key: "root"))
+                        .overlay(nativeInput(label: "폴더", target: .root, key: "root"))
                         .help("폴더를 여기에 드래그하면 최상위로 이동합니다")
 
                     ScrollView {
@@ -185,8 +192,8 @@ struct LibraryView: View {
             withAnimation(VemoTheme.motion(reducedMotion)) {
                 if !collapsedFolderIDs.insert(row.id).inserted { collapsedFolderIDs.remove(row.id) }
             }
-        }, drag: { dragProvider(kind: .folder, id: row.id) })
-        .onDrop(of: [.vemoLibraryItem], delegate: dropDelegate(.folder(row.id), key: row.id))
+        }, input: nativeInput(label: row.folder.name, target: .folder(row.id), key: row.id,
+                              select: { selectFolder(row.id) }, folderID: row.id))
         .help(LibraryFolderHierarchy.path(for: row.id, in: model.library.folders) + " · 드래그로 이동 · 직접 넣은 녹음만 표시")
     }
     private func selectFolder(_ id: String) {
@@ -209,14 +216,36 @@ struct LibraryView: View {
     private func beginEditing(_ folder: LibraryFolder) {
         editingFolderID = folder.id; folderName = folder.name; folderParentID = folder.parentID ?? ""; folderEditor = true
     }
-    @ViewBuilder private func folderRow(_ name: String, icon: String, filter: String) -> some View {
-        let row = VemoFolderRow(name: name, icon: icon, count: model.folderCount(filter), depth: 0,
-                                selected: model.libraryFilter == filter, targeted: dropTarget == filter,
-                                select: { selectFolder(filter) })
-        if filter == "unfiled" {
-            row.onDrop(of: [.vemoLibraryItem], delegate: dropDelegate(.unfiled, key: filter))
-                .help("녹음을 여기로 드래그하면 폴더 분류를 해제합니다")
-        } else { row }
+    private func nativeInput(label: String, target: LibraryDropTarget? = nil, key: String,
+                             select: (() -> Void)? = nil, folderID: String? = nil) -> VemoLibraryItemInteraction {
+        VemoLibraryItemInteraction(label: label, selected: model.libraryFilter == key,
+            recordingCount: key == "root" ? nil : model.folderCount(key), select: select,
+            dragData: folderID.map { id in { () -> Data? in
+                let payload = model.libraryDragPayload(kind: .folder, id: id)
+                _ = dragSession.provider(for: payload)
+                return try? JSONEncoder().encode(payload)
+            } },
+            dragEnded: { data in
+                if let value = try? JSONDecoder().decode(LibraryDragPayload.self, from: data) { dragSession.finish(ifCurrent: value) }
+            },
+            canDrop: target.map { target in { data in
+                guard let payload = dragSession.matchingPayload(data: data) else { return false }
+                return model.canDropLibraryItem(payload, on: target)
+            } },
+            receiveDrop: target.map { target in { data in
+                guard let payload = dragSession.matchingPayload(data: data), model.dropLibraryItem(payload, on: target) else { return false }
+                if case .folder(let id) = target { collapsedFolderIDs.remove(id) }
+                dragSession.finish(ifCurrent: payload)
+                return true
+            } },
+            targeted: { value in if value { dropTarget = key } else if dropTarget == key { dropTarget = nil } })
+    }
+    private func folderRow(_ name: String, icon: String, filter: String) -> some View {
+        VemoFolderRow(name: name, icon: icon, count: model.folderCount(filter), depth: 0,
+                      selected: model.libraryFilter == filter, targeted: dropTarget == filter,
+                      select: { selectFolder(filter) },
+                      input: nativeInput(label: name, target: filter == "unfiled" ? .unfiled : nil,
+                                         key: filter, select: { selectFolder(filter) }))
     }
     private func recordingRow(_ job: Job) -> some View {
         VStack(alignment: .leading, spacing: 7) {
