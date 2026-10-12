@@ -56,7 +56,10 @@ struct TranscriptView: View {
                     Menu("내보내기") { Button("텍스트 (.txt)") { model.export("txt") }; Button("Markdown (.md)") { model.export("md") }; if ["completed", "success"].contains(transcript.alignment_status) { Button("자막 (.srt)") { model.export("srt") }; Button("자막 (.vtt)") { model.export("vtt") } } }.vemoMenuSurface()
                     Button("결과 폴더", systemImage: "folder") { model.openResultFolder() }.disabled(job.status != "completed")
                 }
-            } else { Spacer(); ContentUnavailableView("아직 전사문이 없습니다", systemImage: "text.alignleft", description: Text(job.status == "unprocessed" ? "전사하기를 눌러 이 녹음을 처리하세요." : "단계가 진행되면 원문을 여기에서 확인할 수 있습니다.")); Spacer() }
+            } else {
+                ContentUnavailableView("아직 전사문이 없습니다", systemImage: "text.alignleft", description: Text(job.status == "unprocessed" ? "전사하기를 눌러 이 녹음을 처리하세요." : "단계가 진행되면 원문을 여기에서 확인할 수 있습니다."))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            }
             }
         }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }

@@ -238,3 +238,11 @@ This is a local installation update; the public preview and DMG remain unchanged
 ### Local build16 selection styling follow-up
 
 The recording list uses a single muted Vemo purple fill. Its AppKit system selection paint and blue focus ring are suppressed only for recording rows; native click/drag callbacks, selection binding and keyboard handling remain unchanged. Build15 backend and model files are reused. Build16 was installed with the same designated requirement and passed strict deep signing. A physical coordinate click and accessibility selection both showed a flat muted purple background with no blue outline; changing focus to the notes tab kept the purple selection. Existing generated notes reopened successfully. Drag handlers are unchanged in source; no new live drag test was claimed.
+
+
+### Local build18 folder focus and empty transcript layout (2026-10-12)
+
+- Extended the recording-only focus-ring suppression to the shared folder input surface, covering All, Unfiled, parent/child folders and the root drop surface. Existing purple selection, keyboard/click and drag handlers are unchanged. The blue ring was reported by the user; source inspection found the default AppKit ring still enabled for folders. Before screenshots did not independently reproduce the blue border.
+- The empty transcript placeholder had intrinsic width inside a leading-aligned stack. A full-width/full-height centered frame now uses the remaining content pane. On the same screen its visual center moved from approximately x978 to x1305, matching the pane center; hiding the sidebar moved it to x1040, matching the full pane.
+- Release builds17/18 and strict deep signing passed with the same designated requirement. Live folder coordinate selection showed the existing purple fill without a blue outline. Build18 empty-state layout passed both sidebar-shown and sidebar-hidden visual checks. Folder metadata SHA-256 remained identical. Backend tests and live drag tests were not rerun for these two presentation-only changes.
+- ScreenCaptureKit -3811 and stale-state UI errors recovered by re-reading/rebinding the exact app path. Normal app quit was used before replacement. Build16/17 rollback apps and the pre-change queue/library backup are retained under build/ and local-validation/folder-focus17/. No GitHub/release/DMG publication.

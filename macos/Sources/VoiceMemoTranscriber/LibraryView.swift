@@ -220,7 +220,7 @@ struct LibraryView: View {
     }
     private func nativeInput(label: String, target: LibraryDropTarget? = nil, key: String,
                              select: (() -> Void)? = nil, folderID: String? = nil) -> VemoLibraryItemInteraction {
-        VemoLibraryItemInteraction(label: label, selected: model.libraryFilter == key,
+        VemoLibraryItemInteraction(label: label, selected: model.libraryFilter == key, suppressFocusRing: true,
             recordingCount: key == "root" ? nil : model.folderCount(key), select: select,
             dragData: folderID.map { id in { () -> Data? in
                 let payload = model.libraryDragPayload(kind: .folder, id: id)
