@@ -43,6 +43,34 @@ def source_chunks(source,limit=CHUNK_CHARS,token_count=None):
         chunks.append(chunk);start=end
     return chunks
 
+def source_passages(source):
+    """Stable numbered evidence; retain every source character without model copying."""
+    return source_chunks(source,limit=400)
+
+def decode_notes_lines(raw,source,item_limit=8):
+    """The model supplies keyword | summary | source IDs; Python owns JSON syntax."""
+    if not isinstance(raw,str):raise ValueError('invalid_notes_lines')
+    lines=raw.strip().splitlines()
+    if not 1<=len(lines)<=item_limit:raise ValueError('invalid_notes_lines')
+    passages=source_passages(source)
+    result={'summary':[],'highlights':[],'topics':[]}
+    for line in lines:
+        fields=line.split('|')
+        if len(fields)!=3:raise ValueError('invalid_notes_lines')
+        keyword,summary,references=[field.strip() for field in fields]
+        if not keyword or len(keyword)>80 or not summary or len(summary)>1000:
+            raise ValueError('invalid_notes_items')
+        if not re.fullmatch(r'[0-9]+(?:\s*,\s*[0-9]+)*',references):
+            raise ValueError('invalid_notes_references')
+        ids=[int(value) for value in references.split(',')]
+        if not 1<=len(ids)<=8 or any(not 1<=value<=len(passages) for value in ids):
+            raise ValueError('invalid_notes_references')
+        quotes=[passages[value-1] for value in dict.fromkeys(ids)]
+        result['summary'].append({'text':summary,'quotes':quotes})
+        result['topics'].append({'keyword':keyword,'summary':summary,'quotes':quotes})
+        result['highlights'].append({'quote':quotes[0]})
+    return validate_notes(result,source,item_limit=item_limit)
+
 def decode_notes_json(raw):
     try:return json.loads(raw)
     except json.JSONDecodeError as error:

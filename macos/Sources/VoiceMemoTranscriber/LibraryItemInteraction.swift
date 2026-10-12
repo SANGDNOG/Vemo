@@ -23,7 +23,14 @@ struct VemoLibraryItemInteraction: NSViewRepresentable {
         else { view.unregisterDraggedTypes() }
     }
 
-    final class Surface: NSControl, NSDraggingSource {
+    // NSTableView routes embedded NSButtons to their native pointer surface.
+    // Keep the control layout-neutral and invisible; SwiftUI draws the row.
+    final class Surface: NSButton, NSDraggingSource {
+        override var intrinsicContentSize: NSSize {
+            NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
+        }
+        override func draw(_ dirtyRect: NSRect) {}
+
         static let itemType = NSPasteboard.PasteboardType("io.github.sangdnog.vemo.library-item")
         var input: VemoLibraryItemInteraction?
         private var pressedAt: NSPoint?

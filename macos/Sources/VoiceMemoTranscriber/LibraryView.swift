@@ -33,7 +33,7 @@ struct LibraryView: View {
                     List(model.visibleJobs, selection: $model.selection) { job in
                         recordingRow(job).tag(job.id)
                             .background(VemoScrollAppearance())
-                            .onDrag { dragProvider(kind: .recording, id: job.id) }
+                            .overlay(recordingInput(job))
                             .contextMenu { RecordingFolderMenu(model: model, jobID: job.id) }
                     }.listStyle(.sidebar)
                         .scrollContentBackground(.hidden)
@@ -247,6 +247,21 @@ struct LibraryView: View {
                       input: nativeInput(label: name, target: filter == "unfiled" ? .unfiled : nil,
                                          key: filter, select: { selectFolder(filter) }))
     }
+    private func recordingInput(_ job: Job) -> VemoLibraryItemInteraction {
+        VemoLibraryItemInteraction(label: job.title, selected: model.selection == job.id,
+            select: { model.selection = job.id },
+            dragData: {
+                let payload = model.libraryDragPayload(kind: .recording, id: job.id)
+                _ = dragSession.provider(for: payload)
+                return try? JSONEncoder().encode(payload)
+            },
+            dragEnded: { data in
+                if let payload = try? JSONDecoder().decode(LibraryDragPayload.self, from: data) {
+                    dragSession.finish(ifCurrent: payload)
+                }
+            })
+    }
+
     private func recordingRow(_ job: Job) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(job.title).font(.system(size: 13, weight: .semibold)).lineLimit(2)

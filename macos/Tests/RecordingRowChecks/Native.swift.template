@@ -1,0 +1,137 @@
+import AppKit
+import SwiftUI
+import UniformTypeIdentifiers
+import ObjectiveC
+import Darwin
+/* UTI */
+/* SESSION */
+/* SCROLL */
+struct Job: Identifiable {
+ let id: String
+ var title: String { "Synthetic " + id }
+ var recording_date: String? { "2026-10-12" }
+ var duration_s: Double? { 60 }
+ var status: String { "completed" }
+ var statusLabel: String { "Completed" }
+ var progress: String { "" }
+}
+enum VemoTheme { static let accent = Color.blue }
+@MainActor final class FixtureModel: ObservableObject {
+ @Published var selection: String? = "a"
+ let visibleJobs = [Job(id: "a"), Job(id: "b")]
+ var loadTriggers = 0
+ func libraryDragPayload(kind: LibraryDragKind, id: String) -> LibraryDragPayload {
+  LibraryDragPayload(kind:kind,id:id,sessionID:"fixture-session")
+ }
+}
+struct RecordingFolderMenu: View {
+ let model: FixtureModel
+ let jobID: String
+ var body: some View { Button("Synthetic move " + jobID) {} }
+}
+struct Fixture: View {
+ @ObservedObject var model: FixtureModel
+ let dragSession: VemoLibraryDragSession
+ var body: some View {
+ /* LIST */
+  .listStyle(.sidebar)
+  .onChange(of: model.selection) { _, _ in model.loadTriggers += 1 }
+ }
+ /* METHODS */
+}
+@MainActor func descendants(_ v: NSView) -> [NSView] { [v] + v.subviews.flatMap { descendants($0) } }
+@MainActor final class Capture {
+ static let shared = Capture()
+ var starts = 0
+ var bytes: Data?
+ let session = NSDraggingSession()
+}
+@MainActor func captureDrag() -> Bool {
+ let selector = #selector(NSView.beginDraggingSession(with:event:source:))
+ guard let method = class_getInstanceMethod(NSView.self,selector), let encoding = method_getTypeEncoding(method) else { return false }
+ let body: @MainActor @convention(block) (AnyObject,NSArray,NSEvent,AnyObject) -> NSDraggingSession = { _,items,_,_ in
+  Capture.shared.starts += 1
+  Capture.shared.bytes = ((items.firstObject as? NSDraggingItem)?.item as? NSPasteboardItem)?.data(forType:VemoLibraryItemInteraction.Surface.itemType)
+  return Capture.shared.session
+ }
+ return class_addMethod(VemoLibraryItemInteraction.Surface.self,selector,imp_implementationWithBlock(body),encoding)
+}
+@main struct Checks {
+ @MainActor static func main() throws {
+  NSApplication.shared.setActivationPolicy(.prohibited)
+  var passed = 0, failed = 0
+  func check(_ yes: Bool,_ title:String) { if yes { passed += 1; print("PASS: " + title) } else { failed += 1; print("FAIL: " + title) }; fflush(stdout) }
+  check(captureDrag(),"local native drag-session capture installed")
+  let model = FixtureModel(), session = VemoLibraryDragSession()
+  let host = NSHostingView(rootView:Fixture(model:model,dragSession:session))
+  let window = NSWindow(contentRect:NSRect(x:0,y:0,width:290,height:230),styleMask:[.titled],backing:.buffered,defer:false)
+  window.isReleasedWhenClosed = false; window.contentView = host
+  func pump() { let until = Date().addingTimeInterval(0.2); repeat {host.layoutSubtreeIfNeeded(); _ = RunLoop.main.run(mode:.default,before:Date().addingTimeInterval(0.01))} while Date() < until }
+  pump()
+  let surfaces = descendants(host).compactMap { $0 as? VemoLibraryItemInteraction.Surface }
+  check(surfaces.count == 2,"each shipping recording List row has native pointer surface")
+  guard let control = surfaces.first(where: { $0.input?.label == "Synthetic b" }), let table = descendants(host).compactMap({$0 as? NSTableView}).first else {
+   print("RESULT: \(passed) assertions passed; \(failed) failed"); exit(1)
+  }
+  check(control.intrinsicContentSize == NSSize(width:NSView.noIntrinsicMetric,height:NSView.noIntrinsicMetric)
+        && control.bounds.height >= 70, "button surface has no intrinsic sizing and covers recording row height")
+  check(control.target == nil && control.action == nil, "button surface has no default target/action that duplicates selection")
+  let bitmap = NSBitmapImageRep(bitmapDataPlanes:nil,pixelsWide:32,pixelsHigh:32,bitsPerSample:8,samplesPerPixel:4,hasAlpha:true,isPlanar:false,colorSpaceName:.deviceRGB,bytesPerRow:0,bitsPerPixel:0)!
+  let graphics = NSGraphicsContext(bitmapImageRep:bitmap)!
+  NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = graphics
+  NSColor.blue.setFill(); NSRect(x:0,y:0,width:32,height:32).fill(); graphics.cgContext.flush()
+  let beforePaint = Data(bytes:bitmap.bitmapData!,count:bitmap.bytesPerRow*bitmap.pixelsHigh)
+  control.draw(NSRect(x:0,y:0,width:32,height:32)); graphics.cgContext.flush()
+  let afterPaint = Data(bytes:bitmap.bitmapData!,count:beforePaint.count)
+  NSGraphicsContext.restoreGraphicsState()
+  check(beforePaint == afterPaint, "native button surface paints no default chrome over SwiftUI recording row")
+  let rect = table.rect(ofRow:1)
+  print("GEOMETRY table=\(table.frame) row=\(rect) control=\(control.frame) controlInTable=\(control.convert(control.bounds,to:table)) host=\(host.frame)")
+  for x:CGFloat in [20,100,260] {
+   let point = table.convert(NSPoint(x:x,y:rect.midY),to:nil)
+   let hit = host.hitTest(host.superview!.convert(point,from:nil))
+   print("HIT x=\(x) type=\(hit.map { String(describing:type(of:$0)) } ?? "nil")")
+   check(hit === control,"recording row x=\(x) hits full native selection surface")
+  }
+  var ancestor: NSView? = control
+  let probe = control.convert(NSPoint(x:100,y:control.bounds.midY),to:nil)
+  while let view = ancestor {
+   let hit = view.hitTest(view.superview?.convert(probe,from:nil) ?? probe)
+   print("ANCESTOR \(type(of:view)) HIT \(hit.map { String(describing:type(of:$0)) } ?? "nil")")
+   ancestor = view.superview
+  }
+  check(control.input?.selected == false && table.selectedRow == 0,"initial recording selection retains List binding")
+  let origin = control.convert(NSPoint(x:60,y:control.bounds.midY),to:nil)
+  func event(_ type:NSEvent.EventType,_ point:NSPoint) -> NSEvent {
+   NSEvent.mouseEvent(with:type,location:point,modifierFlags:[],timestamp:ProcessInfo.processInfo.systemUptime,windowNumber:window.windowNumber,context:nil,eventNumber:1,clickCount:1,pressure:1)!
+  }
+  control.mouseUp(with:event(.leftMouseUp,origin))
+  check(model.selection == "a","orphan release preserves recording selection")
+  control.mouseDown(with:event(.leftMouseDown,origin))
+  check(model.selection == "a","press alone does not select recording")
+  control.mouseUp(with:event(.leftMouseUp,origin)); pump()
+  check(model.selection == "b" && model.loadTriggers == 1,"recording click changes exact ID and fires selection load boundary once")
+  check(table.selectedRow == 1 && control.input?.selected == true,"recording click updates native List selection highlight state")
+  let menu = control.menu(for:event(.rightMouseDown,origin))
+  check(menu != nil && (menu?.numberOfItems ?? 0) > 0,"recording native overlay forwards SwiftUI context menu")
+  table.selectRowIndexes(IndexSet(integer:0),byExtendingSelection:false); pump()
+  check(model.selection == "a","List native selection control still updates model binding")
+  let beforeLoad = model.loadTriggers
+  control.mouseDown(with:event(.leftMouseDown,origin))
+  control.mouseDragged(with:event(.leftMouseDragged,NSPoint(x:origin.x+4,y:origin.y)))
+  control.mouseUp(with:event(.leftMouseUp,origin)); pump()
+  check(model.selection == "a" && model.loadTriggers == beforeLoad,"recording drag does not trigger click selection or detail load")
+  guard let bytes = Capture.shared.bytes else { check(false,"recording drag captures bytes"); exit(1) }
+  let payload = try JSONDecoder().decode(LibraryDragPayload.self,from:bytes)
+  check(Capture.shared.starts == 1 && payload.kind == .recording && payload.id == "b" && payload.sessionID == "fixture-session","native recording drag carries exact current recording payload")
+  check(session.matchingPayload(data:bytes) == payload,"native recording bytes match existing folder destination session")
+  let organization = LibraryOrganization(folders:[LibraryFolder(id:"folder",name:"Folder")])
+  check(try LibraryDropRules.action(for:payload,target:.folder("folder"),organization:organization,knownJobIDs:["a","b"],sessionID:"fixture-session") == .recording(id:"b",folderID:"folder"),"recording payload remains compatible with folder destination rules")
+  control.draggingSession(Capture.shared.session,endedAt:.zero,operation:[])
+  check(session.payload == nil,"recording cancelled drag conditionally finishes current session")
+  control.mouseDown(with:event(.leftMouseDown,origin)); control.mouseUp(with:event(.leftMouseUp,origin)); pump()
+  check(model.selection == "b","recording click works again after cancelled drag")
+  window.contentView = nil; window.close()
+  print("RESULT: \(passed) assertions passed; \(failed) failed"); exit(failed == 0 ? 0 : 1)
+ }
+}

@@ -1,0 +1,69 @@
+import SwiftUI
+import AppKit
+import Darwin
+struct Job: Identifiable {
+ let id: String
+ var title: String { "Synthetic " + id }
+ var recording_date: String? { "2026-10-12" }
+ var duration_s: Double? { 60 }
+ var status: String { "completed" }
+ var statusLabel: String { "Completed" }
+ var progress: String { "" }
+}
+enum VemoTheme { static let accent = Color.blue }
+@MainActor final class FixtureModel: ObservableObject {
+ @Published var selection: String? = "a"
+ let visibleJobs = [Job(id: "a"), Job(id: "b")]
+}
+struct Fixture: View {
+ @ObservedObject var model: FixtureModel
+ let mode: Int
+ var body: some View {
+  List(model.visibleJobs, selection: $model.selection) { job in
+   if mode == 0 { recordingRow(job).tag(job.id) }
+   else if mode == 1 { recordingRow(job).tag(job.id).onDrag { NSItemProvider() } }
+   else { recordingRow(job).tag(job.id).onDrag { NSItemProvider() }.contextMenu { Button("Synthetic menu") {} } }
+  }.listStyle(.sidebar).frame(width: 290, height: 230)
+ }
+ /* ROW */
+}
+@MainActor func all(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap { all($0) } }
+@main struct Checks {
+ @MainActor static func main() {
+  NSApplication.shared.setActivationPolicy(.prohibited)
+  for mode in 0...2 {
+   let model = FixtureModel()
+   let host = NSHostingView(rootView: Fixture(model: model, mode: mode))
+   let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 290, height: 230), styleMask: [.titled], backing: .buffered, defer: false)
+   window.isReleasedWhenClosed = false; window.contentView = host
+   func settle() {
+    let until = Date().addingTimeInterval(0.2)
+    repeat { host.layoutSubtreeIfNeeded(); _ = RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01)) } while Date() < until
+   }
+   settle()
+   print("MODE \(mode) initial selection=\(model.selection ?? "nil")")
+   for view in all(host) where !view.gestureRecognizers.isEmpty {
+    print("GESTURES \(type(of:view)): \(view.gestureRecognizers.map { String(describing:type(of:$0)) })")
+   }
+   for table in all(host).compactMap({ $0 as? NSTableView }) {
+    print("TABLE rows=\(table.numberOfRows) selected=\(table.selectedRow) frame=\(table.frame)")
+    guard table.numberOfRows >= 2 else { continue }
+    let rect = table.rect(ofRow: 1)
+    let point = table.convert(NSPoint(x: min(rect.midX, 100), y: rect.midY), to: nil)
+    let hit = host.hitTest(host.convert(point, from: nil))
+    print("ROW1 rect=\(rect) HIT \(hit.map {String(describing:type(of:$0))} ?? "nil")")
+    // Diagnostic only: direct view methods do not exercise NSApplication gesture dispatch.
+    for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+     let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+     if type == .leftMouseDown { hit?.mouseDown(with:event) } else { hit?.mouseUp(with:event) }
+    }
+    settle(); print("LOCAL_EVENT selection=\(model.selection ?? "nil") tableSelected=\(table.selectedRow)")
+    table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+    settle(); print("TABLE_CONTROL selection=\(model.selection ?? "nil") tableSelected=\(table.selectedRow)")
+   }
+   model.selection = "b"; settle()
+   print("BINDING_CONTROL selection=\(model.selection ?? "nil")")
+   window.contentView = nil; window.close(); fflush(stdout)
+  }
+ }
+}
