@@ -20,6 +20,31 @@ struct SettingsView: View {
                 Text("iCloud Drive · Google Drive · Dropbox · OneDrive의 Mac 동기화 폴더를 선택할 수 있습니다. 같은 Drive 안에 Recordings(입력)와 Notes(결과)를 따로 두세요. 결과는 로컬 폴더에 저장하며 폰으로의 업로드는 Drive 앱이 진행합니다.").font(.caption).foregroundStyle(.secondary)
                 HStack { Text(model.connection); Spacer(); Button("다시 연결") { model.connect() } }
             }
+            Section("ZIP 내보내기") {
+                HStack {
+                    VStack(alignment:.leading,spacing:4) {
+                        Text("ZIP 저장 위치")
+                        Text(model.zipExportFolder.isEmpty ? "선택하지 않음" : model.zipExportFolder).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    }
+                    Spacer()
+                    Button("폴더 선택") { model.chooseZIPFolder() }.disabled(model.zipExportBusy)
+                        .accessibilityLabel("ZIP 저장 위치 폴더 선택")
+                }
+                Button("완료된 녹음 ZIP 내보내기") { model.exportCompletedZIP() }
+                    .disabled(model.zipExportBusy || model.completedZIPCount == 0 || model.zipExportFolder.isEmpty)
+                Text("완료된 녹음 \(model.completedZIPCount)개의 원본 오디오, TXT · Markdown 전사문, 구간 JSON을 하나의 ZIP으로 저장합니다. Nextcloud 등 클라우드 데스크톱 앱이 선택한 폴더를 동기화합니다.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if model.zipExportBusy {
+                    HStack { ProgressView().controlSize(.small); Text(model.zipExportProgress).font(.caption) }
+                } else if !model.zipExportProgress.isEmpty {
+                    Text(model.zipExportProgress).font(.caption)
+                }
+                if let error = model.zipExportError { Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
+                if let result = model.zipExportResult {
+                    Text(result.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    Button("ZIP 파일 위치 보기") { NSWorkspace.shared.activateFileViewerSelecting([result]) }
+                }
+            }
             Section("모델") {
                 Text(model.modelStatus)
                 Text("ASR: Qwen3-ASR-1.7B · 정렬: Qwen3-ForcedAligner-0.6B\n제목 · 노트: Qwen3-4B-Instruct-2507-4bit").font(.caption).foregroundStyle(.secondary)

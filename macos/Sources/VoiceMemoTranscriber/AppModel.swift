@@ -30,6 +30,15 @@ import ServiceManagement
     @Published var focusedQuote: String?
     @Published var transcriptIndex: [String:String] = [:]
     @Published var outputFolder = UserDefaults.standard.string(forKey: "outputFolder") ?? ""
+    @Published var zipExportFolder = UserDefaults.standard.string(forKey: "zipExportFolder") ?? ""
+    private var zipFolderPanel: NSOpenPanel?
+    private var zipExportTask: Task<Void,Never>?
+    private var zipExportClosing = false
+    @Published var zipExportBusy = false
+    @Published var zipExportProgress = ""
+    @Published var zipExportError: String?
+    @Published var zipExportResult: URL?
+    var completedZIPCount: Int { jobs.filter { $0.status == "completed" && $0.artifact_path != nil }.count }
     @Published var inputFolder = UserDefaults.standard.string(forKey: "inputFolder") ?? ""
     @Published var sourceMode = UserDefaults.standard.string(forKey: "sourceMode") ?? "voice_memos"
     @Published var acOnly = UserDefaults.standard.object(forKey: "acOnly") as? Bool ?? true
@@ -141,6 +150,7 @@ import ServiceManagement
         }
     }
     var overallStatus: String {
+        if zipExportBusy { return zipExportProgress }
         if paused { return "새 작업 일시 중지 · 대기 \(jobs.filter { ["waiting", "paused"].contains($0.status) }.count)개" }
         if let j = jobs.first(where: { ["preparing", "transcribing", "aligning", "titling", "noting", "saving"].contains($0.status) }) { return "\(j.statusLabel) · \(j.progress)" }
         return "\(connection) · 대기 \(jobs.filter { ["waiting", "paused"].contains($0.status) }.count)개"
@@ -332,6 +342,60 @@ import ServiceManagement
             if !output, !outputFolder.isEmpty { try FolderConnection.validate(input:url,output:URL(fileURLWithPath:outputFolder)) }
         } catch { problem = error.localizedDescription; return }
         if output { outputFolder = url.path; UserDefaults.standard.set(url.path, forKey: "outputFolder"); for job in jobs where job.status == "saving" { command("retry",["job_id":.string(job.id)]) } } else { inputFolder = url.path; UserDefaults.standard.set(url.path, forKey: "inputFolder"); scanSources(force:true) }
+    }
+    func chooseZIPFolder() {
+        guard !DemoContent.enabled, !zipExportBusy, !zipExportClosing else { return }
+        if let panel = zipFolderPanel {
+            panel.makeKeyAndOrderFront(nil)
+            return
+        }
+        let panel = NSOpenPanel()
+        panel.title = "ZIP 저장 위치"
+        panel.prompt = "선택"
+        panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        if !zipExportFolder.isEmpty { panel.directoryURL = URL(fileURLWithPath:zipExportFolder) }
+        zipFolderPanel = panel
+        panel.begin { [weak self, weak panel] response in
+            Task { @MainActor in
+                guard let self, let panel, self.zipFolderPanel === panel else { return }
+                defer { self.zipFolderPanel = nil }
+                guard response == .OK, let url = panel.url else { return }
+                self.zipExportFolder = url.path
+                UserDefaults.standard.set(url.path,forKey:"zipExportFolder")
+                self.zipExportError = nil; self.zipExportResult = nil
+            }
+        }
+    }
+    func exportCompletedZIP() {
+        guard !DemoContent.enabled, !zipExportClosing, !zipExportBusy, !zipExportFolder.isEmpty, completedZIPCount > 0 else { return }
+        // Copy value types and paths now; export never consults changing selection or job state.
+        let snapshot = jobs.filter { $0.status == "completed" && $0.artifact_path != nil }
+        let root = stateRoot
+        let destination = URL(fileURLWithPath:zipExportFolder)
+        zipExportBusy = true; zipExportError = nil; zipExportResult = nil
+        zipExportProgress = "ZIP 내보내기 준비 중 · \(snapshot.count)개 녹음"
+        zipExportTask = Task { [self] in
+            defer { zipExportBusy = false }
+            do {
+                let result = try await RecordingZIPExport.export(jobs:snapshot,stateRoot:root,destination:destination) { [weak self] message in
+                    await self?.updateZIPProgress(message)
+                }
+                zipExportResult = result
+                zipExportProgress = "완료 · \(snapshot.count)개 녹음"
+            } catch {
+                zipExportProgress = "ZIP 내보내기 실패"
+                zipExportError = error.localizedDescription
+            }
+        }
+    }
+    func flushZIPExport() async {
+        zipExportClosing = true
+        if zipExportBusy { zipExportProgress = "종료 대기 · ZIP 내보내기를 마치는 중" }
+        await zipExportTask?.value
+    }
+    private func updateZIPProgress(_ message: String) {
+        zipExportProgress = (zipExportClosing ? "종료 대기 · " : "") + message
     }
     func importFiles(_ urls: [URL]) { guard !DemoContent.enabled else { return };
         Task { [self] in

@@ -23,13 +23,13 @@ public enum NotesDisplay {
         result.summary = notes.summary.compactMap { item in
             let quotes = item.quotes.filter(real)
             guard !quotes.isEmpty, !item.text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty, item.text.count <= 1000 else { return nil }
-            return RecordingNotes.Summary(text:item.text, quotes:Array(quotes.prefix(4)))
+            return RecordingNotes.Summary(text:item.text, quotes:Array(quotes.prefix(64)))
         }
         result.highlights = notes.highlights.filter { real($0.quote) }
         result.topics = notes.topics.compactMap { item in
             let quotes = item.quotes.filter(real)
             guard !quotes.isEmpty, !item.keyword.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty, item.keyword.count <= 80, !item.summary.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty, item.summary.count <= 1000 else { return nil }
-            return RecordingNotes.Topic(keyword:item.keyword, summary:item.summary, quotes:Array(quotes.prefix(4)))
+            return RecordingNotes.Topic(keyword:item.keyword, summary:item.summary, quotes:Array(quotes.prefix(64)))
         }
         return result
     }
@@ -47,13 +47,29 @@ public enum NotesDisplay {
     }
 
     public static func markdown(_ notes: RecordingNotes, title: String) -> String {
-        func quote(_ text: String) -> String { text.components(separatedBy:.newlines).map { "> " + $0 }.joined(separator:"\n") }
+        func quote(_ text: String) -> String { "> " + text.replacingOccurrences(of:"\n",with:"\n> ") }
+        var evidence: [String] = []
+        var evidenceIDs: [String:Int] = [:]
+        for value in notes.summary.flatMap(\.quotes) + notes.topics.flatMap(\.quotes) + notes.highlights.map(\.quote) {
+            if evidenceIDs[value] == nil {
+                evidence.append(value)
+                evidenceIDs[value] = evidence.count
+            }
+        }
+        func refs(_ values: [String]) -> String {
+            values.compactMap { value in evidenceIDs[value].map { "[근거 \($0)](#evidence-\($0))" } }.joined(separator:" ")
+        }
         var lines = ["# " + title, "", "AI가 정리한 노트입니다. 중요한 내용은 인용한 원문에서 확인하세요.", "", "## 핵심 요약", ""]
-        for item in notes.summary { lines += ["- " + item.text, ""]; lines += item.quotes.map(quote); lines.append("") }
-        lines += ["## 강조 문장", ""]
-        for item in notes.highlights { lines += [quote(item.quote), ""] }
+        for item in notes.summary { lines += ["- " + item.text + " " + refs(item.quotes), ""] }
         lines += ["## 키워드별 정리", ""]
-        for item in notes.topics { lines += ["### " + item.keyword, "", item.summary, ""]; lines += item.quotes.map(quote); lines.append("") }
+        for item in notes.topics { lines += ["### " + item.keyword, "", "- " + item.summary + " " + refs(item.quotes), ""] }
+        lines += ["## 강조 문장", "", "<details>", "<summary>중요한 원문 보기</summary>", ""]
+        for item in notes.highlights { lines += ["- " + refs([item.quote]), ""] }
+        lines += ["</details>", "", "## 원문 근거", "", "<details>", "<summary>원문 근거 보기</summary>", ""]
+        for (index,value) in evidence.enumerated() {
+            lines += ["<a id=\"evidence-\(index + 1)\"></a>", "### 근거 \(index + 1)", "", quote(value), ""]
+        }
+        lines += ["</details>"]
         return lines.joined(separator:"\n") + "\n"
     }
 }

@@ -17,8 +17,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard !terminating else { return .terminateNow }; terminating = true
-        Task { await AppModel.shared.flushLibraryChanges(); await AppModel.shared.engine.shutdown(); NSApp.reply(toApplicationShouldTerminate: true) }; return .terminateLater
+        guard !terminating else { return .terminateLater }; terminating = true
+        Task { await AppModel.shared.flushZIPExport(); await AppModel.shared.flushLibraryChanges(); await AppModel.shared.engine.shutdown(); NSApp.reply(toApplicationShouldTerminate: true) }; return .terminateLater
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { if !flag { sender.windows.first(where: { $0.canBecomeMain })?.makeKeyAndOrderFront(nil) }; return true }
 }

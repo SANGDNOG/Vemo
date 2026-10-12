@@ -5,6 +5,12 @@ struct NotesView: View {
     @ObservedObject var model: AppModel
     let job: Job
     @ViewState private var keyword: String?
+    @ViewState private var expandedEvidence: Set<String> = []
+    private var notesContent: Data? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        return model.notes.flatMap { try? encoder.encode($0) }
+    }
     @Environment(\.accessibilityReduceMotion) private var reducedMotion
     private var notesProgressTitle: String? {
         let pending = job.notes_status == "pending" || job.notes_status == "running"
@@ -19,32 +25,50 @@ struct NotesView: View {
     var body: some View {
         VStack(alignment:.leading,spacing:14) {
             if let notes = model.notes {
-                Text("AI가 정리한 노트 · 인용을 누르면 원문으로 이동합니다.").font(.caption).foregroundStyle(.secondary)
+                Text("AI가 정리한 노트 · 근거를 펼친 뒤 인용을 누르면 원문으로 이동합니다.").font(.caption).foregroundStyle(.secondary)
                 if let progress = notesProgressText { Text(progress).font(.caption).foregroundStyle(VemoTheme.ink) }
                 if job.notes_status == "failed" { Text("노트 갱신에 실패했습니다. 이전 노트는 보존되어 있습니다.").font(.caption).foregroundStyle(.orange) }
                 ScrollView {
                     LazyVStack(alignment:.leading,spacing:24) {
                         section("핵심 요약", icon:"text.alignleft") {
-                            ForEach(Array(notes.summary.enumerated()),id:\.offset) { _,item in
-                                VStack(alignment:.leading,spacing:8) { Text(item.text).textSelection(.enabled); quotes(item.quotes) }
-                            }
-                        }
-                        section("강조 문장", icon:"highlighter") {
-                            ForEach(Array(notes.highlights.enumerated()),id:\.offset) { _,item in
-                                quote(item.quote, highlighted: true)
+                            ForEach(Array(notes.summary.enumerated()),id:\.offset) { index,item in
+                                HStack(alignment:.top,spacing:10) {
+                                    Text("\(index + 1).").font(.callout.weight(.semibold)).foregroundStyle(VemoTheme.ink)
+                                        .frame(minWidth:24,alignment:.trailing).accessibilityHidden(true)
+                                    VStack(alignment:.leading,spacing:6) {
+                                        Text(item.text).textSelection(.enabled).fixedSize(horizontal:false,vertical:true)
+                                        evidence(item.quotes, id:"summary-\(index)", context:"핵심 요약 \(index + 1)")
+                                    }.frame(maxWidth:.infinity,alignment:.leading)
+                                }
                             }
                         }
                         section("키워드별 정리",icon:"number") {
+                            let keywords = notes.topics.map(\.keyword).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
                             ScrollView(.horizontal,showsIndicators:false) {
                                 HStack(spacing:8) {
                                     keywordButton("모두",value:nil)
-                                    ForEach(Array(Set(notes.topics.map(\.keyword))).sorted(),id:\.self) { value in keywordButton(value,value:value) }
+                                    ForEach(keywords,id:\.self) { value in keywordButton(value,value:value) }
                                 }
                             }
-                            ForEach(Array(notes.topics.enumerated()).filter { keyword == nil || $0.element.keyword == keyword },id:\.offset) { _,item in
-                                VStack(alignment:.leading,spacing:8) { Text(item.keyword).font(.headline); Text(item.summary).textSelection(.enabled); quotes(item.quotes) }
-                                Divider()
+                            ForEach(keywords.filter { keyword == nil || $0 == keyword },id:\.self) { value in
+                                VStack(alignment:.leading,spacing:12) {
+                                    Text(value).font(.headline).foregroundStyle(VemoTheme.ink)
+                                    ForEach(Array(notes.topics.enumerated()).filter { $0.element.keyword == value },id:\.offset) { index,item in
+                                        VStack(alignment:.leading,spacing:6) {
+                                            HStack(alignment:.top,spacing:8) {
+                                                Text("•").accessibilityHidden(true)
+                                                Text(item.summary).textSelection(.enabled).fixedSize(horizontal:false,vertical:true)
+                                            }
+                                            evidence(item.quotes, id:"topic-\(index)", context:"\(value) 주제 \(index + 1)")
+                                        }
+                                    }
+                                }.frame(maxWidth:.infinity,alignment:.leading)
+                                    .padding(14)
+                                    .background(Color.secondary.opacity(0.05),in:RoundedRectangle(cornerRadius:12))
                             }
+                        }
+                        section("강조 문장", icon:"highlighter") {
+                            evidence(notes.highlights.map(\.quote), id:"highlights", context:"강조 문장", highlighted:true)
                         }
                     }.frame(maxWidth:.infinity,alignment:.leading).padding(.vertical,8)
                 }
@@ -72,22 +96,55 @@ struct NotesView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             }
         }.frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
-        .onChange(of:job.id) { _,_ in keyword = nil }
+        .onChange(of:job.id) { _,_ in resetDisclosure() }
+        .onChange(of:notesContent) { _,_ in resetDisclosure() }
     }
     func section<Content:View>(_ title:String, icon:String,@ViewBuilder content:()->Content) -> some View {
         VStack(alignment:.leading,spacing:12) { Label(title,systemImage:icon).font(.headline); content() }
     }
-    func quotes(_ values:[String]) -> some View {
-        VStack(alignment:.leading,spacing:6) { ForEach(Array(values.enumerated()),id:\.offset) { _,value in quote(value) } }
+    private func resetDisclosure() {
+        keyword = nil
+        expandedEvidence = []
+    }
+    @ViewBuilder
+    private func evidence(_ values:[String], id:String, context:String, highlighted:Bool = false) -> some View {
+        if !values.isEmpty {
+            let expanded = expandedEvidence.contains(id)
+            VStack(alignment:.leading,spacing:8) {
+                Button {
+                    withAnimation(VemoTheme.motion(reducedMotion)) {
+                        if expanded { expandedEvidence.remove(id) } else { expandedEvidence.insert(id) }
+                    }
+                } label: {
+                    HStack(spacing:6) {
+                        Image(systemName:expanded ? "chevron.down" : "chevron.right").font(.caption2)
+                        Text(expanded ? "근거 접기" : "근거 보기")
+                        Text("\(values.count)").foregroundStyle(.secondary)
+                        Spacer(minLength:0)
+                    }.font(.caption).foregroundStyle(VemoTheme.ink)
+                        .padding(.vertical,7).padding(.horizontal,8)
+                        .frame(maxWidth:.infinity,alignment:.leading).contentShape(Rectangle())
+                }.buttonStyle(.plain)
+                    .accessibilityLabel("\(context) 근거 \(values.count)개")
+                    .accessibilityValue(expanded ? "펼쳐짐" : "접힘")
+                    .accessibilityHint(expanded ? "근거를 접습니다" : "근거를 펼칩니다")
+                if expanded {
+                    VStack(alignment:.leading,spacing:6) {
+                        ForEach(Array(values.enumerated()),id:\.offset) { _,value in quote(value,highlighted:highlighted) }
+                    }
+                }
+            }
+        }
     }
     func quote(_ value:String, highlighted: Bool = false) -> some View {
         Button { model.revealQuote(value) } label: {
             HStack(alignment:.top,spacing:8) { Image(systemName:"quote.opening").font(.caption); Text(value).multilineTextAlignment(.leading); Spacer(minLength:4); Image(systemName:"arrow.up.left").font(.caption) }.foregroundStyle(.secondary)
-                .padding(highlighted ? 10 : 0)
+                .padding(highlighted ? 10 : 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(highlighted ? VemoTheme.wash : .clear, in: RoundedRectangle(cornerRadius: 10))
                 .contentShape(RoundedRectangle(cornerRadius: highlighted ? 10 : 0))
         }.buttonStyle(.plain).help("전사 원문에서 확인")
+            .accessibilityLabel("원문 인용: " + value).accessibilityHint("전사 원문으로 이동합니다")
     }
     func keywordButton(_ title:String,value:String?) -> some View {
         Button { withAnimation(VemoTheme.motion(reducedMotion)) { keyword = value } } label: { Text(title).font(.caption).padding(.horizontal,10).padding(.vertical,5).background(keyword == value ? VemoTheme.accent.opacity(0.14) : Color.secondary.opacity(0.08),in:Capsule()).contentShape(Capsule()) }.buttonStyle(.plain).foregroundStyle(keyword == value ? VemoTheme.ink : Color.secondary).accessibilityAddTraits(keyword == value ? .isSelected : [])
