@@ -28,18 +28,30 @@ struct LibraryView: View {
                 }.font(.callout).padding(9).background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9)).padding(12)
                 HStack { Text(model.libraryTitle).font(.caption.weight(.semibold)).lineLimit(1).help(model.libraryTitle); Spacer(); Text("\(model.visibleJobs.count)").font(.caption.monospacedDigit()) }.foregroundStyle(.secondary).padding(.horizontal, 17).padding(.bottom, 6)
                 if model.visibleJobs.isEmpty {
-                    VStack(spacing: 9) { Image(systemName: model.search.isEmpty ? "folder" : "magnifyingglass").font(.title2); Text(model.search.isEmpty ? "이 폴더는 비어 있습니다" : "검색 결과가 없습니다").font(.callout); if model.search.isEmpty { Text("녹음을 폴더로 드래그해 정리하세요.").font(.caption) } }.foregroundStyle(.secondary).padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
+                    VStack(spacing: 9) { Image(systemName: model.search.isEmpty ? "folder" : "magnifyingglass").font(.title2); Text(model.search.isEmpty ? "이 폴더는 비어 있습니다" : "검색 결과가 없습니다").font(.callout); if model.search.isEmpty { Text(model.libraryFilter == "trash" ? "원본 파일은 삭제되지 않습니다." : "녹음을 폴더로 드래그해 정리하세요.").font(.caption) } }.foregroundStyle(.secondary).padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     List(model.visibleJobs, selection: $model.selection) { job in
                         recordingRow(job).tag(job.id)
                             .listRowBackground(model.selection == job.id ? VemoTheme.accent.opacity(0.14) : Color.clear)
                             .background(VemoRecordingSelectionAppearance())
                             .background(VemoScrollAppearance())
-                            .overlay(recordingInput(job))
+                            .overlay { if !model.isEditingTitle(job,at:.sidebar) { recordingInput(job) } }
                             .contextMenu { RecordingFolderMenu(model: model, jobID: job.id) }
                     }.listStyle(.sidebar)
                         .scrollContentBackground(.hidden)
+                        .onKeyPress(.return) {
+                            guard model.editingTitleJobID == nil, let job = model.selected, job.deleted_at == nil else { return .ignored }
+                            model.beginTitleEdit(job,at:.sidebar); return .handled
+                        }
                 }
+                HStack {
+                    Spacer()
+                    Button { model.chooseFiles() } label: {
+                        Image(systemName:"plus").font(.system(size:20,weight:.medium))
+                            .foregroundStyle(.white).frame(width:42,height:42)
+                            .background(VemoTheme.accent,in:Circle()).contentShape(Circle())
+                    }.buttonStyle(.plain).accessibilityLabel("오디오 가져오기").help("오디오 가져오기 ⌘O")
+                }.padding(14)
             }.frame(minWidth: 250, idealWidth: 290)
                 .navigationSplitViewColumnWidth(min: 250, ideal: 290, max: 420)
                 .toolbar(removing: .sidebarToggle)
@@ -52,8 +64,20 @@ struct LibraryView: View {
                     }
                 }
         } detail: {
-            if let job = model.selected { TranscriptView(model: model, job: job) }
-            else { onboarding }
+            if let job = model.selected {
+                if job.deleted_at != nil {
+                    VStack(spacing:16) {
+                        Image(systemName:"trash").font(.largeTitle).foregroundStyle(VemoTheme.ink)
+                        Text(job.title).font(.title2).textSelection(.enabled)
+                        Text("Vemo 휴지통에 보관 중입니다. 원본 오디오와 전사문·노트는 삭제되지 않습니다.")
+                            .foregroundStyle(.secondary).multilineTextAlignment(.center)
+                        Button("녹음 복원",systemImage:"arrow.uturn.backward") { model.restoreRecording(job) }
+                            .buttonStyle(VemoButtonStyle(emphasis:.primary))
+                    }.padding(32).frame(maxWidth:.infinity,maxHeight:.infinity)
+                } else { TranscriptView(model: model, job: job) }
+            } else if model.libraryFilter == "trash" {
+                ContentUnavailableView("휴지통이 비어 있습니다",systemImage:"trash",description:Text("Vemo에서 숨긴 녹음을 여기에서 복원할 수 있습니다. 원본 파일은 삭제되지 않습니다."))
+            } else { onboarding }
         }
         .toolbar(removing: .sidebarToggle)
         // Let the full-height split panes draw one continuous column boundary.
@@ -153,6 +177,7 @@ struct LibraryView: View {
             if foldersExpanded {
                 folderRow("전체 녹음", icon: "square.stack", filter: "all")
                 folderRow("미분류", icon: "tray", filter: "unfiled")
+                folderRow("휴지통", icon: "trash", filter: "trash")
                 if !model.library.folders.isEmpty {
                     HStack(spacing: 7) {
                         Image(systemName: "square.stack.3d.up").font(.system(size: 10))
@@ -252,7 +277,9 @@ struct LibraryView: View {
     private func recordingInput(_ job: Job) -> VemoLibraryItemInteraction {
         VemoLibraryItemInteraction(label: job.title, selected: model.selection == job.id, suppressFocusRing: true,
             select: { model.selection = job.id },
+            editTitle: job.deleted_at == nil ? { model.beginTitleEdit(job,at:.sidebar) } : nil,
             dragData: {
+                guard job.deleted_at == nil else { return nil }
                 let payload = model.libraryDragPayload(kind: .recording, id: job.id)
                 _ = dragSession.provider(for: payload)
                 return try? JSONEncoder().encode(payload)
@@ -266,7 +293,11 @@ struct LibraryView: View {
 
     private func recordingRow(_ job: Job) -> some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text(job.title).font(.system(size: 13, weight: .semibold)).lineLimit(2)
+            if model.isEditingTitle(job,at:.sidebar) {
+                VemoInlineTitleEditor(text:$model.titleDraft,save:model.saveTitleEdit,cancel:model.cancelTitleEdit)
+            } else {
+                Text(job.title).font(.system(size:13,weight:.semibold)).lineLimit(2)
+            }
             Text([job.recording_date ?? "녹음일 확인 필요", job.duration_s.map { String(format: "%d분 %02d초", Int($0)/60, Int($0)%60) } ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
             HStack(spacing: 5) { Circle().fill(job.status == "failed" ? Color.red : job.status == "completed" ? VemoTheme.accent.opacity(0.65) : Color.secondary).frame(width: 5, height: 5); Text(job.statusLabel + (job.progress.isEmpty ? "" : " · " + job.progress)).font(.caption).foregroundStyle(.secondary) }
         }.padding(.vertical, 8).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
@@ -299,13 +330,23 @@ struct LibraryView: View {
 struct RecordingFolderMenu: View {
     @ObservedObject var model: AppModel
     let jobID: String
+    var titleLocation: TitleEditingLocation = .sidebar
     var body: some View {
+        if let job = model.jobs.first(where: { $0.id == jobID }) {
+            if job.deleted_at != nil {
+                Button("녹음 복원",systemImage:"arrow.uturn.backward") { model.restoreRecording(job) }
+            } else {
+                Button("제목 수정") { model.beginTitleEdit(job,at:titleLocation) }
+                Button("원본 다시 확인") { model.refreshRecording(job) }
+                Button("Vemo 휴지통으로 이동",systemImage:"trash") { model.trashRecording(job) }
+            }
+        }
         Menu("폴더로 이동") {
             Button { model.moveRecording(jobID, to: nil) } label: { Label("미분류", systemImage: model.library.assignments[jobID] == nil ? "checkmark" : "tray") }
             ForEach(LibraryFolderHierarchy.rows(model.library.folders), id: \.id) { row in
                 Button { model.moveRecording(jobID, to: row.id) } label: { Label(LibraryFolderHierarchy.path(for: row.id, in: model.library.folders), systemImage: model.library.assignments[jobID] == row.id ? "checkmark" : "folder") }
             }
-        }.disabled(!model.libraryReady || model.libraryBusy)
+        }.disabled(!model.libraryReady || model.libraryBusy || !model.activeJobs.contains(where: { $0.id == jobID }))
     }
 }
 
@@ -328,6 +369,73 @@ private struct VemoRecordingSelectionAppearance: NSViewRepresentable {
                 }
                 ancestor = view.superview
             }
+        }
+    }
+}
+
+/// Request focus after attachment and the native row's responder teardown have finished.
+struct VemoInlineTitleEditor: NSViewRepresentable {
+    @Binding var text: String
+    var font: NSFont = .systemFont(ofSize:13,weight:.semibold)
+    let save: () -> Void
+    let cancel: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeNSView(context: Context) -> Field {
+        let field = Field()
+        field.isBordered = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.isEditable = true
+        field.isSelectable = true
+        field.usesSingleLineMode = true
+        field.cell?.isScrollable = true
+        field.delegate = context.coordinator
+        field.setContentCompressionResistancePriority(.defaultLow,for:.horizontal)
+        field.setAccessibilityLabel("녹음 제목 수정")
+        field.toolTip = "Enter로 저장 · Escape로 취소"
+        return field
+    }
+    func updateNSView(_ field: Field, context: Context) {
+        context.coordinator.parent = self
+        field.font = font
+        if field.stringValue != text { field.stringValue = text }
+    }
+    final class Field: NSTextField {
+        private var requestedFocus = false
+        override var intrinsicContentSize: NSSize {
+            NSSize(width:NSView.noIntrinsicMetric,height:super.intrinsicContentSize.height)
+        }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard let window, !requestedFocus else { return }
+            requestedFocus = true
+            DispatchQueue.main.async { [weak self, weak window] in
+                guard let self, let window, self.window === window else { return }
+                if window.makeFirstResponder(self), let editor = self.currentEditor() {
+                    editor.selectAll(nil)
+                }
+            }
+        }
+    }
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var parent: VemoInlineTitleEditor
+        init(_ parent: VemoInlineTitleEditor) { self.parent = parent }
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSTextField else { return }
+            parent.text = field.stringValue
+        }
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            if selector == #selector(NSResponder.insertNewline(_:)) {
+                parent.text = textView.string
+                parent.save()
+                return true
+            }
+            if selector == #selector(NSResponder.cancelOperation(_:)) {
+                parent.cancel()
+                return true
+            }
+            return false
         }
     }
 }

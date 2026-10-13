@@ -8,6 +8,7 @@ struct VemoLibraryItemInteraction: NSViewRepresentable {
     var suppressFocusRing = false
     var recordingCount: Int?
     var select: (() -> Void)?
+    var editTitle: (() -> Void)?
     var dragData: (() -> Data?)?
     var dragEnded: ((Data) -> Void)?
     var canDrop: ((Data) -> Bool)?
@@ -63,6 +64,7 @@ struct VemoLibraryItemInteraction: NSViewRepresentable {
             defer { pressedAt = nil; dragged = false }
             guard pressedAt != nil, !dragged, bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
             input?.select?()
+            if event.clickCount == 2 { input?.editTitle?() }
         }
         override func mouseDragged(with event: NSEvent) {
             guard let start = pressedAt, !dragged else { return }
@@ -87,7 +89,8 @@ struct VemoLibraryItemInteraction: NSViewRepresentable {
             beginDraggingSession(with: [draggingItem], event: event, source: self)
         }
         override func keyDown(with event: NSEvent) {
-            if event.keyCode == 36 || event.keyCode == 49 || event.keyCode == 76 { input?.select?() }
+            if (event.keyCode == 36 || event.keyCode == 76), let edit = input?.editTitle { input?.select?(); edit() }
+            else if event.keyCode == 36 || event.keyCode == 49 || event.keyCode == 76 { input?.select?() }
             else { super.keyDown(with: event) }
         }
         func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {

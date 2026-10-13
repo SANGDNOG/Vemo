@@ -1,6 +1,6 @@
 import json
 LIMIT=8*1024*1024
-KINDS={'hello','snapshot','discover','import','enqueue','backfill','snapshot_ready','pause','resume','retry','retitle','set_recording_date','publish_ack','shutdown','download_models','set_policy','generate_notes'}
+KINDS={'hello','snapshot','discover','import','enqueue','backfill','snapshot_ready','pause','resume','retry','retitle','set_recording_date','publish_ack','shutdown','download_models','set_policy','generate_notes','trash_recording','restore_recording','refresh_recording'}
 
 def parse_command(line):
     if len(line)>LIMIT:
@@ -15,6 +15,9 @@ def parse_command(line):
     if not isinstance(obj.get('request_id'),str) or not 0<len(obj['request_id'])<=256:
         raise ValueError('invalid_request_id')
     if not isinstance(obj.get('payload'),dict): raise ValueError('invalid_payload')
+    if obj['kind'] in {'trash_recording','restore_recording','refresh_recording'}:
+        jid=obj['payload'].get('job_id')
+        if not isinstance(jid,str) or not 0<len(jid)<=256:raise ValueError('invalid_job_id')
     if obj['kind']=='download_models' and 'notes_only' in obj['payload'] and type(obj['payload']['notes_only']) is not bool:
         raise ValueError('notes_only_must_be_boolean')
     return obj

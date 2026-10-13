@@ -51,6 +51,7 @@ func wave() -> Data {
         try await cloudFolderChecks()
         try playbackChecks()
         guard CommandLine.arguments.contains("--broker-checks") else { print("All UI/protocol native checks passed; broker checks require --broker-checks"); return }
+        try await perRecordingZIPChecks(root:root)
         let incoming = root.appendingPathComponent("incoming.wav"); try wave().write(to: incoming)
         let state = root.appendingPathComponent("state")
         let broker = ImportBroker(root: state)

@@ -13,6 +13,10 @@ struct SettingsView: View {
                     Button("접근 상태 확인") { model.checkPermissions() }
                 } else {
                     HStack { Text(model.inputFolder.isEmpty ? "입력 폴더를 선택하세요" : model.inputFolder).lineLimit(2); Spacer(); Button("선택") { model.chooseFolder(output: false) } }
+                    HStack {
+                        Button("지금 다시 확인") { model.scanSources(force:true) }
+                        Button("폴더 다시 연결") { model.chooseFolder(output:false) }
+                    }
                     Text("iPhone 음성 메모 → 공유 → Drive의 입력 폴더에 저장하세요. Mac에서는 해당 폴더를 동기화하고 오프라인 사용을 켭니다. 녹음일이 없으면 직접 확인합니다.").font(.caption).foregroundStyle(.secondary)
                 }
                 HStack { Text(model.outputFolder.isEmpty ? "결과 폴더를 선택하세요" : model.outputFolder).lineLimit(2); Spacer(); Button("결과 폴더 선택") { model.chooseFolder(output: true) } }
@@ -30,9 +34,10 @@ struct SettingsView: View {
                     Button("폴더 선택") { model.chooseZIPFolder() }.disabled(model.zipExportBusy)
                         .accessibilityLabel("ZIP 저장 위치 폴더 선택")
                 }
-                Button("완료된 녹음 ZIP 내보내기") { model.exportCompletedZIP() }
+                Toggle("노트 완료 후 녹음별 ZIP 자동 저장",isOn:Binding(get:{ model.autoZIPEnabled },set:{ model.setAutoZIPEnabled($0) }))
+                Button("지금 ZIP 확인") { model.exportCompletedZIP() }
                     .disabled(model.zipExportBusy || model.completedZIPCount == 0 || model.zipExportFolder.isEmpty)
-                Text("완료된 녹음 \(model.completedZIPCount)개의 원본 오디오, TXT · Markdown 전사문, 구간 JSON을 하나의 ZIP으로 저장합니다. Nextcloud 등 클라우드 데스크톱 앱이 선택한 폴더를 동기화합니다.")
+                Text("준비된 녹음 \(model.completedZIPCount)개를 각각 ZIP으로 저장합니다. ZIP마다 원본 오디오·전사문 TXT·노트 Markdown, 총 3개 파일을 담습니다. 원본은 보존됩니다. Nextcloud 등 클라우드 데스크톱 앱이 저장 폴더의 동기화를 별도로 진행합니다.")
                     .font(.caption).foregroundStyle(.secondary)
                 if model.zipExportBusy {
                     HStack { ProgressView().controlSize(.small); Text(model.zipExportProgress).font(.caption) }
@@ -61,10 +66,10 @@ struct SettingsView: View {
                 Toggle("전원 연결 시에만 처리", isOn: $model.acOnly).onChange(of: model.acOnly) { _, value in model.setPolicy(value) }
                 Toggle("로그인 시 앱 실행", isOn: Binding(get: { model.loginEnabled }, set: { model.setLogin($0) }))
                 Button(model.paused ? "처리 재개" : "새 작업 일시 중지") { model.command(model.paused ? "resume" : "pause") }
-                Button("과거 미처리 녹음 모두 전사…") { confirmBackfill = true }.disabled(model.jobs.allSatisfy { $0.status != "unprocessed" })
+                Button("과거 미처리 녹음 모두 전사…") { confirmBackfill = true }.disabled(model.activeJobs.allSatisfy { $0.status != "unprocessed" })
                 Text("창을 닫아도 메뉴 막대에서 계속 처리합니다. 최초 과거 녹음은 자동으로 전사하지 않습니다.").font(.caption).foregroundStyle(.secondary)
             }
         }.formStyle(.grouped).padding().frame(width: 580, height: 650)
-        .confirmationDialog("과거 미처리 녹음을 모두 전사할까요?", isPresented: $confirmBackfill) { Button(model.manualProcessingTitle("모두 전사")) { model.processingCommand("backfill", ["uuids": .array(model.jobs.filter { $0.status == "unprocessed" }.map { .string($0.uuid) })]) } } message: { Text(model.paused ? "대기 중인 작업도 함께 재개합니다. 로컬 처리에 시간이 걸릴 수 있습니다." : "로컬 처리에 시간이 걸릴 수 있습니다.") }
+        .confirmationDialog("과거 미처리 녹음을 모두 전사할까요?", isPresented: $confirmBackfill) { Button(model.manualProcessingTitle("모두 전사")) { model.processingCommand("backfill", ["uuids": .array(model.activeJobs.filter { $0.status == "unprocessed" }.map { .string($0.uuid) })]) } } message: { Text(model.paused ? "대기 중인 작업도 함께 재개합니다. 로컬 처리에 시간이 걸릴 수 있습니다." : "로컬 처리에 시간이 걸릴 수 있습니다.") }
     }
 }

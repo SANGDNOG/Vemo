@@ -3,20 +3,27 @@ import NativeCore
 struct TranscriptView: View {
     @ObservedObject var model: AppModel
     let job: Job
-    @ViewState private var editingTopic = false
     @Environment(\.accessibilityReduceMotion) private var reducedMotion
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 6) { Text(job.title).font(.title.bold()).textSelection(.enabled); Text([job.recorded_at ?? job.recording_date ?? "녹음 시작일 미확인", job.statusLabel].joined(separator: " · ")).font(.caption).foregroundStyle(.secondary) }
+                VStack(alignment:.leading,spacing:6) {
+                    if model.isEditingTitle(job,at:.detail) {
+                        VemoInlineTitleEditor(text:$model.titleDraft,font:.systemFont(ofSize:22,weight:.bold),save:model.saveTitleEdit,cancel:model.cancelTitleEdit)
+                    } else {
+                        Text(job.title).font(.title.bold())
+                            .onTapGesture(count:2) { model.beginTitleEdit(job,at:.detail) }
+                    }
+                    Text([job.recorded_at ?? job.recording_date ?? "녹음 시작일 미확인",job.statusLabel].joined(separator:" · "))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Spacer()
-                Menu { RecordingFolderMenu(model: model, jobID: job.id); Divider(); Button("주제 수정") { editingTopic = true }; Button("제목 다시 생성") { model.retitle(generate: true) } } label: { Image(systemName: "ellipsis.circle") }.vemoMenuSurface().accessibilityLabel("녹음 메뉴")
+                Menu { RecordingFolderMenu(model:model,jobID:job.id,titleLocation:.detail); Divider(); Button("제목 다시 생성") { model.retitle(generate: true) } } label: { Image(systemName: "ellipsis.circle") }.vemoMenuSurface().accessibilityLabel("녹음 메뉴")
             }
             Label(model.folderName(for: job.id), systemImage: "folder").font(.caption).foregroundStyle(VemoTheme.ink).lineLimit(1).help(model.folderName(for: job.id))
             if job.status == "needs_recording_date" || job.recording_date == nil {
                 HStack { TextField("녹음 시작일 YYYY-MM-DD", text: $model.dateInput).textFieldStyle(.roundedBorder); Button("날짜 확인") { model.setDate() }.buttonStyle(VemoButtonStyle(emphasis: .primary)) }.help("파일 수정일 대신 실제 녹음 시작일을 입력하세요.")
             }
-            if editingTopic { HStack { TextField("주제만 수정", text: $model.topic).textFieldStyle(.roundedBorder); Button("저장") { model.retitle(generate: false); editingTopic = false }.buttonStyle(VemoButtonStyle(emphasis: .primary)); Button("취소") { editingTopic = false } }; Text("녹음일은 그대로 유지됩니다.").font(.caption).foregroundStyle(.secondary) }
             if model.paused || (model.acOnly && job.wait_reason == "ac_power") { processingNotice }
             if job.status != "completed" { stage }
             if model.audioDuration > 0 {

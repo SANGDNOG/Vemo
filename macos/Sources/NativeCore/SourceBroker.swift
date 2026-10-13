@@ -130,7 +130,7 @@ public actor SourceBroker {
             var revision: MediaRevision?
             if let url = recording.sourceURL { revision = try? BrokerFiles.stamp(sourceURL(url)).revision }
             let evidence = revision == nil ? "unknown" : recording.completionEvidence
-            memos.append(Memo(uuid:recording.uuid,recorded_at:recording.recordedAt,recorded_at_source:recording.recordedAtSource,original_timezone:recording.originalTimezone,duration_s:recording.duration,media_revision:revision,completion_evidence:evidence,source_kind:"voice_memos",source_reference:reference,original_title:recording.title))
+            memos.append(Memo(uuid:recording.uuid,recorded_at:recording.recordedAt,recorded_at_source:recording.recordedAtSource,original_timezone:recording.originalTimezone,duration_s:recording.duration,media_revision:revision,completion_evidence:evidence,source_kind:"voice_memos",source_reference:reference,original_title:recording.title,metadata_revision:recording.metadataRevision))
         }
         try BrokerFiles.atomic(BrokerFiles.json(registry),to:registryURL); return memos
     }

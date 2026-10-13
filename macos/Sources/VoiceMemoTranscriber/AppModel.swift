@@ -3,12 +3,30 @@ import NativeCore
 import AVFoundation
 import ServiceManagement
 
+enum TitleEditingLocation { case sidebar, detail }
+
 @MainActor final class AppModel: ObservableObject {
     static let shared = AppModel()
     let stateRoot = DemoContent.enabled ? FileManager.default.temporaryDirectory.appendingPathComponent("Vemo-demo-" + UUID().uuidString) : RuntimePaths.stateRoot()
     let engine = EngineClient()
     @Published var jobs: [Job] = []
-    @Published var selection: String?
+    var activeJobs: [Job] { jobs.filter { $0.deleted_at == nil } }
+    @Published var editingTitleJobID: String?
+    @Published var editingTitleLocation: TitleEditingLocation?
+    @Published var titleDraft = ""
+    private var importPanel: NSOpenPanel?
+    private var refreshRequests: [String:String] = [:]
+    private var pendingRecordingCommands: [String:String] = [:]
+    private var refreshPendingJobs: Set<String> = []
+    private var automaticNotesRequested: Set<String> = []
+    private var automaticNoteRequests: [String:String] = [:]
+    private var automaticNotesRetryAfter: [String:Date] = [:]
+    private var automaticNotesTask: Task<Void,Never>?
+    private var folderConnectionPanel: NSOpenPanel?
+    private var rescanRequested = false
+    @Published var selection: String? {
+        didSet { if selection != oldValue { cancelTitleEdit() } }
+    }
     @Published var search = ""
     @Published var library = LibraryOrganization()
     @Published var libraryFilter = "all"
@@ -34,14 +52,22 @@ import ServiceManagement
     @Published var transcriptIndex: [String:String] = [:]
     @Published var outputFolder = UserDefaults.standard.string(forKey: "outputFolder") ?? ""
     @Published var zipExportFolder = UserDefaults.standard.string(forKey: "zipExportFolder") ?? ""
+    @Published var autoZIPEnabled = UserDefaults.standard.object(forKey:"autoZIPEnabled") as? Bool ?? true
+    private lazy var perRecordingZIPStore = PerRecordingZIPStore(root:stateRoot)
+    private var zipChecked: Set<String> = []
+    private var zipRetryAfter: [String:Date] = [:]
+    private var zipRescheduleRequested = false
     private var zipFolderPanel: NSOpenPanel?
+    private var activeExportTask: Task<URL?,Error>?
+    private var activeExportJobID: String?
+    private var activeExportKey: String?
     private var zipExportTask: Task<Void,Never>?
     private var zipExportClosing = false
     @Published var zipExportBusy = false
     @Published var zipExportProgress = ""
     @Published var zipExportError: String?
     @Published var zipExportResult: URL?
-    var completedZIPCount: Int { jobs.filter { $0.status == "completed" && $0.artifact_path != nil }.count }
+    var completedZIPCount: Int { jobs.filter { AutomaticRecordingPolicy.zipEligible($0) && !recordingCommandPending($0.id) }.count }
     @Published var inputFolder = UserDefaults.standard.string(forKey: "inputFolder") ?? ""
     @Published var sourceMode = UserDefaults.standard.string(forKey: "sourceMode") ?? "voice_memos"
     @Published var acOnly = UserDefaults.standard.object(forKey: "acOnly") as? Bool ?? true
@@ -68,13 +94,14 @@ import ServiceManagement
     @Published var sourceDiagnostic: String?
     private var deliveries: [String:String] = [:]
     private var brokerRequests: Set<String> = []
+    private var internalBrokerReplies: Set<String> = []
     private var timer: Timer?
     private var loadID = UUID()
     private var loadedAudioKey: String?
     private var loadedSelection: String?
     var selected: Job? { jobs.first { $0.id == selection } }
     var visibleJobs: [Job] { LibraryQuery.visible(jobs, assignments: library.assignments, filter: libraryFilter, search: search, index: transcriptIndex) }
-    var libraryTitle: String { libraryFilter == "all" ? "전체 녹음" : libraryFilter == "unfiled" ? "미분류" : LibraryFolderHierarchy.path(for: libraryFilter, in: library.folders) }
+    var libraryTitle: String { libraryFilter == "trash" ? "휴지통" : libraryFilter == "all" ? "전체 녹음" : libraryFilter == "unfiled" ? "미분류" : LibraryFolderHierarchy.path(for: libraryFilter, in: library.folders) }
     func folderCount(_ filter: String) -> Int { LibraryQuery.visible(jobs, assignments: library.assignments, filter: filter, search: "", index: [:]).count }
     func folderName(for jobID: String) -> String {
         guard let id = library.assignments[jobID] else { return "미분류" }
@@ -113,7 +140,7 @@ import ServiceManagement
             do {
                 let value = try await operation(store)
                 if value.revision >= library.revision { library = value }
-                if libraryFilter != "all", libraryFilter != "unfiled", !library.folders.contains(where: { $0.id == libraryFilter }) { libraryFilter = "all" }
+                if libraryFilter != "all", libraryFilter != "unfiled", libraryFilter != "trash", !library.folders.contains(where: { $0.id == libraryFilter }) { libraryFilter = "all" }
                 reconcileLibrarySelection()
             } catch { problem = error.localizedDescription }
         }
@@ -125,21 +152,21 @@ import ServiceManagement
     func deleteLibraryFolder(_ id: String) {
         changeLibrary { try await $0.delete(id: id) }
     }
-    func moveRecording(_ jobID: String, to folderID: String?) { changeLibrary { try await $0.assign(jobIDs: [jobID], folderID: folderID) } }
+    func moveRecording(_ jobID: String, to folderID: String?) { guard activeJobs.contains(where: { $0.id == jobID }) else { return }; changeLibrary { try await $0.assign(jobIDs: [jobID], folderID: folderID) } }
     func libraryDragPayload(kind: LibraryDragKind, id: String) -> LibraryDragPayload {
         LibraryDragPayload(kind: kind, id: id, sessionID: libraryDragSessionID)
     }
     func canDropLibraryItem(_ payload: LibraryDragPayload, on target: LibraryDropTarget) -> Bool {
         guard libraryReady, !libraryBusy else { return false }
         return (try? LibraryDropRules.action(for: payload, target: target, organization: library,
-                                           knownJobIDs: Set(jobs.map(\.id)), sessionID: libraryDragSessionID)) != nil
+                                           knownJobIDs: Set(activeJobs.map(\.id)), sessionID: libraryDragSessionID)) != nil
     }
     @discardableResult
     func dropLibraryItem(_ payload: LibraryDragPayload, on target: LibraryDropTarget) -> Bool {
         guard libraryReady, !libraryBusy else { return false }
         do {
             guard let action = try LibraryDropRules.action(for: payload, target: target, organization: library,
-                                                         knownJobIDs: Set(jobs.map(\.id)), sessionID: libraryDragSessionID) else { return false }
+                                                         knownJobIDs: Set(activeJobs.map(\.id)), sessionID: libraryDragSessionID) else { return false }
             changeLibrary { store in
                 switch action {
                 case .recording(let id, let folderID): return try await store.assign(jobIDs: [id], folderID: folderID)
@@ -154,9 +181,9 @@ import ServiceManagement
     }
     var overallStatus: String {
         if zipExportBusy { return zipExportProgress }
-        if paused { return "새 작업 일시 중지 · 대기 \(jobs.filter { ["waiting", "paused"].contains($0.status) }.count)개" }
-        if let j = jobs.first(where: { ["preparing", "transcribing", "aligning", "titling", "noting", "saving"].contains($0.status) }) { return "\(j.statusLabel) · \(j.progress)" }
-        return "\(connection) · 대기 \(jobs.filter { ["waiting", "paused"].contains($0.status) }.count)개"
+        if paused { return "새 작업 일시 중지 · 대기 \(activeJobs.filter { ["waiting", "paused"].contains($0.status) }.count)개" }
+        if let j = activeJobs.first(where: { ["preparing", "transcribing", "aligning", "titling", "noting", "saving"].contains($0.status) }) { return "\(j.statusLabel) · \(j.progress)" }
+        return "\(connection) · 대기 \(activeJobs.filter { ["waiting", "paused"].contains($0.status) }.count)개"
     }
     func start() {
         guard !started else { return }; started = true; loadLibrary()
@@ -165,6 +192,7 @@ import ServiceManagement
     }
     func connect() {
         guard !DemoContent.enabled else { return }; guard !connecting else { return }; connecting = true; connected = false
+        resetPendingConnectionRequests()
         connection = "엔진 연결 중"
         Task { [self] in
             defer { connecting = false }
@@ -174,24 +202,32 @@ import ServiceManagement
             } catch { disconnected(error.localizedDescription) }
         }
     }
-    private func disconnected(_ message: String) { connected = false; deliveries.removeAll(); connection = "엔진 연결 필요"; problem = message }
+    private func disconnected(_ message: String) { connected = false; resetPendingConnectionRequests(); deliveries.removeAll(); connection = "엔진 연결 필요"; problem = message }
     func command(_ kind: String, _ payload: [String:JSONValue] = [:]) {
         guard !DemoContent.enabled else { return }
-        Task { do { try await engine.send(WireCommand(kind, payload)) } catch { problem = error.localizedDescription } }
+        let request = WireCommand(kind,payload)
+        if ["snapshot_ready","publish_ack"].contains(kind) { internalBrokerReplies.insert(request.request_id) }
+        if ["trash_recording","retitle","generate_notes","set_recording_date"].contains(kind), let id = payload["job_id"]?.string { pendingRecordingCommands[request.request_id] = id; cancelObsoleteExport() }
+        Task {
+            do { try await engine.send(request) }
+            catch { internalBrokerReplies.remove(request.request_id); pendingRecordingCommands.removeValue(forKey:request.request_id); problem = error.localizedDescription }
+        }
     }
     func manualProcessingTitle(_ title: String) -> String { paused ? title + " · 처리 재개" : title }
     func processingCommand(_ kind: String, _ payload: [String:JSONValue] = [:]) {
         guard !DemoContent.enabled else { return }
         let resume = paused ? WireCommand("resume") : nil
         let requested = WireCommand(kind, payload)
+        if let id = payload["job_id"]?.string { pendingRecordingCommands[requested.request_id] = id; cancelObsoleteExport() }
         Task {
             do {
                 if let resume { try await engine.send(resume) }
                 try await engine.send(requested)
-            } catch { problem = error.localizedDescription }
+            } catch { pendingRecordingCommands.removeValue(forKey:requested.request_id); problem = error.localizedDescription }
         }
     }
     func processRecording(_ job: Job) {
+        guard job.deleted_at == nil else { return }
         if job.status == "unprocessed" { processingCommand("enqueue", ["uuids": .array([.string(job.uuid)])]) }
         else if job.status == "failed" { processingCommand("retry", ["job_id": .string(job.id)]) }
     }
@@ -199,12 +235,28 @@ import ServiceManagement
         do {
             switch event.kind {
             case "snapshot":
-                if let value = event.payload["jobs"] { jobs = try value.decoded([Job].self); await indexTranscripts() }
+                if let value = event.payload["jobs"] {
+                    jobs = try value.decoded([Job].self)
+                    refreshPendingJobs.removeAll()
+                    if case .array(let values) = value { for item in values { trackRefreshState(item) } }
+                    cancelObsoleteExport()
+                    await indexTranscripts()
+                }
                 if let status = event.payload["engine_status"]?.object { updateEngine(status) }
                 let first = !connected; connected = true
                 connection = "로컬 엔진 연결됨"; reconcileLibrarySelection(); await loadSelection(); if first { scanSources(force:true); await deliverPendingImports() }
             case "job_changed":
-                if let value = event.payload["job"] { let job = try value.decoded(Job.self); if let i = jobs.firstIndex(where: { $0.id == job.id }) { jobs[i] = job } else { jobs.append(job) }; await index(job); reconcileLibrarySelection(); if selection == job.id { await loadSelection() } }
+                if let value = event.payload["job"] {
+                    let job = try value.decoded(Job.self); trackRefreshState(value)
+                    if let i = jobs.firstIndex(where: { $0.id == job.id }) {
+                        if jobs[i].status != job.status || jobs[i].notes_status != job.notes_status {
+                            zipChecked.remove(AutomaticRecordingPolicy.zipKey(jobs[i],destination:zipExportFolder))
+                        }
+                        jobs[i] = job
+                    } else { jobs.append(job) }
+                    cancelObsoleteExport()
+                    await index(job); reconcileLibrarySelection(); await loadSelection()
+                }
             case "engine_status": updateEngine(event.payload["engine_status"]?.object ?? event.payload)
             case "model_progress":
                 if event.payload["model"]?.string == "notes" {
@@ -213,14 +265,23 @@ import ServiceManagement
                 } else { modelStatus = ModelProgress.description(event.payload) }
                 if let e = event.payload["error"], e != .null { problem = "모델 다운로드가 중단되었습니다. 설정에서 다운로드 / 재개를 선택하세요." }
             case "snapshot_requested":
-                guard let id = event.payload["job_id"]?.string, let reference = event.payload["source_reference"]?.string, !brokerRequests.contains("snapshot:" + id) else { break }
-                brokerRequests.insert("snapshot:" + id)
+                guard let id = event.payload["job_id"]?.string, let reference = event.payload["source_reference"]?.string else { break }
+                let token = event.payload["snapshot_request_id"]
+                let requestKey = "snapshot:" + id + ":" + (token?.string ?? "legacy")
+                guard !brokerRequests.contains(requestKey) else { break }
+                brokerRequests.insert(requestKey)
                 Task { [self] in
-                    defer { brokerRequests.remove("snapshot:" + id) }
+                    defer { brokerRequests.remove(requestKey) }
                     do {
                         let snapshot = reference.hasPrefix("import:") ? try await imports.snapshot(reference:reference,jobID:id) : try await source.snapshot(reference:reference,jobID:id)
-                        command("snapshot_ready",["job_id":.string(id),"owned_path":.string(snapshot.owned_path),"revision_before":try .encoded(snapshot.revision_before),"revision_after":try .encoded(snapshot.revision_after)])
-                    } catch { command("snapshot_ready",["job_id":.string(id),"error":brokerError(error)]) }
+                        var reply: [String:JSONValue] = ["job_id":.string(id),"owned_path":.string(snapshot.owned_path),"revision_before":try .encoded(snapshot.revision_before),"revision_after":try .encoded(snapshot.revision_after)]
+                        if let token { reply["snapshot_request_id"] = token }
+                        command("snapshot_ready",reply)
+                    } catch {
+                        var reply: [String:JSONValue] = ["job_id":.string(id),"error":brokerError(error)]
+                        if let token { reply["snapshot_request_id"] = token }
+                        command("snapshot_ready",reply)
+                    }
                 }
             case "publication_ready":
                 guard let id = event.payload["job_id"]?.string, let publication = event.payload["publication_id"]?.string, let path = event.payload["manifest_path"]?.string, !brokerRequests.contains("publish:" + publication) else { break }
@@ -235,11 +296,18 @@ import ServiceManagement
                     } catch { problem = error.localizedDescription; command("publish_ack",["job_id":.string(id),"publication_id":.string(publication),"error":brokerError(error)]) }
                 }
             case "command_result":
+                let obsoleteInternalReply = consumeObsoleteBrokerReply(event.payload)
+                if let request = event.payload["request_id"]?.string {
+                    completeAutomaticNoteRequest(request,success:event.payload["ok"]?.bool == true)
+                    pendingRecordingCommands.removeValue(forKey:request)
+                }
+                if let request = event.payload["request_id"]?.string, refreshRequests.removeValue(forKey:request) != nil, event.payload["ok"]?.bool == true { scanSources(force:true) }
                 if let request = event.payload["request_id"]?.string, let reference = deliveries.removeValue(forKey:request), event.payload["ok"]?.bool == true { try await imports.markDelivered(reference:reference) }
-                if event.payload["ok"]?.bool == false { problem = event.payload["error"]?.object?["message"]?.string ?? "요청을 완료하지 못했습니다." }
+                if event.payload["ok"]?.bool == false && !obsoleteInternalReply { problem = event.payload["error"]?.object?["message"]?.string ?? "요청을 완료하지 못했습니다." }
             case "diagnostic": problem = event.payload["message"]?.string
             default: break
             }
+            if ["snapshot","job_changed","engine_status","command_result"].contains(event.kind) { scheduleAutomaticOutputs() }
         } catch { problem = "엔진 상태를 해석하지 못했습니다: \(error.localizedDescription)" }
     }
     private func updateEngine(_ status: [String:JSONValue]) {
@@ -273,6 +341,7 @@ import ServiceManagement
         }.value
     }
     private func index(_ job: Job) async {
+        guard job.deleted_at == nil else { transcriptIndex.removeValue(forKey:job.id); return }
         guard let path = job.artifact_path, let result = try? await readTranscript(path) else { return }
         var text = result.text
         if let path = job.notes_path, let note = try? await readNotes(path,text:result.text) { text += "\n" + NotesDisplay.markdown(note,title:job.title) }
@@ -285,7 +354,7 @@ import ServiceManagement
     func loadSelection() async {
         if DemoContent.enabled { loadDemoSelection(); return }
         let token = UUID(); loadID = token
-        guard let job = selected else { player?.stop(); player = nil; loadedAudioKey = nil; loadedSelection = nil; transcript = nil; notes = nil; notesReadError = nil; playing = false; return }
+        guard let job = selected, job.deleted_at == nil else { player?.stop(); player = nil; loadedAudioKey = nil; loadedSelection = nil; transcript = nil; notes = nil; notesReadError = nil; playing = false; return }
         if loadedSelection != job.id {
             player?.stop(); player = nil; loadedAudioKey = nil; playing = false; currentTime = 0; audioDuration = 0; transcript = nil; notes = nil; notesReadError = nil; quoteRow = nil; focusedQuote = nil
             topic = job.topic ?? ""; dateInput = job.recording_date ?? ""; loadedSelection = job.id
@@ -310,6 +379,7 @@ import ServiceManagement
     private func tick() { currentTime = player?.currentTime ?? currentTime; playing = player?.isPlaying ?? false
         ticks += 1
         if ticks % 5 == 0 && connected { scanSources() }
+        if ticks % 60 == 0 { scheduleAutomaticOutputs(reconcile:true) }
     }
     func setPolicy(_ value: Bool) { UserDefaults.standard.set(value,forKey:"acOnly"); if connected { command("set_policy",["ac_only":.bool(value)]) } }
     private func brokerError(_ error: Error) -> JSONValue { .object(["code":.string((error as? BrokerFailure)?.code ?? "native_io"),"message":.string((error as? BrokerFailure)?.message ?? "파일 작업을 완료하지 못했습니다. 권한과 저장 공간을 확인하세요."),"recoverable":.bool(true)]) }
@@ -323,9 +393,16 @@ import ServiceManagement
         } catch { problem = error.localizedDescription }
     }
     func scanSources(force: Bool = false) {
-        guard !DemoContent.enabled, connected, !scanning else { return }; scanning = true
+        guard !DemoContent.enabled else { return }
+        if force { rescanRequested = true }
+        guard connected, !scanning else { return }
+        let force = force || rescanRequested
+        rescanRequested = false; scanning = true
         Task { [self] in
-            defer { scanning = false }
+            defer {
+                scanning = false
+                if rescanRequested { scanSources(force:true) }
+            }
             do {
                 if sourceMode == "voice_memos" {
                     if !force && Date().timeIntervalSince(lastSourceScan) < 60 { return }; lastSourceScan = Date()
@@ -334,6 +411,7 @@ import ServiceManagement
                     command("discover",["memos":try .encoded(memos)])
                 } else if !inputFolder.isEmpty {
                     if !outputFolder.isEmpty { try FolderConnection.validate(input:URL(fileURLWithPath:inputFolder),output:URL(fileURLWithPath:outputFolder)) }
+                    if force { await watcher.retryFiles() }
                     let scan = try await watcher.scan(in:URL(fileURLWithPath:inputFolder))
                     var failures = 0
                     for url in scan.files {
@@ -349,16 +427,37 @@ import ServiceManagement
             } catch { let message = (error as? BrokerFailure)?.message ?? "입력 폴더를 읽지 못했습니다. 설정과 접근 권한을 확인하세요."; sourceDiagnostic = message; problem = message }
         }
     }
-    func setDate() { guard let job = selected else { return }; do { let date = try Validation.recordingDate(dateInput); command("set_recording_date", ["job_id": .string(job.id), "recording_date": .string(date)]) } catch { problem = error.localizedDescription } }
-    func retitle(generate: Bool) { guard let job = selected else { return }; command("retitle", ["job_id": .string(job.id), generate ? "generate" : "topic": generate ? .bool(true) : .string(topic)]) }
-    func chooseFolder(output: Bool) { guard !DemoContent.enabled else { return };
-        let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = output
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            if output, sourceMode == "folder", !inputFolder.isEmpty { try FolderConnection.validate(input:URL(fileURLWithPath:inputFolder),output:url) }
-            if !output, !outputFolder.isEmpty { try FolderConnection.validate(input:url,output:URL(fileURLWithPath:outputFolder)) }
-        } catch { problem = error.localizedDescription; return }
-        if output { outputFolder = url.path; UserDefaults.standard.set(url.path, forKey: "outputFolder"); for job in jobs where job.status == "saving" { command("retry",["job_id":.string(job.id)]) } } else { inputFolder = url.path; UserDefaults.standard.set(url.path, forKey: "inputFolder"); scanSources(force:true) }
+    func setDate() { guard let job = selected, job.deleted_at == nil else { return }; do { let date = try Validation.recordingDate(dateInput); command("set_recording_date", ["job_id": .string(job.id), "recording_date": .string(date)]) } catch { problem = error.localizedDescription } }
+    func retitle(generate: Bool) { guard let job = selected, job.deleted_at == nil else { return }; command("retitle", ["job_id": .string(job.id), generate ? "generate" : "topic": generate ? .bool(true) : .string(topic)]) }
+    func chooseFolder(output: Bool) {
+        guard !DemoContent.enabled else { return }
+        if let panel = folderConnectionPanel { panel.makeKeyAndOrderFront(nil); return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = output
+        panel.allowsMultipleSelection = false
+        panel.title = output ? "결과 폴더 선택" : "입력 폴더 다시 연결"
+        let currentPath = output ? outputFolder : inputFolder
+        if !currentPath.isEmpty { panel.directoryURL = URL(fileURLWithPath:currentPath) }
+        folderConnectionPanel = panel
+        panel.begin { [weak self,weak panel] response in
+            Task { @MainActor in
+                guard let self, let panel, self.folderConnectionPanel === panel else { return }
+                defer { self.folderConnectionPanel = nil }
+                guard response == .OK, let url = panel.url else { return }
+                do {
+                    if output, self.sourceMode == "folder", !self.inputFolder.isEmpty { try FolderConnection.validate(input:URL(fileURLWithPath:self.inputFolder),output:url) }
+                    if !output, !self.outputFolder.isEmpty { try FolderConnection.validate(input:url,output:URL(fileURLWithPath:self.outputFolder)) }
+                } catch { self.problem = error.localizedDescription; return }
+                if output {
+                    self.outputFolder = url.path; UserDefaults.standard.set(url.path,forKey:"outputFolder")
+                    for job in self.activeJobs where job.status == "saving" { self.command("retry",["job_id":.string(job.id)]) }
+                } else {
+                    self.inputFolder = url.path; UserDefaults.standard.set(url.path,forKey:"inputFolder")
+                    self.sourceMode = "folder"; UserDefaults.standard.set("folder",forKey:"sourceMode")
+                    self.scanSources(force:true)
+                }
+            }
+        }
     }
     func chooseZIPFolder() {
         guard !DemoContent.enabled, !zipExportBusy, !zipExportClosing else { return }
@@ -381,34 +480,145 @@ import ServiceManagement
                 self.zipExportFolder = url.path
                 UserDefaults.standard.set(url.path,forKey:"zipExportFolder")
                 self.zipExportError = nil; self.zipExportResult = nil
+                self.zipChecked.removeAll(); self.zipRetryAfter.removeAll()
+                self.scheduleAutomaticOutputs()
             }
         }
     }
-    func exportCompletedZIP() {
-        guard !DemoContent.enabled, !zipExportClosing, !zipExportBusy, !zipExportFolder.isEmpty, completedZIPCount > 0 else { return }
-        // Copy value types and paths now; export never consults changing selection or job state.
-        let snapshot = jobs.filter { $0.status == "completed" && $0.artifact_path != nil }
-        let root = stateRoot
-        let destination = URL(fileURLWithPath:zipExportFolder)
-        zipExportBusy = true; zipExportError = nil; zipExportResult = nil
-        zipExportProgress = "ZIP 내보내기 준비 중 · \(snapshot.count)개 녹음"
-        zipExportTask = Task { [self] in
-            defer { zipExportBusy = false }
-            do {
-                let result = try await RecordingZIPExport.export(jobs:snapshot,stateRoot:root,destination:destination) { [weak self] message in
-                    await self?.updateZIPProgress(message)
+    private func trackRefreshState(_ value: JSONValue) {
+        guard let object = value.object, let id = object["id"]?.string else { return }
+        if object["refresh_pending"]?.bool == true || object["wait_reason"]?.string == "source_refresh" { refreshPendingJobs.insert(id) }
+        else { refreshPendingJobs.remove(id) }
+    }
+    private func resetPendingConnectionRequests() {
+        clearUnacknowledgedNotes()
+        pendingRecordingCommands.removeAll()
+        refreshRequests.removeAll()
+    }
+    private func consumeObsoleteBrokerReply(_ payload: [String:JSONValue]) -> Bool {
+        guard let requestID = payload["request_id"]?.string,
+              internalBrokerReplies.remove(requestID) != nil,
+              payload["ok"]?.bool == false,
+              let error = payload["error"]?.object,
+              error["code"]?.string == "invalid_command",
+              let message = error["message"]?.string else { return false }
+        return ["stale_snapshot","snapshot_not_requested","stale_publication","recording_trashed"].contains(message)
+    }
+    private func completeAutomaticNoteRequest(_ requestID: String, success: Bool) {
+        guard let key = automaticNoteRequests.removeValue(forKey:requestID) else { return }
+        if !success {
+            automaticNotesRequested.remove(key)
+            automaticNotesRetryAfter[key] = Date().addingTimeInterval(60)
+        }
+    }
+    private func clearUnacknowledgedNotes() {
+        for key in automaticNoteRequests.values {
+            automaticNotesRequested.remove(key)
+            automaticNotesRetryAfter.removeValue(forKey:key)
+        }
+        automaticNoteRequests.removeAll()
+    }
+    private func cancelObsoleteExport() {
+        guard let id = activeExportJobID else { return }
+        guard let job = jobs.first(where: { $0.id == id }), AutomaticRecordingPolicy.zipEligible(job),
+              !recordingCommandPending(id), AutomaticRecordingPolicy.zipKey(job,destination:zipExportFolder) == activeExportKey else {
+            activeExportTask?.cancel()
+            return
+        }
+    }
+    private func recordingCommandPending(_ id: String) -> Bool {
+        refreshPendingJobs.contains(id) || refreshRequests.values.contains(id) || pendingRecordingCommands.values.contains(id)
+    }
+    private func scheduleAutomaticOutputs(reconcile: Bool = false) {
+        cancelObsoleteExport()
+        guard !DemoContent.enabled, connected, !zipExportClosing else { return }
+        requestMissingNotes()
+        guard autoZIPEnabled else { return }
+        checkRecordingZIPs(manual:false,reconcile:reconcile)
+    }
+    private func requestMissingNotes() {
+        guard !paused, notesModelReady, automaticNotesTask == nil else { return }
+        let ids = jobs.filter { AutomaticRecordingPolicy.needsNotes($0) && !automaticNotesRequested.contains(AutomaticRecordingPolicy.notesKey($0)) && (automaticNotesRetryAfter[AutomaticRecordingPolicy.notesKey($0)] ?? .distantPast) <= Date() && !recordingCommandPending($0.id) }.map(\.id)
+        guard !ids.isEmpty else { return }
+        automaticNotesTask = Task { [self] in
+            defer { automaticNotesTask = nil }
+            for id in ids {
+                guard connected, !paused, !zipExportClosing, notesModelReady else { break }
+                guard let job = jobs.first(where: { $0.id == id }), AutomaticRecordingPolicy.needsNotes(job), !recordingCommandPending(id) else { continue }
+                let key = AutomaticRecordingPolicy.notesKey(job)
+                guard (automaticNotesRetryAfter[key] ?? .distantPast) <= Date(), automaticNotesRequested.insert(key).inserted else { continue }
+                let request = WireCommand("generate_notes",["job_id":.string(id)])
+                pendingRecordingCommands[request.request_id] = id
+                automaticNoteRequests[request.request_id] = key
+                do { try await engine.send(request) }
+                catch {
+                    completeAutomaticNoteRequest(request.request_id,success:false)
+                    pendingRecordingCommands.removeValue(forKey:request.request_id); problem = error.localizedDescription
                 }
-                zipExportResult = result
-                zipExportProgress = "완료 · \(snapshot.count)개 녹음"
-            } catch {
-                zipExportProgress = "ZIP 내보내기 실패"
-                zipExportError = error.localizedDescription
             }
+        }
+    }
+    func setAutoZIPEnabled(_ enabled: Bool) {
+        autoZIPEnabled = enabled; UserDefaults.standard.set(enabled,forKey:"autoZIPEnabled")
+        if enabled { scheduleAutomaticOutputs() }
+    }
+    func exportCompletedZIP() { checkRecordingZIPs(manual:true,reconcile:true) }
+    private func checkRecordingZIPs(manual: Bool, reconcile: Bool) {
+        guard !DemoContent.enabled, connected, !zipExportClosing, !zipExportFolder.isEmpty else { return }
+        if zipExportBusy { zipRescheduleRequested = true; return }
+        let destination = URL(fileURLWithPath:zipExportFolder)
+        let now = Date()
+        let candidates = jobs.filter { job in
+            guard AutomaticRecordingPolicy.zipEligible(job), !recordingCommandPending(job.id) else { return false }
+            let key = AutomaticRecordingPolicy.zipKey(job,destination:destination.path)
+            return (manual || (zipRetryAfter[key] ?? .distantPast) <= now) && (reconcile || !zipChecked.contains(key))
+        }.map(\.id)
+        guard !candidates.isEmpty else { return }
+        zipExportBusy = true; zipExportError = nil
+        if manual { zipExportProgress = "녹음별 ZIP 확인 중" }
+        zipExportTask = Task { [self] in
+            var failures: [String] = [], written = 0, checked = 0
+            defer {
+                zipExportBusy = false
+                if zipRescheduleRequested { zipRescheduleRequested = false; scheduleAutomaticOutputs() }
+            }
+            for id in candidates {
+                guard !zipExportClosing, manual || autoZIPEnabled else { break }
+                // Resolve the latest immutable value immediately before the actor call.
+                guard let job = jobs.first(where: { $0.id == id }), AutomaticRecordingPolicy.zipEligible(job), !recordingCommandPending(id) else { continue }
+                let key = AutomaticRecordingPolicy.zipKey(job,destination:destination.path)
+                activeExportJobID = id; activeExportKey = key
+                let child = Task { [self] in
+                    try Task.checkCancellation()
+                    return try await perRecordingZIPStore.exportIfNeeded(job:job,destination:destination) { [weak self] message in
+                        await self?.updateZIPProgress(message)
+                    }
+                }
+                activeExportTask = child
+                defer { activeExportTask = nil; activeExportJobID = nil; activeExportKey = nil }
+                do {
+                    let result = try await child.value
+                    zipChecked.insert(key); zipRetryAfter.removeValue(forKey:key); checked += 1
+                    if let result { zipExportResult = result; written += 1 }
+                } catch is CancellationError {
+                    // A newer lifecycle state superseded this capture; continue the other recordings.
+                    continue
+                } catch {
+                    if child.isCancelled { continue }
+                    failures.append(job.title + ": " + error.localizedDescription)
+                    zipRetryAfter[key] = Date().addingTimeInterval(60)
+                }
+            }
+            zipExportError = failures.isEmpty ? nil : failures.joined(separator:"\n")
+            if !failures.isEmpty { zipExportProgress = "ZIP 저장 \(written)개 · 확인 필요 \(failures.count)개" }
+            else if written > 0 { zipExportProgress = "녹음별 ZIP 저장 완료 · \(written)개" }
+            else if manual { zipExportProgress = checked > 0 ? "모든 ZIP이 최신입니다" : "현재 ZIP 저장을 기다리는 녹음입니다" }
         }
     }
     func flushZIPExport() async {
         zipExportClosing = true
         if zipExportBusy { zipExportProgress = "종료 대기 · ZIP 내보내기를 마치는 중" }
+        await automaticNotesTask?.value
         await zipExportTask?.value
     }
     private func updateZIPProgress(_ message: String) {
@@ -421,25 +631,78 @@ import ServiceManagement
             if connected { await deliverPendingImports() } else { problem = "파일을 안전하게 보관했습니다. 엔진을 연결하면 가져오기를 계속합니다." }
         }
     }
-    func chooseFiles() { let panel = NSOpenPanel(); panel.allowsMultipleSelection = true; panel.canChooseDirectories = false; if panel.runModal() == .OK { importFiles(panel.urls) } }
-    var canGenerateNotes: Bool { transcript != nil && selected?.artifact_path != nil && selected.map { ["completed","needs_recording_date","failed"].contains($0.status) } == true }
+    func chooseFiles() {
+        guard !DemoContent.enabled else { return }
+        if let panel = importPanel { panel.makeKeyAndOrderFront(nil); return }
+        let panel = NSOpenPanel()
+        panel.title = "오디오 가져오기"; panel.prompt = "가져오기"
+        panel.allowsMultipleSelection = true; panel.canChooseDirectories = false; panel.canChooseFiles = true
+        importPanel = panel
+        // A retained standalone panel avoids both duplicate panels and unreliable background sheet anchors.
+        panel.begin { [weak self, weak panel] response in
+            Task { @MainActor in
+                guard let self, let panel, self.importPanel === panel else { return }
+                defer { self.importPanel = nil }
+                if response == .OK { self.importFiles(panel.urls) }
+            }
+        }
+    }
+    func trashRecording(_ job: Job) {
+        guard job.deleted_at == nil else { return }
+        command("trash_recording",["job_id":.string(job.id)])
+    }
+    func restoreRecording(_ job: Job) { command("restore_recording",["job_id":.string(job.id)]) }
+    func refreshRecording(_ job: Job) {
+        guard !DemoContent.enabled, job.deleted_at == nil else { return }
+        let request = WireCommand("refresh_recording",["job_id":.string(job.id)])
+        refreshRequests[request.request_id] = job.id
+        cancelObsoleteExport()
+        Task {
+            do { try await engine.send(request) }
+            catch { refreshRequests.removeValue(forKey:request.request_id); problem = error.localizedDescription }
+        }
+    }
+    func isEditingTitle(_ job: Job, at location: TitleEditingLocation) -> Bool {
+        editingTitleJobID == job.id && editingTitleLocation == location
+    }
+    func beginTitleEdit(_ job: Job, at location: TitleEditingLocation) {
+        guard activeJobs.contains(where:{ $0.id == job.id }), job.deleted_at == nil else { return }
+        selection = job.id
+        titleDraft = job.topic ?? job.original_title ?? ""
+        editingTitleJobID = job.id
+        editingTitleLocation = location
+    }
+    func cancelTitleEdit() {
+        editingTitleJobID = nil
+        editingTitleLocation = nil
+        titleDraft = ""
+    }
+    func saveTitleEdit() {
+        guard let id = editingTitleJobID, selection == id,
+              activeJobs.contains(where:{ $0.id == id }) else { cancelTitleEdit(); return }
+        let title = titleDraft.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard !title.isEmpty else { return }
+        command("retitle",["job_id":.string(id),"topic":.string(title)])
+        cancelTitleEdit()
+    }
+    var canGenerateNotes: Bool { transcript != nil && selected?.artifact_path != nil && selected.map { $0.deleted_at == nil && ["completed","needs_recording_date","failed"].contains($0.status) } == true }
     func generateNotes() { guard let job = selected, canGenerateNotes else { return }; processingCommand("generate_notes",["job_id":.string(job.id)]) }
     func revealQuote(_ quote: String) {
         guard let transcript, let target = NotesDisplay.quoteTarget(quote,in:transcript) else { return }
         focusedQuote = quote; quoteRow = target.row; detailMode = "transcript"
         if let timing = target.timing { seek(timing.start_s) }
     }
-    func copyNotes() { guard let notes, let job = selected else { return }; NSPasteboard.general.clearContents(); NSPasteboard.general.setString(NotesDisplay.markdown(notes,title:job.title),forType:.string) }
+    func copyNotes() { guard let notes, let job = selected, job.deleted_at == nil else { return }; NSPasteboard.general.clearContents(); NSPasteboard.general.setString(NotesDisplay.markdown(notes,title:job.title),forType:.string) }
     func exportNotes() {
-        guard let notes, let job = selected else { return }
+        guard let notes, let job = selected, job.deleted_at == nil else { return }
         let panel = NSSavePanel(); panel.nameFieldStringValue = job.title.replacingOccurrences(of:"/",with:"_") + " 노트.md"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         let text = NotesDisplay.markdown(notes,title:job.title)
         Task { do { try await Task.detached { try text.write(to:url,atomically:true,encoding:.utf8) }.value } catch { problem = error.localizedDescription } }
     }
-    func copyTranscript() { guard let transcript else { return }; NSPasteboard.general.clearContents(); NSPasteboard.general.setString(transcript.text, forType: .string) }
+    func copyTranscript() { guard selected?.deleted_at == nil, let transcript else { return }; NSPasteboard.general.clearContents(); NSPasteboard.general.setString(transcript.text, forType: .string) }
     func export(_ format: String) {
-        guard let job = selected, let transcript else { return }
+        guard let job = selected, job.deleted_at == nil, let transcript else { return }
         if ["srt", "vtt"].contains(format), transcript.alignment_status != "completed" && transcript.alignment_status != "success" { return }
         let panel = NSSavePanel(); panel.nameFieldStringValue = job.title.replacingOccurrences(of: "/", with: "_") + "." + format
         guard panel.runModal() == .OK, let url = panel.url else { return }
@@ -455,4 +718,24 @@ import ServiceManagement
     func checkPermissions() { guard !DemoContent.enabled else { return }; Task { do { let status = try await source.writeDiagnostic(); sourceDiagnostic = status.message; problem = status.message } catch { problem = "접근 진단을 저장하지 못했습니다." } } }
     func openPermissions() { guard !DemoContent.enabled else { return }; if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") { NSWorkspace.shared.open(url) } }
     func quit() { NSApp.terminate(nil) }
+}
+
+// Pure readiness policy shared by event-driven and periodic scheduling.
+enum AutomaticRecordingPolicy {
+    static func settled(_ job: Job) -> Bool {
+        job.deleted_at == nil && ["completed","needs_recording_date"].contains(job.status)
+    }
+    static func needsNotes(_ job: Job) -> Bool {
+        settled(job) && job.artifact_path != nil && job.notes_path == nil && (job.notes_status == nil || job.notes_status == "pending")
+    }
+    static func zipEligible(_ job: Job) -> Bool {
+        settled(job) && job.artifact_path != nil && job.audio_path != nil && job.notes_path != nil && job.notes_status == "completed"
+    }
+    static func notesKey(_ job: Job) -> String { key([job.id,job.artifact_path]) }
+    static func zipKey(_ job: Job, destination: String) -> String {
+        key([destination,job.id,job.title,job.recording_date,job.audio_path,job.artifact_path,job.notes_path])
+    }
+    private static func key(_ values: [String?]) -> String {
+        String(decoding:(try? JSONEncoder().encode(values)) ?? Data(),as:UTF8.self)
+    }
 }

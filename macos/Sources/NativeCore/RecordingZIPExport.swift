@@ -3,6 +3,11 @@ import Darwin
 
 /// One immutable job snapshot per export; file IO and archiving run off MainActor.
 public actor RecordingZIPExport {
+    public static func exportOne(job: Job, stateRoot: URL, destination: URL,
+                                 progress: @escaping @Sendable (String) async -> Void = { _ in }) async throws -> URL {
+        try await PerRecordingZIPStore(root:stateRoot).export(job:job,destination:destination,progress:progress).url
+    }
+
     public static func export(jobs: [Job], stateRoot: URL, destination: URL, date: Date = Date(),
                               progress: @escaping @Sendable (String) async -> Void = { _ in }) async throws -> URL {
         try await RecordingZIPExport().run(jobs:jobs,stateRoot:stateRoot,destination:destination,date:date,progress:progress)

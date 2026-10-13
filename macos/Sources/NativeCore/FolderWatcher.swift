@@ -29,6 +29,13 @@ public actor FolderWatcher {
         observations = observations.filter { seen.contains($0.key) }
         return Scan(files:result,waitingForDownload:downloading,changingCount:changing,unavailableCount:unavailable)
     }
+    /// Retry accepted/rejected files while retaining their stability observations.
+    public func retryFiles() {
+        for key in Array(observations.keys) {
+            observations[key]?.accepted = false
+            observations[key]?.failed = false
+        }
+    }
     public func accepted(_ url: URL) { observations[url.path]?.accepted = true; observations[url.path]?.failed = false }
     public func rejected(_ url: URL) { observations[url.path]?.accepted = true; observations[url.path]?.failed = true }
 }

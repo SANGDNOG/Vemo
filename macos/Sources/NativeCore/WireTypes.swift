@@ -28,12 +28,14 @@ public struct Memo: Codable, Sendable {
     public var uuid: String; public var recorded_at: String?; public var recorded_at_source: String
     public var original_timezone: String?; public var duration_s: Double?; public var media_revision: MediaRevision?
     public var completion_evidence: String; public var source_kind: String; public var source_reference: String; public var original_title: String?
+    public var metadata_revision: String? = nil
 }
 public struct Job: Codable, Sendable, Identifiable {
     public var id: String; public var uuid: String; public var topic: String?; public var recording_date: String?; public var recorded_at: String?; public var duration_s: Double?
     public var status: String; public var wait_reason: String?; public var stage: String; public var completed_units: Int?; public var total_units: Int?; public var elapsed_seconds: Double
     public var artifact_path: String?; public var audio_path: String?; public var pcm_path: String?; public var error: JSONValue?; public var title_status: String; public var alignment_status: String; public var original_title: String?
     public var notes_path: String?; public var notes_status: String?; public var notes_error: JSONValue?
+    public var deleted_at: String?
     /// QTA spatial streams are not supported by AVAudioPlayer. Wait for prepared PCM.
     /// The consumer must still validate the chosen path inside its owned state root.
     public var playback_path: String? {

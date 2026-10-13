@@ -27,7 +27,10 @@ class EngineTests(unittest.TestCase):
         p=self.root/(job['id']+'.wav')
         with wave.open(str(p),'wb') as f:f.setparams((1,2,16000,0,'NONE','not compressed'));f.writeframes(struct.pack('<'+str(len(values))+'h',*values))
         rev={'size':p.stat().st_size,'mtime_ns':p.stat().st_mtime_ns}
-        self.send('snapshot_ready',{'job_id':job['id'],'owned_path':str(p),'revision_before':rev,'revision_after':rev})
+        token=self.e.store.get(job['id']).get('snapshot_request_id')
+        payload={'job_id':job['id'],'owned_path':str(p),'revision_before':rev,'revision_after':rev}
+        if token is not None:payload['snapshot_request_id']=token
+        self.send('snapshot_ready',payload)
     def test_baseline_new_import_and_dedupe(self):
         self.engine()
         with patch('voice_memo_transcriber.engine.time.time',return_value=1791687600.0):

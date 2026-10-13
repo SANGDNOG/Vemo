@@ -1,5 +1,5 @@
 """One-thread durable state machine. Readers and inference never touch SQLite."""
-import json,math,os,subprocess,sys,time,uuid,threading,datetime as dt
+import copy,json,math,os,subprocess,sys,time,uuid,threading,datetime as dt
 from pathlib import Path
 from .store import Store
 from .dates import recording_day,validate_day
@@ -12,8 +12,9 @@ from .process import ManagedProcess
 from .notes import validate_notes,source_chunks,source_digest
 from .study_notes import ERROR_CODES
 
-JOB_FIELDS=('id','uuid','topic','recording_date','recorded_at','duration_s','status','wait_reason','stage','completed_units','total_units','elapsed_seconds','artifact_path','audio_path','pcm_path','error','title_status','alignment_status','original_title','notes_path','notes_status','notes_error','notes_protocol')
+JOB_FIELDS=('id','uuid','topic','recording_date','recorded_at','duration_s','status','wait_reason','stage','completed_units','total_units','elapsed_seconds','artifact_path','audio_path','pcm_path','error','title_status','alignment_status','original_title','notes_path','notes_status','notes_error','notes_protocol','deleted_at')
 RUNNING={'preparing','transcribing','aligning','titling','noting'}
+RESULT_FIELDS=('pcm_hash','frames','duration_s','audio_path','pcm_path','artifact_path','asr_chunks','aligned_chunks','alignment_status','topic','title_status','title_checkpoint','notes_path','notes_status','notes_error','notes_protocol','notes_checkpoint','notes_only','notes_prior_status','publication_id','manifest_path','receipt')
 
 def on_ac_power():
     try:
@@ -37,12 +38,17 @@ class Engine:
         # In-flight work was never committed. Recover the same phase/chunk.
         with self.store.transaction():
             for job in self.store.jobs():
-                if job['status'] in RUNNING:
+                if job.get('deleted_at'):
+                    job['queued']=False;self.store.put(job)
+                elif job['phase']=='snapshot' and job['queued'] and job.get('snapshot_request_id'):
+                    self.invalidate(job);job.update(status='waiting',wait_reason='restart');self.store.put(job)
+                elif job['status'] in RUNNING:
                     job.update(status='waiting',wait_reason='restart',stage=job['phase']);self.store.put(job)
     def emit(self,kind,payload):
         self.sequence+=1;self.emit_callback({'sequence':self.sequence,'protocol_version':1,'kind':kind,'payload':payload})
     def view(self,job):
         view={key:job.get(key) for key in JOB_FIELDS}
+        view['refresh_pending']=bool(job.get('refresh_requested') or job.get('refresh_state'))
         view['elapsed_seconds']=job.get('elapsed_seconds',0)+(time.monotonic()-self.started[job['id']] if job['id'] in self.started else 0)
         return view
     def save(self,job):
@@ -77,6 +83,8 @@ class Engine:
         if memo.get('duration_s') is not None and (not isinstance(memo['duration_s'],(int,float)) or not math.isfinite(memo['duration_s']) or memo['duration_s']<0):raise ValueError('invalid_duration')
         revision=memo.get('media_revision')
         if revision is not None:self.validate_revision(revision)
+        metadata=memo.get('metadata_revision')
+        if metadata is not None and (not isinstance(metadata,str) or not 0<len(metadata)<=256 or any(ord(c)<32 for c in metadata)):raise ValueError('invalid_metadata_revision')
         day=recording_day(memo.get('recorded_at'),memo.get('original_timezone'))
         return day
     def validate_revision(self,rev):
@@ -94,23 +102,62 @@ class Engine:
             old=self.store.by_uuid(memo['uuid'])
             if old:
                 previous=old.get('media_revision');revision=memo.get('media_revision');prior_day=old.get('recording_date')
-                changed=revision is not None and previous is not None and revision!=previous
-                old.update(source_reference=memo['source_reference'],completion_evidence=memo['completion_evidence'],original_title=memo.get('original_title'),media_revision=revision)
+                metadata=memo.get('metadata_revision');duration=memo.get('duration_s')
+                changed=(revision is not None and previous is not None and revision!=previous
+                         or metadata is not None and old.get('metadata_revision') is not None and metadata!=old['metadata_revision']
+                         or duration is not None and old.get('source_duration_s') is not None and abs(duration-old['source_duration_s'])>.05
+                         or duration is not None and old.get('pcm_hash') and old.get('checked_source_duration_s') is None and not old.get('refresh_state') and old['status']!='failed' and abs(duration-old['duration_s'])>.05)
+                old.update(source_reference=memo['source_reference'],completion_evidence=memo['completion_evidence'],original_title=memo.get('original_title'))
+                # Unavailable iCloud media/metadata must not erase the last known identity.
+                if revision is not None:old['media_revision']=revision
+                if metadata is not None:old['metadata_revision']=metadata
+                if duration is not None:
+                    old['source_duration_s']=duration
+                    if not old.get('pcm_hash'):old['duration_s']=duration
                 if old.get('date_provenance')!='user_supplied':
                     if memo.get('recorded_at') is not None:
                         old.update(recorded_at=memo['recorded_at'],recording_date=day,date_provenance=memo.get('recorded_at_source','unknown'),original_timezone=memo.get('original_timezone'))
-                if changed and (old['queued'] or old.get('pcm_hash')):
-                    old.update(refresh_requested=True,queued=True,publication_id=None,manifest_path=None)
+                if changed and (old['queued'] or old.get('pcm_hash') or old.get('deleted_at')):
+                    self.request_refresh(old,source_changed=True)
                 if old.get('recording_date')!=prior_day and old.get('artifact_path') and old.get('topic'):
-                    old.update(revision=old['revision']+1,publication_id=None,manifest_path=None,queued=True,status='waiting',phase='notes' if old['phase']=='notes' else 'publish')
-                if explicit and not old.get('pcm_hash'):old['queued']=True
+                    old.update(revision=old['revision']+1,publication_id=None)
+                    if not old.get('deleted_at'):
+                        old['queued']=True
+                        if old['phase']=='publish':old.update(status='waiting',wait_reason=None)
+                if explicit and not old.get('pcm_hash') and not old.get('deleted_at'):old['queued']=True
+                if old.get('deleted_at'):old['queued']=False
                 self.save(old);continue
             job={key:None for key in JOB_FIELDS}
             recorded=memo.get('recorded_at')
             queued=explicit or (baseline and cutoff is not None and recorded is not None and dt.datetime.fromisoformat(recorded.replace('Z','+00:00')).timestamp()>cutoff)
-            job.update(id=uuid.uuid4().hex,uuid=memo['uuid'],recorded_at=memo.get('recorded_at'),recording_date=day,date_provenance=memo.get('recorded_at_source','unknown'),original_timezone=memo.get('original_timezone'),duration_s=memo.get('duration_s'),original_title=memo.get('original_title'),status='waiting' if queued else 'unprocessed',stage='snapshot',wait_reason=None,elapsed_seconds=0,notes_status='pending',title_status='pending',alignment_status='pending',queued=queued,phase='snapshot',source_reference=memo['source_reference'],completion_evidence=memo['completion_evidence'],source_kind=memo['source_kind'],media_revision=memo.get('media_revision'),pcm_hash=None,revision=0,asr_chunks=[],aligned_chunks=[],attempts={},refresh_requested=False,publication_id=None,manifest_path=None)
+            job.update(id=uuid.uuid4().hex,uuid=memo['uuid'],recorded_at=memo.get('recorded_at'),recording_date=day,date_provenance=memo.get('recorded_at_source','unknown'),original_timezone=memo.get('original_timezone'),duration_s=memo.get('duration_s'),original_title=memo.get('original_title'),status='waiting' if queued else 'unprocessed',stage='snapshot',wait_reason=None,elapsed_seconds=0,notes_status='pending',title_status='pending',alignment_status='pending',queued=queued,phase='snapshot',source_reference=memo['source_reference'],completion_evidence=memo['completion_evidence'],source_kind=memo['source_kind'],media_revision=memo.get('media_revision'),metadata_revision=memo.get('metadata_revision'),source_duration_s=memo.get('duration_s'),pcm_hash=None,revision=0,generation=0,asr_chunks=[],aligned_chunks=[],attempts={},refresh_requested=False,publication_id=None,manifest_path=None)
             self.save(job)
         if not explicit:self.store.set_meta('baseline_seen',True)
+    def invalidate(self,job):
+        job['generation']=job.get('generation',0)+1
+        job.update(snapshot_request_id=None,snapshot_token_required=True)
+    def stop_job(self,job):
+        if self.active and self.active['job_id']==job['id']:
+            active=self.active;active['task'].stop();self.active=None
+            job['elapsed_seconds']+=time.monotonic()-self.started.pop(job['id'],time.monotonic())
+    def request_refresh(self,job,source_changed=False):
+        # Repeated manual requests share one source check; new source evidence supersedes it.
+        if not source_changed and (job.get('refresh_requested') or job.get('refresh_state')):return
+        if not job.get('refresh_state'):
+            job['refresh_state']={key:job.get(key) for key in ('phase','status','queued','stage','wait_reason','revision')}
+            job['refresh_previous']=copy.deepcopy({key:job[key] for key in RESULT_FIELDS if key in job})
+        if job['phase'] not in {'snapshot','prepare'}:job['refresh_resume']=job['phase']
+        self.invalidate(job);self.stop_job(job)
+        job.update(refresh_requested=True,publication_id=None,status='waiting',wait_reason=None,error=None,attempts={})
+        job['queued']=not bool(job.get('deleted_at'))
+    def refresh_failed(self,job,error):
+        previous=job.pop('refresh_previous',None)
+        if previous is not None:
+            for key in RESULT_FIELDS:job.pop(key,None)
+            job.update(previous)
+        job.pop('refresh_state',None)
+        job.pop('refresh_resume',None)
+        job.update(status='failed',phase='snapshot',stage='snapshot',queued=False,wait_reason=None,error=error,refresh_requested=False)
     def apply(self,kind,payload):
         if kind in {'hello','snapshot','shutdown'}:return {'ok':True}
         if kind=='discover':self.discover(payload['memos']);return {'ok':True}
@@ -120,6 +167,7 @@ class Engine:
             if kind=='pause' and self.active and self.active['op']=='notes':
                 active=self.active;job=self.store.get(active['job_id'])
                 if job.get('notes_protocol')=='study_v1':
+                    self.invalidate(job)
                     active['task'].stop();self.active=None
                     job['elapsed_seconds']+=time.monotonic()-self.started.pop(job['id'],time.monotonic())
                     job.update(status='paused',wait_reason='paused',completed_units=None,total_units=None)
@@ -139,11 +187,39 @@ class Engine:
             for uid in ids:
                 job=self.store.by_uuid(uid)
                 if not job:raise ValueError('unknown_uuid')
-                if job['status']=='unprocessed':job.update(queued=True,status='waiting',wait_reason=None);self.save(job)
+                if not job.get('deleted_at') and job['status']=='unprocessed':job.update(queued=True,status='waiting',wait_reason=None);self.save(job)
             return {'ok':True}
         job=self.store.get(payload['job_id'])
+        if kind=='trash_recording':
+            if not job.get('deleted_at'):
+                job['trash_state']={key:job.get(key) for key in ('status','queued','wait_reason','stage')}
+                self.invalidate(job);self.stop_job(job)
+                job.update(deleted_at=dt.datetime.now(dt.timezone.utc).isoformat(),queued=False,wait_reason=None)
+                self.save(job)
+            return {'ok':True}
+        if kind=='restore_recording':
+            if job.get('deleted_at'):
+                state=job.pop('trash_state',{})
+                self.invalidate(job);job.update(deleted_at=None,**state)
+                if job.get('refresh_requested'):job.update(queued=True,status='waiting',wait_reason=None)
+                if state.get('status')=='unprocessed' and not state.get('queued'):
+                    job.update(status='unprocessed',queued=False,wait_reason=None,refresh_requested=False)
+                    job.pop('refresh_state',None);job.pop('refresh_previous',None);job.pop('refresh_resume',None)
+                elif job['status'] in RUNNING:job.update(status='waiting',wait_reason='restart')
+                # A pending publication callback from before trash cannot acknowledge restore.
+                if job['status']!='completed' and job['phase']=='publish':
+                    job.update(revision=job['revision']+1,publication_id=None,status='waiting')
+                self.save(job)
+            return {'ok':True}
+        if job.get('deleted_at'):raise ValueError('recording_trashed')
+        if kind=='refresh_recording':
+            self.request_refresh(job);self.save(job);return {'ok':True}
         if kind=='snapshot_ready':
-            if job['phase']!='snapshot' or not job['queued']:raise ValueError('snapshot_not_requested')
+            if job['phase']!='snapshot' or not job['queued'] or job.get('refresh_requested'):raise ValueError('snapshot_not_requested')
+            token=job.get('snapshot_request_id')
+            if ((token is not None and payload.get('snapshot_request_id')!=token)
+                    or token is None and (job.get('snapshot_token_required') or payload.get('snapshot_request_id') is not None)):
+                raise ValueError('stale_snapshot')
             if 'error' in payload:
                 job.update(status='waiting',wait_reason='source_copy',error=self.safe_error(payload['error']));self.save(job);return {'ok':True}
             before,after=payload['revision_before'],payload['revision_after'];self.validate_revision(before);self.validate_revision(after)
@@ -152,7 +228,7 @@ class Engine:
             st=path.stat()
             if st.st_size!=after['size'] or st.st_mtime_ns!=after['mtime_ns']:raise ValueError('snapshot_changed')
             candidate=self.root/'work'/job['id']/'candidates'/uuid.uuid4().hex;candidate.mkdir(parents=True,exist_ok=True)
-            job.update(phase='prepare',status='waiting',wait_reason=None,prepare_data={'source':str(path),'revision_before':before,'revision_after':after,'audio_path':str(candidate/('audio'+path.suffix)),'pcm_path':str(candidate/'pcm.wav')})
+            job.update(phase='prepare',status='waiting',wait_reason=None,snapshot_request_id=None,prepare_data={'source':str(path),'revision_before':before,'revision_after':after,'audio_path':str(candidate/('audio'+path.suffix)),'pcm_path':str(candidate/'pcm.wav')})
             self.save(job);return {'ok':True}
         if kind=='generate_notes':
             if not job.get('artifact_path'):raise ValueError('transcript_not_ready')
@@ -163,10 +239,17 @@ class Engine:
             job.update(notes_protocol='study_v1',notes_only=True,notes_prior_status=job['status'],notes_status='pending',notes_error=None,phase='notes',stage='noting',queued=True,status='waiting',wait_reason=None,error=None,attempts={},completed_units=None,total_units=None)
             self.save(job);return {'ok':True}
         if kind=='retry':
+            self.stop_job(job);self.invalidate(job)
             job.update(queued=True,error=None,wait_reason=None,status='waiting',attempts={})
             if job['phase']=='publish':job['last_publish_error']=None
             self.save(job);return {'ok':True}
         if kind in {'retitle','set_recording_date'}:
+            if kind=='retitle' and 'topic' in payload and not job.get('artifact_path'):
+                if self.active and self.active['job_id']==job['id']:raise ValueError('job_busy')
+                job.update(topic=sanitize_topic(payload['topic']),title_status='manual')
+                if job.get('refresh_previous') is not None:
+                    job['refresh_previous'].update(topic=job['topic'],title_status='manual')
+                self.save(job);return {'ok':True}
             if kind=='set_recording_date' and not job.get('artifact_path'):
                 job.update(recording_date=validate_day(payload['recording_date']),date_provenance='user_supplied')
                 self.save(job);return {'ok':True}
@@ -177,13 +260,15 @@ class Engine:
                 phase='publish' if job.get('topic') else 'title'
             elif 'topic' in payload:
                 job.update(topic=sanitize_topic(payload['topic']),title_status='manual');phase='publish'
+                if job.get('refresh_previous') is not None:
+                    job['refresh_previous'].update(topic=job['topic'],title_status='manual')
             elif payload.get('generate') is True:job.update(title_status='pending');job.pop('title_checkpoint',None);phase='title'
             else:raise ValueError('topic_or_generate_required')
             if job['phase'] in {'asr','align','title','notes','prepare','snapshot'}:phase=job['phase']
             job.update(revision=job['revision']+1,publication_id=None,manifest_path=None,phase=phase,queued=True,status='waiting',wait_reason=None,error=None,attempts={})
             self.save(job);return {'ok':True}
         if kind=='publish_ack':
-            if job['phase']!='publish' or job.get('refresh_requested') or payload['publication_id']!=job.get('publication_id'):raise ValueError('stale_publication')
+            if job['phase']!='publish' or job.get('refresh_requested') or job.get('refresh_state') or payload['publication_id']!=job.get('publication_id'):raise ValueError('stale_publication')
             if job['status']=='completed' and 'error' in payload:return {'ok':True}
             if 'error' in payload:
                 job.update(status='saving',wait_reason='publication',error=self.safe_error(payload['error']),last_publish_error=True);self.save(job);return {'ok':True}
@@ -208,7 +293,7 @@ class Engine:
             if self.stopping:return
             task=ManagedProcess([*self.worker_command,str(req),str(out)],timeout=self.worker_timeout,env=env)
             if self.stopping:task.stop();return
-            self.active={'job_id':job['id'],'op':op,'task':task,'output':out,'index':data.get('index')}
+            self.active={'job_id':job['id'],'op':op,'task':task,'output':out,'index':data.get('index'),'generation':job.get('generation',0),'pcm_hash':job.get('pcm_hash')}
         self.started[job['id']]=time.monotonic()
         job.update(status={'prepare':'preparing','asr':'transcribing','align':'aligning','title':'titling','notes':'noting'}[op],stage={'prepare':'preparing','asr':'transcribing','align':'aligning','title':'titling','notes':'noting'}[op],wait_reason=None,error=None)
         self.save(job)
@@ -216,6 +301,9 @@ class Engine:
         active=self.active
         if active is None or active['task'].poll() is None:return
         self.active=None;job=self.store.get(active['job_id']);op=active['op']
+        if (job.get('deleted_at') or job.get('refresh_requested') or active.get('generation')!=job.get('generation',0)
+                or active.get('pcm_hash')!=job.get('pcm_hash') or job['phase']!={'prepare':'prepare','asr':'asr','align':'align','title':'title','notes':'notes'}[op]):
+            self.started.pop(job['id'],None);return
         job['elapsed_seconds']+=time.monotonic()-self.started.pop(job['id'],time.monotonic())
         try:
             if active['task'].proc.returncode!=0:raise ValueError('model_timeout' if active['task'].timed_out else 'worker_failed')
@@ -231,7 +319,10 @@ class Engine:
                 self.write_transcript(job)
             elif op=='title':job.update(topic='음성 녹음',title_status='fallback',phase=self.after_title(job),status='waiting',error=failure('title_failed'))
             elif op=='notes':self.fail_notes(job,failure('notes_failed'))
-            else:job.update(status='failed',wait_reason=None,queued=False,error=failure('worker_timeout' if active['task'].timed_out else 'worker_failed'))
+            else:
+                error=failure('worker_timeout' if active['task'].timed_out else 'worker_failed')
+                if job.get('refresh_previous') is not None:self.refresh_failed(job,error)
+                else:job.update(status='failed',wait_reason=None,queued=False,error=error)
         self.save(job)
     def accept(self,job,op,result,index):
         if op=='prepare':
@@ -239,17 +330,32 @@ class Engine:
             if not isinstance(h,str) or len(h)!=64 or any(c not in '0123456789abcdef' for c in h):raise ValueError('invalid_pcm_hash')
             for key in ('audio_path','pcm_path'):validate_owned(self.root,result[key])
             if type(result['frames']) is not int or result['frames']<1:raise ValueError('invalid_frames')
+            duration=result['duration_s']
+            if type(duration) not in (int,float) or not math.isfinite(duration) or duration<=0:raise ValueError('invalid_duration')
+            job['checked_source_duration_s']=job.get('source_duration_s')
             if h==job.get('pcm_hash'):
                 # Metadata/container-only changes retain all committed model results.
                 resume=job.pop('refresh_resume',None)
                 if resume not in {'asr','align','title','notes','publish'}:
                     resume='publish' if job.get('topic') and job.get('artifact_path') else 'title' if job.get('alignment_status') in {'completed','failed'} else 'align' if len(job['asr_chunks'])==len(chunk_ranges(job['frames'])) else 'asr'
-                job.update(phase=resume,status='waiting',wait_reason=None)
+                state=job.get('refresh_state',{})
+                previous=job.get('refresh_previous',{})
+                if resume=='title' and job.get('title_status')=='manual':resume=self.after_title(job)
+                if state.get('status')=='completed' and state.get('revision')==job['revision'] and previous.get('pcm_hash')==h:
+                    job.update(publication_id=previous.get('publication_id'),manifest_path=previous.get('manifest_path'),phase='publish',status='completed',queued=False,wait_reason=None,error=None)
+                else:job.update(phase=resume,status='waiting',wait_reason=None,error=None)
+                # If an earlier check already selected new PCM, keep its rollback
+                # until the replacement transcript/notes finish successfully.
+                if previous.get('pcm_hash')==h or not previous:
+                    job.pop('refresh_state',None);job.pop('refresh_previous',None)
                 return
             job.pop('title_checkpoint',None)
             job.pop('notes_checkpoint',None)
             job.pop('notes_only',None)
-            job.update(notes_status='pending',notes_path=None,notes_error=None,pcm_hash=h,audio_path=result['audio_path'],pcm_path=result['pcm_path'],duration_s=float(result['duration_s']),frames=result['frames'],asr_chunks=[],aligned_chunks=[],topic=None,artifact_path=None,publication_id=None,manifest_path=None,revision=job['revision']+1,title_status='pending',alignment_status='pending',phase='asr',status='waiting',completed_units=0,total_units=len(chunk_ranges(result['frames'])))
+            job.pop('notes_prior_status',None);job.pop('refresh_resume',None)
+            manual=job.get('title_status')=='manual'
+            protocol='study_v1' if job.get('pcm_hash') else job.get('notes_protocol') or 'study_v1'
+            job.update(notes_status='pending',notes_path=None,notes_error=None,notes_protocol=protocol,pcm_hash=h,audio_path=result['audio_path'],pcm_path=result['pcm_path'],duration_s=float(duration),frames=result['frames'],asr_chunks=[],aligned_chunks=[],topic=job.get('topic') if manual else None,artifact_path=None,publication_id=None,revision=job['revision']+1,title_status='manual' if manual else 'pending',alignment_status='pending',phase='asr',status='waiting',completed_units=0,total_units=len(chunk_ranges(result['frames'])))
         elif op=='asr':
             if result.get('truncated') is not False or not isinstance(result.get('text'),str):raise ValueError('truncated_or_invalid_asr')
             if len(job['asr_chunks'])!=index:raise ValueError('checkpoint_index_mismatch')
@@ -310,7 +416,9 @@ class Engine:
                 if json.loads(path.read_text(encoding='utf-8'))!=notes:raise ValueError('local_artifact_conflict')
             job.update(notes_path=str(path),notes_status='completed',notes_error=None,phase='publish',status='waiting',publication_id=None,manifest_path=None,completed_units=expected,total_units=total,error=None)
             job.pop('notes_only',None);job.pop('notes_prior_status',None);job.pop('notes_checkpoint',None)
+            job.pop('refresh_state',None);job.pop('refresh_previous',None)
     def after_title(self,job):
+        if job.get('notes_status')=='pending' and not job.get('notes_checkpoint'):job['notes_protocol']=job.get('notes_protocol') or 'study_v1'
         return 'notes' if job.get('notes_status')=='pending' else 'publish'
     def fail_notes(self,job,error):
         # A failed regeneration keeps the last good notes and immutable publication.
@@ -318,6 +426,7 @@ class Engine:
         job.update(notes_status='failed',notes_error=error,phase='publish',stage='saving',status='waiting',error=None,wait_reason=None,completed_units=None,total_units=None)
         if note_only and previous=='completed' and job.get('publication_id'):
             job.update(status='completed',queued=False)
+        job.pop('refresh_state',None);job.pop('refresh_previous',None)
     def write_transcript(self,job):
         transcript={'text':'\n'.join(c['text'] for c in job['asr_chunks']),'segments':[s for chunk in job['aligned_chunks'] for s in chunk],'alignment_status':job['alignment_status']}
         digest=__import__('hashlib').sha256(json.dumps(transcript,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
@@ -325,13 +434,14 @@ class Engine:
         if not path.exists():atomic_json(path,transcript)
         job['artifact_path']=str(path)
     def replay(self,job):
-        now=time.monotonic();key=(job['id'],job['phase'],job.get('publication_id'))
+        if job.get('deleted_at') or job.get('refresh_requested'):return
+        now=time.monotonic();key=(job['id'],job['phase'],job.get('publication_id'),job.get('snapshot_request_id'))
         if now-self.last_replay.get(key,-100)>5:
             self.last_replay[key]=now
             if job['phase']=='publish' and job.get('publication_id'):
                 self.emit('publication_ready',{'job_id':job['id'],'publication_id':job['publication_id'],'manifest_path':job['manifest_path']})
             elif job['phase']=='snapshot':
-                self.emit('snapshot_requested',{'job_id':job['id'],'source_reference':job['source_reference']})
+                self.emit('snapshot_requested',{'job_id':job['id'],'source_reference':job['source_reference'],'snapshot_request_id':job['snapshot_request_id']})
     def tick(self):
         if self.stopping:return
         now=time.monotonic()
@@ -349,12 +459,12 @@ class Engine:
         self.flush_changed()
         paused=self.store.get_meta('paused',False)
         for job in self.store.jobs():
-            if job['phase']=='publish' and job.get('publication_id') and job['status']=='saving':self.replay(job)
+            if not job.get('deleted_at') and job['phase']=='publish' and job.get('publication_id') and job['status']=='saving':self.replay(job)
         if self.active:return
         for job in self.store.jobs():
-            if not job['queued'] or job['status']=='failed':continue
+            if job.get('deleted_at') or not job['queued'] or job['status']=='failed':continue
             if job.get('refresh_requested'):
-                job.update(refresh_resume=job['phase'],refresh_requested=False,phase='snapshot',status='waiting',publication_id=None,manifest_path=None)
+                job.update(refresh_requested=False,phase='snapshot',status='waiting',publication_id=None)
                 with self.store.transaction():self.save(job)
             if job['phase']=='publish':
                 if not job.get('recording_date'):
@@ -388,8 +498,9 @@ class Engine:
                 with self.store.transaction():self.save(job)
                 continue
             if job['phase']=='snapshot':
-                if job['status']!='preparing':
+                if job['status']!='preparing' or not job.get('snapshot_request_id'):
                     job.update(status='preparing',stage='preparing',wait_reason='snapshot',completed_units=None,total_units=None)
+                    if not job.get('snapshot_request_id'):job['snapshot_request_id']=uuid.uuid4().hex
                     with self.store.transaction():self.save(job)
                 self.replay(job);continue
             try:
@@ -426,6 +537,7 @@ class Engine:
                 with self.store.transaction():self.launch(job,op,data)
             except (OSError,ValueError,TypeError,KeyError,IndexError):
                 if job['phase']=='notes':self.fail_notes(job,failure('notes_failed'))
+                elif job.get('refresh_previous') is not None:self.refresh_failed(job,failure('pipeline_failed'))
                 else:job.update(status='failed',queued=False,error=failure('pipeline_failed'))
                 with self.store.transaction():self.save(job)
             break
