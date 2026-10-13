@@ -8,7 +8,10 @@ struct VemoLibraryItemInteraction: NSViewRepresentable {
     var suppressFocusRing = false
     var recordingCount: Int?
     var select: (() -> Void)?
+    var selectWithModifiers: ((NSEvent.ModifierFlags) -> Void)?
+    var selectAll: (() -> Void)?
     var editTitle: (() -> Void)?
+    var canEditTitle: (() -> Bool)?
     var dragData: (() -> Data?)?
     var dragEnded: ((Data) -> Void)?
     var canDrop: ((Data) -> Bool)?
@@ -63,7 +66,7 @@ struct VemoLibraryItemInteraction: NSViewRepresentable {
         override func mouseUp(with event: NSEvent) {
             defer { pressedAt = nil; dragged = false }
             guard pressedAt != nil, !dragged, bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
-            input?.select?()
+            if let select = input?.selectWithModifiers { select(event.modifierFlags) } else { input?.select?() }
             if event.clickCount == 2 { input?.editTitle?() }
         }
         override func mouseDragged(with event: NSEvent) {
@@ -88,8 +91,24 @@ struct VemoLibraryItemInteraction: NSViewRepresentable {
             draggingItem.setDraggingFrame(NSRect(origin: NSPoint(x: point.x - 12, y: point.y - 17), size: size), contents: image)
             beginDraggingSession(with: [draggingItem], event: event, source: self)
         }
+        override func selectAll(_ sender: Any?) { if let selectAll = input?.selectAll { selectAll() } else { super.selectAll(sender) } }
+        override func performKeyEquivalent(with event: NSEvent) -> Bool {
+            if window?.firstResponder === self, event.modifierFlags.contains(.command), event.charactersIgnoringModifiers?.lowercased() == "a", let selectAll = input?.selectAll { selectAll(); return true }
+            return super.performKeyEquivalent(with:event)
+        }
         override func keyDown(with event: NSEvent) {
-            if (event.keyCode == 36 || event.keyCode == 76), let edit = input?.editTitle { input?.select?(); edit() }
+            if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers?.lowercased() == "a", let selectAll = input?.selectAll { selectAll(); return }
+            if input?.selectWithModifiers != nil, [123,124,125,126].contains(event.keyCode) {
+                var ancestor = superview
+                while let view = ancestor {
+                    if let table = view as? NSTableView { table.keyDown(with:event); return }
+                    ancestor = view.superview
+                }
+            }
+            if (event.keyCode == 36 || event.keyCode == 76), let edit = input?.editTitle {
+                guard input?.canEditTitle?() != false else { return }
+                input?.select?(); edit()
+            }
             else if event.keyCode == 36 || event.keyCode == 49 || event.keyCode == 76 { input?.select?() }
             else { super.keyDown(with: event) }
         }

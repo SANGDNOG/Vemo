@@ -4,6 +4,16 @@ import AVFoundation
 import ServiceManagement
 
 enum TitleEditingLocation { case sidebar, detail }
+struct RecordingBulkConfirmation {
+    let kind: String
+    let ids: [String]
+    var title: String { kind == "purge_recording" ? "\(ids.count)개 녹음을 영구 삭제할까요?" : kind == "restore_recording" ? "\(ids.count)개 녹음을 복원할까요?" : "\(ids.count)개 녹음을 휴지통으로 이동할까요?" }
+    var button: String { kind == "purge_recording" ? "영구 삭제" : kind == "restore_recording" ? "복원" : "휴지통으로 이동" }
+    var message: String {
+        if kind == "purge_recording" { return "선택한 녹음의 Vemo 로컬 오디오 사본·전사문·노트를 영구 삭제합니다. 되돌릴 수 없습니다. iPhone·Drive 원본과 이미 내보낸 ZIP은 유지되며, 자동 검색으로 다시 추가되지 않습니다." }
+        return kind == "restore_recording" ? "선택한 녹음을 Vemo 목록으로 복원합니다. 원본 파일과 내보낸 ZIP은 변경하지 않습니다." : "선택한 녹음을 Vemo 휴지통으로 이동합니다. 나중에 복원할 수 있으며 원본 파일과 내보낸 ZIP은 유지됩니다."
+    }
+}
 
 @MainActor final class AppModel: ObservableObject {
     static let shared = AppModel()
@@ -24,8 +34,17 @@ enum TitleEditingLocation { case sidebar, detail }
     private var automaticNotesTask: Task<Void,Never>?
     private var folderConnectionPanel: NSOpenPanel?
     private var rescanRequested = false
+    @Published var selectedIDs: Set<String> = []
+    private var selectionAnchor: String?
+    private var updatingSelection = false
+    private var recordingDragGroups: [String:(origin:String, ids:[String])] = [:]
+    @Published var recordingConfirmation: RecordingBulkConfirmation?
+    @Published var recordingBatchBusy = false
     @Published var selection: String? {
-        didSet { if selection != oldValue { cancelTitleEdit() } }
+        didSet {
+            if selection != oldValue { cancelTitleEdit() }
+            if !updatingSelection { selectedIDs = Set(selection.map { [$0] } ?? []); selectionAnchor = selection }
+        }
     }
     @Published var search = ""
     @Published var library = LibraryOrganization()
@@ -94,6 +113,7 @@ enum TitleEditingLocation { case sidebar, detail }
     @Published var sourceDiagnostic: String?
     private var deliveries: [String:String] = [:]
     private var brokerRequests: Set<String> = []
+    private var nativeSnapshotTasks: [String:[UUID:Task<Void,Never>]] = [:]
     private var internalBrokerReplies: Set<String> = []
     private var timer: Timer?
     private var loadID = UUID()
@@ -107,7 +127,41 @@ enum TitleEditingLocation { case sidebar, detail }
         guard let id = library.assignments[jobID] else { return "미분류" }
         return LibraryFolderHierarchy.path(for: id, in: library.folders)
     }
-    func reconcileLibrarySelection() { if selection == nil || !visibleJobs.contains(where: { $0.id == selection }) { selection = visibleJobs.first?.id } }
+    func setRecordingSelection(_ ids: Set<String>, primary: String? = nil) {
+        let visible = visibleJobs.map(\.id)
+        let valid = ids.intersection(visible)
+        updatingSelection = true
+        selectedIDs = valid
+        selection = primary.flatMap { valid.contains($0) ? $0 : nil }
+            ?? selection.flatMap { valid.contains($0) ? $0 : nil }
+            ?? visible.first(where:valid.contains)
+        updatingSelection = false
+        if valid.count == 1 { selectionAnchor = selection }
+        if let editingTitleJobID, valid != [editingTitleJobID] { cancelTitleEdit() }
+    }
+    func selectRecording(_ id: String, modifiers: NSEvent.ModifierFlags = []) {
+        let visible = visibleJobs.map(\.id)
+        guard visible.contains(id) else { return }
+        if modifiers.contains(.shift), let anchor = selectionAnchor,
+           let start = visible.firstIndex(of:anchor), let end = visible.firstIndex(of:id) {
+            let range = Set(visible[min(start,end)...max(start,end)])
+            setRecordingSelection(modifiers.contains(.command) ? selectedIDs.union(range) : range,primary:id)
+        } else if modifiers.contains(.command) {
+            var next = selectedIDs
+            if !next.insert(id).inserted { next.remove(id) }
+            setRecordingSelection(next,primary:id)
+            selectionAnchor = id
+        } else { setRecordingSelection([id],primary:id); selectionAnchor = id }
+    }
+    func selectAllRecordings() { guard editingTitleJobID == nil else { return }; setRecordingSelection(Set(visibleJobs.map(\.id))) }
+    func recordingActionIDs(_ id: String) -> [String] {
+        visibleJobs.filter { selectedIDs.contains(id) ? selectedIDs.contains($0.id) : $0.id == id }.map(\.id)
+    }
+    func reconcileLibrarySelection() {
+        let valid = selectedIDs.intersection(visibleJobs.map(\.id))
+        setRecordingSelection(valid.isEmpty ? Set(visibleJobs.first.map { [$0.id] } ?? []) : valid)
+        if let anchor = selectionAnchor, !visibleJobs.contains(where:{ $0.id == anchor }) { selectionAnchor = selection }
+    }
     func loadLibrary() {
         let store = libraryStore
         Task {
@@ -153,11 +207,39 @@ enum TitleEditingLocation { case sidebar, detail }
         changeLibrary { try await $0.delete(id: id) }
     }
     func moveRecording(_ jobID: String, to folderID: String?) { guard activeJobs.contains(where: { $0.id == jobID }) else { return }; changeLibrary { try await $0.assign(jobIDs: [jobID], folderID: folderID) } }
+    func moveRecordings(_ ids: [String], to folderID: String?) {
+        guard !ids.isEmpty, Set(ids).isSubset(of:Set(activeJobs.map(\.id))) else { return }
+        changeLibrary { try await $0.assign(jobIDs:ids,folderID:folderID) }
+    }
+    func beginRecordingDrag(_ id: String) -> LibraryDragPayload {
+        if !selectedIDs.contains(id) { selectRecording(id) }
+        let payload = libraryDragPayload(kind:.recording,id:id)
+        recordingDragGroups = [payload.dragID:(origin:id,ids:recordingActionIDs(id))]
+        return payload
+    }
+    func finishRecordingDrag(_ payload: LibraryDragPayload) { recordingDragGroups.removeValue(forKey:payload.dragID) }
+    private func recordingDrop(_ payload: LibraryDragPayload, on target: LibraryDropTarget) throws -> (ids:[String], folder:String?)? {
+        guard payload.kind == .recording, payload.sessionID == libraryDragSessionID,
+              let group = recordingDragGroups[payload.dragID], group.origin == payload.id,
+              !group.ids.isEmpty, Set(group.ids).isSubset(of:Set(activeJobs.map(\.id))) else { return nil }
+        var changed = false
+        for id in group.ids {
+            let item = LibraryDragPayload(kind:.recording,id:id,sessionID:payload.sessionID,version:payload.version,dragID:payload.dragID)
+            if try LibraryDropRules.action(for:item,target:target,organization:library,knownJobIDs:Set(activeJobs.map(\.id)),sessionID:libraryDragSessionID) != nil { changed = true }
+        }
+        guard changed else { return nil }
+        switch target {
+        case .folder(let id): return (group.ids,id)
+        case .unfiled: return (group.ids,nil)
+        case .root: return nil
+        }
+    }
     func libraryDragPayload(kind: LibraryDragKind, id: String) -> LibraryDragPayload {
         LibraryDragPayload(kind: kind, id: id, sessionID: libraryDragSessionID)
     }
     func canDropLibraryItem(_ payload: LibraryDragPayload, on target: LibraryDropTarget) -> Bool {
         guard libraryReady, !libraryBusy else { return false }
+        if payload.kind == .recording { return (try? recordingDrop(payload,on:target)) != nil }
         return (try? LibraryDropRules.action(for: payload, target: target, organization: library,
                                            knownJobIDs: Set(activeJobs.map(\.id)), sessionID: libraryDragSessionID)) != nil
     }
@@ -165,6 +247,12 @@ enum TitleEditingLocation { case sidebar, detail }
     func dropLibraryItem(_ payload: LibraryDragPayload, on target: LibraryDropTarget) -> Bool {
         guard libraryReady, !libraryBusy else { return false }
         do {
+            if payload.kind == .recording {
+                guard let group = try recordingDrop(payload,on:target) else { return false }
+                changeLibrary { try await $0.assign(jobIDs:group.ids,folderID:group.folder) }
+                finishRecordingDrag(payload)
+                return true
+            }
             guard let action = try LibraryDropRules.action(for: payload, target: target, organization: library,
                                                          knownJobIDs: Set(activeJobs.map(\.id)), sessionID: libraryDragSessionID) else { return false }
             changeLibrary { store in
@@ -203,31 +291,54 @@ enum TitleEditingLocation { case sidebar, detail }
         }
     }
     private func disconnected(_ message: String) { connected = false; resetPendingConnectionRequests(); deliveries.removeAll(); connection = "엔진 연결 필요"; problem = message }
+    private func startNativeSnapshot(jobID: String, requestKey: String, operation: @escaping @MainActor () async -> Void) {
+        guard brokerRequests.insert(requestKey).inserted else { return }
+        let taskID = UUID()
+        let task = Task { [self] in
+            defer {
+                brokerRequests.remove(requestKey)
+                nativeSnapshotTasks[jobID]?.removeValue(forKey:taskID)
+                if nativeSnapshotTasks[jobID]?.isEmpty == true { nativeSnapshotTasks.removeValue(forKey:jobID) }
+            }
+            await operation()
+        }
+        nativeSnapshotTasks[jobID,default:[:]][taskID] = task
+    }
+    private func sendRecordingCommand(_ request: WireCommand) async throws {
+        if request.kind == "purge_recording", let id = request.payload["job_id"]?.string {
+            // Recheck after every suspension: another token may register while an older one finishes.
+            while let tasks = nativeSnapshotTasks[id], !tasks.isEmpty {
+                for task in tasks.values { await task.value }
+            }
+        }
+        try await engine.send(request)
+    }
     func command(_ kind: String, _ payload: [String:JSONValue] = [:]) {
         guard !DemoContent.enabled else { return }
         let request = WireCommand(kind,payload)
         if ["snapshot_ready","publish_ack"].contains(kind) { internalBrokerReplies.insert(request.request_id) }
-        if ["trash_recording","retitle","generate_notes","set_recording_date"].contains(kind), let id = payload["job_id"]?.string { pendingRecordingCommands[request.request_id] = id; cancelObsoleteExport() }
+        if ["trash_recording","purge_recording","retitle","generate_notes","set_recording_date"].contains(kind), let id = payload["job_id"]?.string { pendingRecordingCommands[request.request_id] = id; cancelObsoleteExport() }
         Task {
-            do { try await engine.send(request) }
+            do { try await sendRecordingCommand(request) }
             catch { internalBrokerReplies.remove(request.request_id); pendingRecordingCommands.removeValue(forKey:request.request_id); problem = error.localizedDescription }
         }
     }
     func manualProcessingTitle(_ title: String) -> String { paused ? title + " · 처리 재개" : title }
     func processingCommand(_ kind: String, _ payload: [String:JSONValue] = [:]) {
         guard !DemoContent.enabled else { return }
+        if let id = payload["job_id"]?.string, jobs.contains(where:{ $0.id == id && $0.purge_pending == true }) { return }
         let resume = paused ? WireCommand("resume") : nil
         let requested = WireCommand(kind, payload)
         if let id = payload["job_id"]?.string { pendingRecordingCommands[requested.request_id] = id; cancelObsoleteExport() }
         Task {
             do {
                 if let resume { try await engine.send(resume) }
-                try await engine.send(requested)
+                try await sendRecordingCommand(requested)
             } catch { pendingRecordingCommands.removeValue(forKey:requested.request_id); problem = error.localizedDescription }
         }
     }
     func processRecording(_ job: Job) {
-        guard job.deleted_at == nil else { return }
+        guard job.purge_pending != true, job.deleted_at == nil else { return }
         if job.status == "unprocessed" { processingCommand("enqueue", ["uuids": .array([.string(job.uuid)])]) }
         else if job.status == "failed" { processingCommand("retry", ["job_id": .string(job.id)]) }
     }
@@ -257,6 +368,15 @@ enum TitleEditingLocation { case sidebar, detail }
                     cancelObsoleteExport()
                     await index(job); reconcileLibrarySelection(); await loadSelection()
                 }
+            case "job_removed":
+                if let id = event.payload["job_id"]?.string {
+                    removeRecordingState(id)
+                    await loadSelection()
+                    while libraryBusy { await libraryWriteTask?.value }
+                    if library.assignments[id] != nil {
+                        changeLibrary { try await $0.assign(jobIDs:[id],folderID:nil) }
+                    }
+                }
             case "engine_status": updateEngine(event.payload["engine_status"]?.object ?? event.payload)
             case "model_progress":
                 if event.payload["model"]?.string == "notes" {
@@ -268,10 +388,7 @@ enum TitleEditingLocation { case sidebar, detail }
                 guard let id = event.payload["job_id"]?.string, let reference = event.payload["source_reference"]?.string else { break }
                 let token = event.payload["snapshot_request_id"]
                 let requestKey = "snapshot:" + id + ":" + (token?.string ?? "legacy")
-                guard !brokerRequests.contains(requestKey) else { break }
-                brokerRequests.insert(requestKey)
-                Task { [self] in
-                    defer { brokerRequests.remove(requestKey) }
+                startNativeSnapshot(jobID:id,requestKey:requestKey) { [self] in
                     do {
                         let snapshot = reference.hasPrefix("import:") ? try await imports.snapshot(reference:reference,jobID:id) : try await source.snapshot(reference:reference,jobID:id)
                         var reply: [String:JSONValue] = ["job_id":.string(id),"owned_path":.string(snapshot.owned_path),"revision_before":try .encoded(snapshot.revision_before),"revision_after":try .encoded(snapshot.revision_after)]
@@ -307,7 +424,7 @@ enum TitleEditingLocation { case sidebar, detail }
             case "diagnostic": problem = event.payload["message"]?.string
             default: break
             }
-            if ["snapshot","job_changed","engine_status","command_result"].contains(event.kind) { scheduleAutomaticOutputs() }
+            if ["snapshot","job_changed","job_removed","engine_status","command_result"].contains(event.kind) { scheduleAutomaticOutputs() }
         } catch { problem = "엔진 상태를 해석하지 못했습니다: \(error.localizedDescription)" }
     }
     private func updateEngine(_ status: [String:JSONValue]) {
@@ -345,6 +462,7 @@ enum TitleEditingLocation { case sidebar, detail }
         guard let path = job.artifact_path, let result = try? await readTranscript(path) else { return }
         var text = result.text
         if let path = job.notes_path, let note = try? await readNotes(path,text:result.text) { text += "\n" + NotesDisplay.markdown(note,title:job.title) }
+        guard jobs.contains(where:{ $0.id == job.id && $0.deleted_at == nil }) else { return }
         transcriptIndex[job.id] = text
     }
     private func indexTranscripts() async { for job in jobs { await index(job) } }
@@ -550,7 +668,7 @@ enum TitleEditingLocation { case sidebar, detail }
                 let request = WireCommand("generate_notes",["job_id":.string(id)])
                 pendingRecordingCommands[request.request_id] = id
                 automaticNoteRequests[request.request_id] = key
-                do { try await engine.send(request) }
+                do { try await sendRecordingCommand(request) }
                 catch {
                     completeAutomaticNoteRequest(request.request_id,success:false)
                     pendingRecordingCommands.removeValue(forKey:request.request_id); problem = error.localizedDescription
@@ -651,14 +769,67 @@ enum TitleEditingLocation { case sidebar, detail }
         guard job.deleted_at == nil else { return }
         command("trash_recording",["job_id":.string(job.id)])
     }
-    func restoreRecording(_ job: Job) { command("restore_recording",["job_id":.string(job.id)]) }
+    var canChangeRecordings: Bool { connected && !recordingBatchBusy }
+    func requestRecordingAction(_ kind: String, ids: [String]) {
+        guard ["trash_recording","restore_recording","purge_recording"].contains(kind), !recordingBatchBusy else { return }
+        guard connected else { problem = "엔진을 다시 연결한 뒤 시도하세요."; return }
+        let needsTrash = kind != "trash_recording"
+        let valid = jobs.filter { ids.contains($0.id) && ($0.deleted_at != nil) == needsTrash && (kind == "purge_recording" || $0.purge_pending != true) }.map(\.id)
+        guard !valid.isEmpty else { return }
+        recordingConfirmation = RecordingBulkConfirmation(kind:kind,ids:valid)
+    }
+    func confirmRecordingAction(_ confirmation: RecordingBulkConfirmation) {
+        recordingConfirmation = nil
+        guard !DemoContent.enabled, connected, !recordingBatchBusy, ["trash_recording","restore_recording","purge_recording"].contains(confirmation.kind) else { return }
+        recordingBatchBusy = true
+        Task { [self] in
+            defer { recordingBatchBusy = false }
+            var errors: [String] = []
+            for id in confirmation.ids {
+                guard let job = jobs.first(where:{ $0.id == id }),
+                      (job.deleted_at != nil) == (confirmation.kind != "trash_recording"), (confirmation.kind == "purge_recording" || job.purge_pending != true), !recordingCommandPending(id) else { continue }
+                let request = WireCommand(confirmation.kind,["job_id":.string(id)])
+                pendingRecordingCommands[request.request_id] = id
+                cancelObsoleteExport()
+                do { try await sendRecordingCommand(request) }
+                catch { pendingRecordingCommands.removeValue(forKey:request.request_id); errors.append(job.title + ": " + error.localizedDescription) }
+                await Task.yield()
+            }
+            if !errors.isEmpty { problem = errors.joined(separator:"\n") }
+        }
+    }
+    func purgeRecording(_ job: Job) {
+        guard jobs.contains(where:{ $0.id == job.id && $0.deleted_at != nil }), !recordingCommandPending(job.id) else { return }
+        command("purge_recording",["job_id":.string(job.id)])
+    }
+    private func removeRecordingState(_ id: String) {
+        jobs.removeAll { $0.id == id }
+        transcriptIndex.removeValue(forKey:id)
+        refreshPendingJobs.remove(id)
+        refreshRequests = refreshRequests.filter { $0.value != id }
+        pendingRecordingCommands = pendingRecordingCommands.filter { $0.value != id }
+        // Session fingerprints are JSON arrays; match the exact job slot, never a substring.
+        func belongs(_ key: String, slot: Int) -> Bool {
+            guard let values = try? JSONDecoder().decode([String?].self,from:Data(key.utf8)), values.indices.contains(slot) else { return false }
+            return values[slot] == id
+        }
+        automaticNotesRequested = automaticNotesRequested.filter { !belongs($0,slot:0) }
+        automaticNotesRetryAfter = automaticNotesRetryAfter.filter { !belongs($0.key,slot:0) }
+        automaticNoteRequests = automaticNoteRequests.filter { !belongs($0.value,slot:0) }
+        zipChecked = zipChecked.filter { !belongs($0,slot:1) }
+        zipRetryAfter = zipRetryAfter.filter { !belongs($0.key,slot:1) }
+        if editingTitleJobID == id { cancelTitleEdit() }
+        cancelObsoleteExport()
+        reconcileLibrarySelection()
+    }
+    func restoreRecording(_ job: Job) { guard let current = jobs.first(where:{ $0.id == job.id }), current.deleted_at != nil, current.purge_pending != true else { return }; command("restore_recording",["job_id":.string(job.id)]) }
     func refreshRecording(_ job: Job) {
         guard !DemoContent.enabled, job.deleted_at == nil else { return }
         let request = WireCommand("refresh_recording",["job_id":.string(job.id)])
         refreshRequests[request.request_id] = job.id
         cancelObsoleteExport()
         Task {
-            do { try await engine.send(request) }
+            do { try await sendRecordingCommand(request) }
             catch { refreshRequests.removeValue(forKey:request.request_id); problem = error.localizedDescription }
         }
     }
@@ -667,7 +838,7 @@ enum TitleEditingLocation { case sidebar, detail }
     }
     func beginTitleEdit(_ job: Job, at location: TitleEditingLocation) {
         guard activeJobs.contains(where:{ $0.id == job.id }), job.deleted_at == nil else { return }
-        selection = job.id
+        setRecordingSelection([job.id],primary:job.id)
         titleDraft = job.topic ?? job.original_title ?? ""
         editingTitleJobID = job.id
         editingTitleLocation = location

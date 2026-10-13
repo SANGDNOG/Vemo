@@ -12,7 +12,7 @@ def block(marker):
    depth-=1
    if depth==0:return source[start:end+1].replace('private func','func')
  raise ValueError(marker)
-methods='\n'.join(block(marker) for marker in ['    func command(', '    private func resetPendingConnectionRequests(', '    private func consumeObsoleteBrokerReply(', '    private func completeAutomaticNoteRequest(', '    private func clearUnacknowledgedNotes(', '    private func cancelObsoleteExport(', '    private func recordingCommandPending(', '    private func scheduleAutomaticOutputs(', '    private func requestMissingNotes(', '    func exportCompletedZIP(', '    private func checkRecordingZIPs(', '    func flushZIPExport(', '    private func updateZIPProgress('])
+methods='\n'.join(block(marker) for marker in ['    private func sendRecordingCommand(', '    func command(', '    private func resetPendingConnectionRequests(', '    private func consumeObsoleteBrokerReply(', '    private func completeAutomaticNoteRequest(', '    private func clearUnacknowledgedNotes(', '    private func cancelObsoleteExport(', '    private func recordingCommandPending(', '    private func scheduleAutomaticOutputs(', '    private func requestMissingNotes(', '    func exportCompletedZIP(', '    private func checkRecordingZIPs(', '    func flushZIPExport(', '    private func updateZIPProgress('])
 policy=source[source.index('enum AutomaticRecordingPolicy {'):]
 harness=r'''
 import Foundation
@@ -48,6 +48,7 @@ actor FakeZIPStore {
 @MainActor final class Fixture {
  var jobs:[Job] = []
  var internalBrokerReplies:Set<String> = []
+ var nativeSnapshotTasks:[String:[UUID:Task<Void,Never>]] = [:]
  var connected = true, paused = false, notesModelReady = true
  var autoZIPEnabled = true, zipExportClosing = false, zipExportBusy = false, zipRescheduleRequested = false
  var refreshPendingJobs:Set<String> = [], refreshRequests:[String:String] = [:], pendingRecordingCommands:[String:String] = [:]

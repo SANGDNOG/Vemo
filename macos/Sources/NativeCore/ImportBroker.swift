@@ -2,7 +2,7 @@ import Foundation
 import Darwin
 
 public actor ImportBroker {
-    private struct Entry: Codable { var memo: Memo; let path: String; let hash: String; var delivered: Bool }
+    private struct Entry: Codable { var memo: Memo; let path: String; let hash: String; var delivered: Bool; var purged: Bool? = nil }
     private struct Registry: Codable { var schema_version = 1; var entries: [String: Entry] = [:] }
     private let root: URL
     public init(root: URL) { self.root = root.standardizedFileURL }
@@ -24,7 +24,9 @@ public actor ImportBroker {
         _ = try BrokerFiles.stableCopy(url, to: copy)
         var retained = false; defer { if !retained { try? FileManager.default.removeItem(at: copy) } }
         let duration = try BrokerFiles.decodeAudio(copy); let hash = try BrokerFiles.hash(copy)
-        if let existing = registry.entries.values.first(where: { $0.hash == hash }) {
+        let matching = registry.entries.values.filter { $0.hash == hash }
+        guard !matching.contains(where: { $0.purged == true }) else { throw purgedFailure() }
+        if let existing = matching.first {
             let owned = try Validation.owned(existing.path, root: root)
             guard try BrokerFiles.hash(owned) == hash else { throw BrokerFailure("import_conflict", "보관한 가져오기 파일이 변경되었습니다. 원본과 작업 파일을 확인하세요.") }
             return existing.memo
@@ -35,14 +37,19 @@ public actor ImportBroker {
         try BrokerFiles.atomic(BrokerFiles.json(registry), to: registryURL); retained = true
         return memo
     }
-    public func pendingImports() throws -> [Memo] { try load().entries.values.filter { !$0.delivered }.map(\.memo) }
+    private func purgedFailure() -> BrokerFailure { BrokerFailure("import_purged", "영구 삭제한 가져오기 녹음입니다. 같은 오디오를 다시 가져올 수 없습니다.") }
+    public func pendingImports() throws -> [Memo] { try load().entries.values.filter { !$0.delivered && $0.purged != true }.map(\.memo) }
     public func markDelivered(reference: String) throws {
         try BrokerFiles.directory(native); let lock = try BrokerFiles.lock(native.appendingPathComponent("imports.lock")); defer { close(lock) }
         var registry = try load(); guard registry.entries[reference] != nil else { return }
         registry.entries[reference]?.delivered = true; try BrokerFiles.atomic(BrokerFiles.json(registry), to: registryURL)
     }
     public func snapshot(reference: String, jobID: String) async throws -> OwnedSnapshot {
+        // Backend purge holds this same lock while marking/removing the owned cache.
+        try BrokerFiles.directory(native)
+        let lock = try BrokerFiles.lock(native.appendingPathComponent("imports.lock")); defer { close(lock) }
         guard let entry = try load().entries[reference] else { throw BrokerFailure("unknown_source", "가져오기 원본 기록을 찾지 못했습니다.") }
+        guard entry.purged != true else { throw purgedFailure() }
         let source = try Validation.owned(entry.path, root: root)
         guard try BrokerFiles.hash(source) == entry.hash else { throw BrokerFailure("import_conflict", "보관된 오디오가 변경되었습니다.") }
         let dir = root.appendingPathComponent("snapshots/jobs/" + (try Validation.component(jobID))); try BrokerFiles.directory(dir)

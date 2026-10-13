@@ -23,7 +23,7 @@ def block(marker):
 
 methods = '\n'.join(block(marker) for marker in [
     '    func isEditingTitle(', '    func beginTitleEdit(',
-    '    func cancelTitleEdit(', '    func saveTitleEdit('])
+    '    func cancelTitleEdit(', '    func saveTitleEdit(', '    func setRecordingSelection('])
 selection = block('    @Published var selection:').replace('@Published ', '')
 harness = r'''
 import Foundation
@@ -34,6 +34,10 @@ import NativeCore
  var activeJobs:[Job] { jobs.filter { $0.deleted_at == nil } }
  var editingTitleJobID:String?, editingTitleLocation:TitleEditingLocation?
  var titleDraft = ""
+ var selectedIDs:Set<String> = []
+ var updatingSelection = false
+ var selectionAnchor:String?
+ var visibleJobs:[Job] { jobs }
  var sent:[WireCommand] = []
  func command(_ kind:String,_ payload:[String:JSONValue]) { sent.append(WireCommand(kind,payload)) }
  /* SELECTION */

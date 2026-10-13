@@ -64,6 +64,7 @@ func perRecordingZIPChecks(root: URL) async throws {
     try Data("exclude this database".utf8).write(to:state.appendingPathComponent("queue.sqlite"))
     let job = try zipFixtureJob("one",root:state), secondJob = try zipFixtureJob("two",root:state)
     let first = try await RecordingZIPExport.exportOne(job:job,stateRoot:state,destination:destination)
+    try check(first.lastPathComponent == "_회의_ 원문 — 2026-10-13.zip", "ZIP filename is sanitized title and date without prefix or fingerprint")
     let bytes = try Data(contentsOf:first)
     let listing = String(decoding:try zipCommand("/usr/bin/unzip",["-Z1",first.path]),as:UTF8.self).split(separator:"\n").map(String.init).sorted()
     try check(listing == ["notes.md","original.m4a","transcript.txt"], "per-recording ZIP has exactly three root entries")
@@ -86,12 +87,14 @@ func perRecordingZIPChecks(root: URL) async throws {
     try check(skipMessages == ["ZIP 입력 확인 중"], "unchanged reconciliation skips audio hashing, staging and compression")
     let second = try await store.exportIfNeeded(job:secondJob,destination:destination)
     try check(second != nil && second != first && (try fm.contentsOfDirectory(atPath:destination.path)).count == 2, "two recordings produce two ZIPs even with identical inputs")
+    try check(second?.lastPathComponent == "_회의_ 원문 — 2026-10-13 (2).zip", "same-title recordings use numbered filename collisions")
     let replay = try await RecordingZIPExport.exportOne(job:job,stateRoot:state,destination:destination)
     try check(replay == first && (try Data(contentsOf:first)) == bytes, "exportOne reuses unchanged ZIP without clobber")
 
     var changed = job; changed.topic = "새 제목"
     let version = try await store.exportIfNeeded(job:changed,destination:destination)
     try check(version != nil && version != first && (try Data(contentsOf:first)) == bytes, "changed title creates immutable ZIP version")
+    try check(version?.lastPathComponent == "새 제목 — 2026-10-13.zip", "changed title exports under its new clean filename")
     let oldContent = try await PerRecordingZIPStore(root:state).exportIfNeeded(job:job,destination:destination)
     try check(oldContent == nil && (try fm.contentsOfDirectory(atPath:destination.path)).count == 3, "returning to prior content reuses its durable receipt")
 
@@ -202,4 +205,29 @@ func perRecordingZIPChecks(root: URL) async throws {
     try await zipRejects("linked input rejects ZIP") { _ = try await store.exportIfNeeded(job:linked,destination:destination) }
     let partials = try fm.contentsOfDirectory(atPath:destination.path).filter { $0.hasPrefix(".vemo-zip-") }
     try check(partials.isEmpty, "completed and rejected exports leave no partial ZIPs")
+
+    let numbered = fixture.appendingPathComponent("numbered-destination")
+    try fm.createDirectory(at:numbered,withIntermediateDirectories:true)
+    let occupied = numbered.appendingPathComponent("_회의_ 원문 — 2026-10-13.zip")
+    let unknownLegacy = numbered.appendingPathComponent("Vemo-foreign-" + String(repeating:"a",count:64) + ".zip")
+    try foreign.write(to:occupied); try foreign.write(to:unknownLegacy)
+    let numberedZIP = try await store.exportIfNeeded(job:job,destination:numbered)
+    try check(numberedZIP?.lastPathComponent == "_회의_ 원문 — 2026-10-13 (2).zip", "foreign clean filename is preserved and export starts at (2)")
+    let numberedBytes = try Data(contentsOf:numberedZIP!)
+    var revisedNotes = try JSONSerialization.jsonObject(with:notes) as! [String:Any]
+    revisedNotes["summary"] = [["text":"수정한 노트 요약","quotes":["정확한 원문입니다."]]]
+    try JSONSerialization.data(withJSONObject:revisedNotes).write(to:notesURL)
+    let notesVersion = try await store.exportIfNeeded(job:job,destination:numbered)
+    try check(notesVersion?.lastPathComponent == "_회의_ 원문 — 2026-10-13 (3).zip" && (try Data(contentsOf:numberedZIP!)) == numberedBytes, "same-title changed content creates immutable (3) version")
+    try notes.write(to:notesURL)
+    let numberedReplay = try await RecordingZIPExport.exportOne(job:job,stateRoot:state,destination:numbered)
+    try check(numberedReplay == numberedZIP && (try fm.contentsOfDirectory(atPath:numbered.path)).count == 4, "restart replay reuses numbered receipt instead of adding (4)")
+    try check(try Data(contentsOf:occupied) == foreign && Data(contentsOf:unknownLegacy) == foreign, "foreign clean and unknown legacy archives are preserved unchanged")
+
+    var longTitle = job; longTitle.id = "long-title"; longTitle.uuid = "long-title"
+    longTitle.topic = String(repeating:"가",count:70)
+    let longZIP = try await store.exportIfNeeded(job:longTitle,destination:numbered)
+    // macOS URLs expose decomposed Hangul; use the fixture's canonical composed form.
+    let longName = longZIP!.deletingPathExtension().lastPathComponent.precomposedStringWithCanonicalMapping
+    try check(longName == String(repeating:"가",count:35) + " — 2026-10-13" && longName.utf8.count == 120, "long Korean title preserves the date suffix within the 120-byte filename bound")
 }

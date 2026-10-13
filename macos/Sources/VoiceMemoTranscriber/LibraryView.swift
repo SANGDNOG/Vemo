@@ -17,68 +17,7 @@ struct LibraryView: View {
     @ViewState private var columnVisibility: NavigationSplitViewVisibility = .all
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            VStack(spacing: 0) {
-                folderNavigation
-                Divider().padding(.horizontal, 14)
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("제목·전사·키워드 검색", text: $model.search).textFieldStyle(.plain).accessibilityLabel("녹음 검색")
-                    if !model.search.isEmpty { Button { model.search = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("검색 지우기") }
-                }.font(.callout).padding(9).background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9)).padding(12)
-                HStack { Text(model.libraryTitle).font(.caption.weight(.semibold)).lineLimit(1).help(model.libraryTitle); Spacer(); Text("\(model.visibleJobs.count)").font(.caption.monospacedDigit()) }.foregroundStyle(.secondary).padding(.horizontal, 17).padding(.bottom, 6)
-                if model.visibleJobs.isEmpty {
-                    VStack(spacing: 9) { Image(systemName: model.search.isEmpty ? "folder" : "magnifyingglass").font(.title2); Text(model.search.isEmpty ? "이 폴더는 비어 있습니다" : "검색 결과가 없습니다").font(.callout); if model.search.isEmpty { Text(model.libraryFilter == "trash" ? "원본 파일은 삭제되지 않습니다." : "녹음을 폴더로 드래그해 정리하세요.").font(.caption) } }.foregroundStyle(.secondary).padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    List(model.visibleJobs, selection: $model.selection) { job in
-                        recordingRow(job).tag(job.id)
-                            .listRowBackground(model.selection == job.id ? VemoTheme.accent.opacity(0.14) : Color.clear)
-                            .background(VemoRecordingSelectionAppearance())
-                            .background(VemoScrollAppearance())
-                            .overlay { if !model.isEditingTitle(job,at:.sidebar) { recordingInput(job) } }
-                            .contextMenu { RecordingFolderMenu(model: model, jobID: job.id) }
-                    }.listStyle(.sidebar)
-                        .scrollContentBackground(.hidden)
-                        .onKeyPress(.return) {
-                            guard model.editingTitleJobID == nil, let job = model.selected, job.deleted_at == nil else { return .ignored }
-                            model.beginTitleEdit(job,at:.sidebar); return .handled
-                        }
-                }
-                HStack {
-                    Spacer()
-                    Button { model.chooseFiles() } label: {
-                        Image(systemName:"plus").font(.system(size:20,weight:.medium))
-                            .foregroundStyle(.white).frame(width:42,height:42)
-                            .background(VemoTheme.accent,in:Circle()).contentShape(Circle())
-                    }.buttonStyle(.plain).accessibilityLabel("오디오 가져오기").help("오디오 가져오기 ⌘O")
-                }.padding(14)
-            }.frame(minWidth: 250, idealWidth: 290)
-                .navigationSplitViewColumnWidth(min: 250, ideal: 290, max: 420)
-                .toolbar(removing: .sidebarToggle)
-                .toolbar {
-                    if columnVisibility != .detailOnly {
-                        if #available(macOS 26.0, *) {
-                            ToolbarSpacer(.flexible, placement: .primaryAction)
-                        }
-                        ToolbarItem(placement: .primaryAction) { sidebarToggle }
-                    }
-                }
-        } detail: {
-            if let job = model.selected {
-                if job.deleted_at != nil {
-                    VStack(spacing:16) {
-                        Image(systemName:"trash").font(.largeTitle).foregroundStyle(VemoTheme.ink)
-                        Text(job.title).font(.title2).textSelection(.enabled)
-                        Text("Vemo 휴지통에 보관 중입니다. 원본 오디오와 전사문·노트는 삭제되지 않습니다.")
-                            .foregroundStyle(.secondary).multilineTextAlignment(.center)
-                        Button("녹음 복원",systemImage:"arrow.uturn.backward") { model.restoreRecording(job) }
-                            .buttonStyle(VemoButtonStyle(emphasis:.primary))
-                    }.padding(32).frame(maxWidth:.infinity,maxHeight:.infinity)
-                } else { TranscriptView(model: model, job: job) }
-            } else if model.libraryFilter == "trash" {
-                ContentUnavailableView("휴지통이 비어 있습니다",systemImage:"trash",description:Text("Vemo에서 숨긴 녹음을 여기에서 복원할 수 있습니다. 원본 파일은 삭제되지 않습니다."))
-            } else { onboarding }
-        }
+        splitContent
         .toolbar(removing: .sidebarToggle)
         // Let the full-height split panes draw one continuous column boundary.
         .toolbarBackground(.hidden, for: .windowToolbar)
@@ -96,6 +35,12 @@ struct LibraryView: View {
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             for provider in providers { _ = provider.loadObject(ofClass: URL.self) { url, _ in if let url { Task { @MainActor in model.importFiles([url]) } } } }; return !providers.isEmpty
         }
+        .alert(model.recordingConfirmation?.title ?? "녹음",isPresented:Binding(
+            get:{ model.recordingConfirmation != nil },set:{ if !$0 { model.recordingConfirmation = nil } }
+        ),presenting:model.recordingConfirmation) { confirmation in
+            Button("취소",role:.cancel) { model.recordingConfirmation = nil }
+            Button(confirmation.button,role:confirmation.kind == "restore_recording" ? nil : .destructive) { model.confirmRecordingAction(confirmation) }
+        } message: { confirmation in Text(confirmation.message) }
         .sheet(isPresented: $folderEditor) {
             VStack(alignment: .leading, spacing: 20) {
                 HStack(spacing: 12) {
@@ -274,18 +219,91 @@ struct LibraryView: View {
                       input: nativeInput(label: name, target: filter == "unfiled" ? .unfiled : nil,
                                          key: filter, select: { selectFolder(filter) }))
     }
+    private var splitContent: some View {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+            VStack(spacing: 0) {
+                folderNavigation
+                Divider().padding(.horizontal, 14)
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("제목·전사·키워드 검색", text: $model.search).textFieldStyle(.plain).accessibilityLabel("녹음 검색")
+                    if !model.search.isEmpty { Button { model.search = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("검색 지우기") }
+                }.font(.callout).padding(9).background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9)).padding(12)
+                HStack { Text(model.libraryTitle).font(.caption.weight(.semibold)).lineLimit(1).help(model.libraryTitle); Spacer(); Text(model.selectedIDs.count > 1 ? "\(model.selectedIDs.count)개 선택됨" : "\(model.visibleJobs.count)").font(.caption.monospacedDigit()) }.foregroundStyle(.secondary).padding(.horizontal, 17).padding(.bottom, 6)
+                if model.visibleJobs.isEmpty {
+                    VStack(spacing: 9) { Image(systemName: model.search.isEmpty ? "folder" : "magnifyingglass").font(.title2); Text(model.search.isEmpty ? "이 폴더는 비어 있습니다" : "검색 결과가 없습니다").font(.callout); if model.search.isEmpty { Text(model.libraryFilter == "trash" ? "원본 파일은 삭제되지 않습니다." : "녹음을 폴더로 드래그해 정리하세요.").font(.caption) } }.foregroundStyle(.secondary).padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    recordingsList
+                }
+                HStack {
+                    Spacer()
+                    Button { model.chooseFiles() } label: {
+                        Image(systemName:"plus").font(.system(size:20,weight:.medium))
+                            .foregroundStyle(.white).frame(width:42,height:42)
+                            .background(VemoTheme.accent,in:Circle()).contentShape(Circle())
+                    }.buttonStyle(.plain).accessibilityLabel("오디오 가져오기").help("오디오 가져오기 ⌘O")
+                }.padding(14)
+            }.frame(minWidth: 250, idealWidth: 290)
+                .navigationSplitViewColumnWidth(min: 250, ideal: 290, max: 420)
+                .toolbar(removing: .sidebarToggle)
+                .toolbar {
+                    if columnVisibility != .detailOnly {
+                        if #available(macOS 26.0, *) {
+                            ToolbarSpacer(.flexible, placement: .primaryAction)
+                        }
+                        ToolbarItem(placement: .primaryAction) { sidebarToggle }
+                    }
+                }
+        } detail: {
+            if let job = model.selected {
+                if job.deleted_at != nil {
+                    VStack(spacing:16) {
+                        Image(systemName:"trash").font(.largeTitle).foregroundStyle(VemoTheme.ink)
+                        Text(job.title).font(.title2).textSelection(.enabled)
+                        Text(job.purge_pending == true ? "Vemo 로컬 파일 정리가 끝나지 않았습니다. 영구 삭제를 다시 시도하세요. iPhone·Drive 원본과 내보낸 ZIP은 유지됩니다." : "Vemo 휴지통에 보관 중입니다. 원본 오디오와 전사문·노트는 삭제되지 않습니다.")
+                            .foregroundStyle(.secondary).multilineTextAlignment(.center)
+                        Button("녹음 복원",systemImage:"arrow.uturn.backward") { model.requestRecordingAction("restore_recording",ids:model.recordingActionIDs(job.id)) }.disabled(job.purge_pending == true)
+                            .buttonStyle(VemoButtonStyle(emphasis:.primary))
+                        Button("영구 삭제…",role:.destructive) { model.requestRecordingAction("purge_recording",ids:model.recordingActionIDs(job.id)) }
+                            .disabled(!model.canChangeRecordings || model.libraryBusy || !model.libraryReady)
+                    }.padding(32).frame(maxWidth:.infinity,maxHeight:.infinity)
+                } else { TranscriptView(model: model, job: job) }
+            } else if model.libraryFilter == "trash" {
+                ContentUnavailableView("휴지통이 비어 있습니다",systemImage:"trash",description:Text("Vemo에서 숨긴 녹음을 여기에서 복원할 수 있습니다. 원본 파일은 삭제되지 않습니다."))
+            } else { onboarding }
+        }
+    }
+    private var recordingsList: some View {
+                    List(model.visibleJobs, selection: Binding<Set<String>>(get:{ model.selectedIDs },set:{ model.setRecordingSelection($0) })) { job in
+                        recordingRow(job).tag(job.id)
+                            .listRowBackground(model.selectedIDs.contains(job.id) ? VemoTheme.accent.opacity(0.14) : Color.clear)
+                            .background(VemoRecordingSelectionAppearance())
+                            .background(VemoScrollAppearance())
+                            .overlay { if !model.isEditingTitle(job,at:.sidebar) { recordingInput(job) } }
+                            .contextMenu { RecordingFolderMenu(model: model, jobID: job.id) }
+                    }.listStyle(.sidebar)
+                        .scrollContentBackground(.hidden)
+                        .onKeyPress(.return) {
+                            guard model.editingTitleJobID == nil, model.selectedIDs.count == 1, let job = model.selected, job.deleted_at == nil else { return .ignored }
+                            model.beginTitleEdit(job,at:.sidebar); return .handled
+                        }
+    }
     private func recordingInput(_ job: Job) -> VemoLibraryItemInteraction {
-        VemoLibraryItemInteraction(label: job.title, selected: model.selection == job.id, suppressFocusRing: true,
-            select: { model.selection = job.id },
+        VemoLibraryItemInteraction(label: job.title, selected: model.selectedIDs.contains(job.id), suppressFocusRing: true,
+            select: { model.selectRecording(job.id) },
+            selectWithModifiers: { model.selectRecording(job.id,modifiers:$0) },
+            selectAll: { model.selectAllRecordings() },
             editTitle: job.deleted_at == nil ? { model.beginTitleEdit(job,at:.sidebar) } : nil,
+            canEditTitle: { model.selectedIDs.count == 1 && model.selectedIDs.contains(job.id) },
             dragData: {
                 guard job.deleted_at == nil else { return nil }
-                let payload = model.libraryDragPayload(kind: .recording, id: job.id)
+                let payload = model.beginRecordingDrag(job.id)
                 _ = dragSession.provider(for: payload)
                 return try? JSONEncoder().encode(payload)
             },
             dragEnded: { data in
                 if let payload = try? JSONDecoder().decode(LibraryDragPayload.self, from: data) {
+                    model.finishRecordingDrag(payload)
                     dragSession.finish(ifCurrent: payload)
                 }
             })
@@ -299,7 +317,7 @@ struct LibraryView: View {
                 Text(job.title).font(.system(size:13,weight:.semibold)).lineLimit(2)
             }
             Text([job.recording_date ?? "녹음일 확인 필요", job.duration_s.map { String(format: "%d분 %02d초", Int($0)/60, Int($0)%60) } ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
-            HStack(spacing: 5) { Circle().fill(job.status == "failed" ? Color.red : job.status == "completed" ? VemoTheme.accent.opacity(0.65) : Color.secondary).frame(width: 5, height: 5); Text(job.statusLabel + (job.progress.isEmpty ? "" : " · " + job.progress)).font(.caption).foregroundStyle(.secondary) }
+            HStack(spacing: 5) { Circle().fill(job.status == "failed" ? Color.red : job.status == "completed" ? VemoTheme.accent.opacity(0.65) : Color.secondary).frame(width: 5, height: 5); Text(job.purge_pending == true ? "로컬 정리 재시도 필요" : job.statusLabel + (job.progress.isEmpty ? "" : " · " + job.progress)).font(.caption).foregroundStyle(.secondary) }
         }.padding(.vertical, 8).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
     }
     private func saveFolder() {
@@ -332,19 +350,21 @@ struct RecordingFolderMenu: View {
     let jobID: String
     var titleLocation: TitleEditingLocation = .sidebar
     var body: some View {
+        if model.recordingActionIDs(jobID).count > 1 { Text("선택한 \(model.recordingActionIDs(jobID).count)개 녹음") }
         if let job = model.jobs.first(where: { $0.id == jobID }) {
             if job.deleted_at != nil {
-                Button("녹음 복원",systemImage:"arrow.uturn.backward") { model.restoreRecording(job) }
+                Button("녹음 복원",systemImage:"arrow.uturn.backward") { model.requestRecordingAction("restore_recording",ids:model.recordingActionIDs(job.id)) }.disabled(job.purge_pending == true)
+                Button("영구 삭제…",role:.destructive) { model.requestRecordingAction("purge_recording",ids:model.recordingActionIDs(job.id)) }
             } else {
                 Button("제목 수정") { model.beginTitleEdit(job,at:titleLocation) }
                 Button("원본 다시 확인") { model.refreshRecording(job) }
-                Button("Vemo 휴지통으로 이동",systemImage:"trash") { model.trashRecording(job) }
+                Button("Vemo 휴지통으로 이동",systemImage:"trash") { model.requestRecordingAction("trash_recording",ids:model.recordingActionIDs(job.id)) }
             }
         }
         Menu("폴더로 이동") {
-            Button { model.moveRecording(jobID, to: nil) } label: { Label("미분류", systemImage: model.library.assignments[jobID] == nil ? "checkmark" : "tray") }
+            Button { model.moveRecordings(model.recordingActionIDs(jobID), to: nil) } label: { Label("미분류", systemImage: model.library.assignments[jobID] == nil ? "checkmark" : "tray") }
             ForEach(LibraryFolderHierarchy.rows(model.library.folders), id: \.id) { row in
-                Button { model.moveRecording(jobID, to: row.id) } label: { Label(LibraryFolderHierarchy.path(for: row.id, in: model.library.folders), systemImage: model.library.assignments[jobID] == row.id ? "checkmark" : "folder") }
+                Button { model.moveRecordings(model.recordingActionIDs(jobID), to: row.id) } label: { Label(LibraryFolderHierarchy.path(for: row.id, in: model.library.folders), systemImage: model.library.assignments[jobID] == row.id ? "checkmark" : "folder") }
             }
         }.disabled(!model.libraryReady || model.libraryBusy || !model.activeJobs.contains(where: { $0.id == jobID }))
     }

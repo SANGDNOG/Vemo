@@ -1,7 +1,7 @@
 """One-thread durable state machine. Readers and inference never touch SQLite."""
-import copy,json,math,os,subprocess,sys,time,uuid,threading,datetime as dt
+import copy,fcntl,json,math,os,re,stat,subprocess,sys,time,uuid,threading,datetime as dt
 from pathlib import Path
-from .store import Store
+from .store import Store,owned_directory,remove_owned_tree,atomic_json_at
 from .dates import recording_day,validate_day
 from .titles import sanitize_topic
 from .protocol import parse_command
@@ -44,28 +44,39 @@ class Engine:
                     self.invalidate(job);job.update(status='waiting',wait_reason='restart');self.store.put(job)
                 elif job['status'] in RUNNING:
                     job.update(status='waiting',wait_reason='restart',stage=job['phase']);self.store.put(job)
+        # Intent was committed before any deletion. Resume once, retaining failed
+        # intents for an explicit retry rather than retrying on every engine tick.
+        for job in self.store.jobs():
+            if job.get('purge_requested_at') and not job.get('purged_at'):self.finish_purge(job['id'])
+        self.flush_changed()
     def emit(self,kind,payload):
         self.sequence+=1;self.emit_callback({'sequence':self.sequence,'protocol_version':1,'kind':kind,'payload':payload})
     def view(self,job):
         view={key:job.get(key) for key in JOB_FIELDS}
         view['refresh_pending']=bool(job.get('refresh_requested') or job.get('refresh_state'))
+        view['purge_pending']=bool(job.get('purge_requested_at') and not job.get('purged_at'))
         view['elapsed_seconds']=job.get('elapsed_seconds',0)+(time.monotonic()-self.started[job['id']] if job['id'] in self.started else 0)
         return view
     def save(self,job):
         self.store.put(job);self.changed.add(job['id'])
     def flush_changed(self):
         ids=self.changed;self.changed=set()
-        for jid in sorted(ids):self.emit('job_changed',{'job':self.view(self.store.get(jid))})
+        for jid in sorted(ids):
+            job=self.store.get(jid)
+            if job.get('purged_at'):self.emit('job_removed',{'job_id':jid})
+            else:self.emit('job_changed',{'job':self.view(job)})
     def engine_status(self):
         return {**self.models,'paused':self.store.get_meta('paused',False),'ac_only':self.store.get_meta('ac_only',True)}
     def snapshot(self):
-        return {'jobs':[self.view(j) for j in self.store.jobs()],'engine_status':self.engine_status()}
+        return {'jobs':[self.view(j) for j in self.store.jobs() if not j.get('purged_at')],'engine_status':self.engine_status()}
     def command(self,command):
         # Also validate direct embedding callers; service parses byte limits first.
         self.changed=set()
         try:
             command=parse_command(json.dumps(command,ensure_ascii=False).encode())
             result=self.store.request(command['request_id'],command,lambda:self.apply(command['kind'],command['payload']))
+            if command['kind']=='purge_recording' and (result['ok'] or result.get('error',{}).get('code')=='purge_cleanup_failed'):
+                result=self.finish_purge(command['payload']['job_id'],command['request_id'])
         except (ValueError,TypeError,KeyError,OverflowError) as exc:
             self.changed=set();result={'ok':False,'error':failure('invalid_command',str(exc) if isinstance(exc,ValueError) else 'invalid payload')}
         self.flush_changed()
@@ -101,6 +112,7 @@ class Engine:
         for memo,day in zip(memos,days):
             old=self.store.by_uuid(memo['uuid'])
             if old:
+                if old.get('purge_requested_at') or old.get('purged_at'):continue
                 previous=old.get('media_revision');revision=memo.get('media_revision');prior_day=old.get('recording_date')
                 metadata=memo.get('metadata_revision');duration=memo.get('duration_s')
                 changed=(revision is not None and previous is not None and revision!=previous
@@ -158,6 +170,80 @@ class Engine:
         job.pop('refresh_state',None)
         job.pop('refresh_resume',None)
         job.update(status='failed',phase='snapshot',stage='snapshot',queued=False,wait_reason=None,error=error,refresh_requested=False)
+    def finish_purge(self,jid,rid=None):
+        """Run filesystem effects only after Store.request committed the intent."""
+        if self.store.db.in_transaction:raise RuntimeError('purge_requires_committed_intent')
+        job=self.store.get(jid)
+        result={'ok':True}
+        if not job.get('purged_at'):
+            if not job.get('purge_requested_at') or not job.get('deleted_at'):raise ValueError('purge_not_requested')
+            try:
+                active=self.active if self.active and self.active['job_id']==jid else None
+                if active:
+                    active['task'].stop()
+                    if active['task'].poll() is None:raise ValueError('purge_worker_still_running')
+                self.stop_job(job)
+                self.cleanup_purge(job)
+            except (OSError,ValueError,TypeError,KeyError,RecursionError):
+                error=failure('purge_cleanup_failed')
+                job.update(queued=False,error=error)
+                result={'ok':False,'error':error}
+            else:
+                job={key:job[key] for key in ('id','uuid','source_kind','source_reference','deleted_at','generation')}
+                job.update(purged_at=dt.datetime.now(dt.timezone.utc).isoformat(),queued=False)
+        with self.store.transaction():
+            self.save(job)
+            if rid is not None:self.store.set_request_result(rid,result)
+        return result
+    def cleanup_purge(self,job):
+        # Stored audio/artifact/receipt paths are never deletion authority.
+        if not re.fullmatch(r'[0-9a-f]{32}',job['id']):raise ValueError('unsafe_purge_job_id')
+        if job.get('source_kind')=='import':self.purge_import_copy(job)
+        for parts in (('work',job['id']),('artifacts',job['id']),('snapshots','jobs',job['id'])):
+            remove_owned_tree(self.root,parts)
+    def purge_import_copy(self,job):
+        with owned_directory(self.root,('native',)) as native:
+            lock=os.open('imports.lock',os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW|os.O_CLOEXEC|os.O_NONBLOCK,0o600,dir_fd=native)
+            try:
+                if not stat.S_ISREG(os.fstat(lock).st_mode):raise ValueError('unsafe_import_lock')
+                fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                fd=os.open('imports.json',os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC|os.O_NONBLOCK,dir_fd=native)
+                with os.fdopen(fd,'rb') as source:
+                    before=os.fstat(source.fileno())
+                    if not stat.S_ISREG(before.st_mode) or before.st_size>8*1024*1024:raise ValueError('invalid_import_registry')
+                    registry=json.loads(source.read(8*1024*1024+1))
+                    after=os.fstat(source.fileno())
+                    if (before.st_ino,before.st_size,before.st_mtime_ns)!=(after.st_ino,after.st_size,after.st_mtime_ns):raise ValueError('changing_import_registry')
+                if (not isinstance(registry,dict) or type(registry.get('schema_version')) is not int
+                        or registry['schema_version']!=1 or not isinstance(registry.get('entries'),dict)):
+                    raise ValueError('invalid_import_registry')
+                entry=registry['entries'].get(job['source_reference'])
+                if not isinstance(entry,dict) or not isinstance(entry.get('memo'),dict):raise ValueError('missing_import_identity')
+                memo=entry['memo']
+                if (memo.get('uuid')!=job['uuid'] or memo.get('source_kind')!='import'
+                        or memo.get('source_reference')!=job['source_reference']
+                        or not isinstance(entry.get('path'),str) or type(entry.get('delivered')) is not bool
+                        or not isinstance(entry.get('hash'),str) or not re.fullmatch(r'[0-9a-f]{64}',entry['hash'])
+                        or 'purged' in entry and type(entry['purged']) is not bool):raise ValueError('invalid_import_identity')
+                path=Path(entry['path'])
+                if not path.is_absolute() or '..' in path.parts or path.parent!=self.root/'snapshots'/'imports':raise ValueError('unsafe_import_copy')
+                if any(other!=job['source_reference'] and isinstance(value,dict) and value.get('path')==entry['path']
+                       for other,value in registry['entries'].items()):raise ValueError('shared_import_copy')
+                with owned_directory(self.root,('snapshots','imports')) as copies:
+                    try:before=os.stat(path.name,dir_fd=copies,follow_symlinks=False)
+                    except FileNotFoundError:before=None
+                    if before is not None and (not stat.S_ISREG(before.st_mode) or before.st_dev!=os.fstat(copies).st_dev):raise ValueError('unsafe_import_copy')
+                    # Preserve Codable Memo fields and the content hash; native uses
+                    # this durable flag to suppress reimports and late snapshots.
+                    entry['purged']=True
+                    memo['original_title']=None
+                    atomic_json_at(native,'imports.json',registry)
+                    if before is not None:
+                        after=os.stat(path.name,dir_fd=copies,follow_symlinks=False)
+                        if (before.st_dev,before.st_ino)!=(after.st_dev,after.st_ino):raise ValueError('changing_import_copy')
+                        os.unlink(path.name,dir_fd=copies)
+                    os.fsync(copies)
+            finally:os.close(lock)
     def apply(self,kind,payload):
         if kind in {'hello','snapshot','shutdown'}:return {'ok':True}
         if kind=='discover':self.discover(payload['memos']);return {'ok':True}
@@ -190,6 +276,16 @@ class Engine:
                 if not job.get('deleted_at') and job['status']=='unprocessed':job.update(queued=True,status='waiting',wait_reason=None);self.save(job)
             return {'ok':True}
         job=self.store.get(payload['job_id'])
+        if kind=='purge_recording':
+            if job.get('purged_at'):return {'ok':True}
+            if not job.get('deleted_at'):raise ValueError('recording_not_trashed')
+            if not job.get('purge_requested_at'):
+                self.invalidate(job)
+                job.update(purge_requested_at=dt.datetime.now(dt.timezone.utc).isoformat(),queued=False,refresh_requested=False,publication_id=None)
+                self.save(job)
+            return {'ok':True}
+        if job.get('purged_at'):raise ValueError('recording_purged')
+        if job.get('purge_requested_at'):raise ValueError('recording_purge_pending')
         if kind=='trash_recording':
             if not job.get('deleted_at'):
                 job['trash_state']={key:job.get(key) for key in ('status','queued','wait_reason','stage')}

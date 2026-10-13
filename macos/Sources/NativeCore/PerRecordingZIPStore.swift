@@ -141,16 +141,21 @@ public actor PerRecordingZIPStore {
         guard stamp == (try Stamp(archive)) else { throw BrokerFiles.fail("zip_archive_changed") }
         return stamp
     }
-    private func name(_ title: String) -> String {
+    private func name(_ title: String, recordingDate: String?) -> String {
         let forbidden = CharacterSet.controlCharacters.union(CharacterSet(charactersIn:"/\\:*?\"<>|"))
         let clean = title.unicodeScalars.map { forbidden.contains($0) ? "_" : String($0) }.joined()
             .trimmingCharacters(in:CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn:".")))
+        let suffix = recordingDate.flatMap { date in
+            (try? Validation.recordingDate(date)) == nil ? nil : " — " + date
+        } ?? ""
+        let dateSuffix = clean.hasSuffix(suffix) ? suffix : ""
+        let topic = clean.dropLast(dateSuffix.count)
         var result = ""
-        for character in clean {
-            guard result.utf8.count + String(character).utf8.count <= 120 else { break }
+        for character in topic {
+            guard result.utf8.count + String(character).utf8.count <= 120 - dateSuffix.utf8.count else { break }
             result.append(character)
         }
-        return result.isEmpty ? "녹음" : result
+        return (result.isEmpty ? "녹음" : result) + dateSuffix
     }
     private func execute(_ executable: String, _ arguments: [String], log: URL) throws {
         try Task.checkCancellation()
@@ -243,11 +248,11 @@ public actor PerRecordingZIPStore {
         defer { close(fd) }
         guard fsync(fd) == 0 else { throw BrokerFiles.fail() }
         try unchanged(inputs,job:job); try sameDestination(destination,stamp:folderStamp); try Task.checkCancellation()
-        let base = "Vemo-" + name(job.title) + "-" + fingerprint
-        var ordinal = 0
+        let base = name(job.title,recordingDate:job.recording_date)
+        var ordinal = 1
         while true {
             try Task.checkCancellation()
-            let archiveName = base + (ordinal == 0 ? "" : "-\(ordinal)") + ".zip"
+            let archiveName = base + (ordinal == 1 ? "" : " (\(ordinal))") + ".zip"
             let target = destination.appendingPathComponent(archiveName)
             // Inspect existence without following a foreign file or symlink.
             var s = stat()
