@@ -10,7 +10,7 @@ from .artifacts import atomic_json,build_publication,valid_receipt,sha256
 from .models import model_status,ModelInventory
 from .process import ManagedProcess
 from .notes import validate_notes,source_chunks,source_digest
-from .study_notes import ERROR_CODES
+from .study_notes import ERROR_CODES,safe_diagnostics
 
 JOB_FIELDS=('id','uuid','topic','recording_date','recorded_at','duration_s','status','wait_reason','stage','completed_units','total_units','elapsed_seconds','artifact_path','audio_path','pcm_path','error','title_status','alignment_status','original_title','notes_path','notes_status','notes_error','notes_protocol','deleted_at')
 RUNNING={'preparing','transcribing','aligning','titling','noting'}
@@ -484,7 +484,9 @@ class Engine:
                 code=result['notes_error_code']
                 if code not in ERROR_CODES or 'notes' in result or 'notes_checkpoint' in result:
                     raise ValueError('invalid_notes_error')
-                self.fail_notes(job,failure(code));return
+                error=failure(code)
+                if 'notes_diagnostics' in result:error['diagnostics']=safe_diagnostics(result['notes_diagnostics'])
+                self.fail_notes(job,error);return
             if protocol=='study_v1':
                 if (result.get('notes_protocol')!='study_v1' or 'notes_checkpoint' in result
                         or 'completed_units' not in result or result['completed_units'] is not None

@@ -27,7 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @StateObject private var model = AppModel.shared
     @Environment(\.openWindow) private var openWindow
     var body: some Scene {
-        WindowGroup("Vemo", id: "library") { LibraryView(model: model).tint(VemoTheme.accent).buttonStyle(VemoButtonStyle()).frame(minWidth: 760, minHeight: 540).task { if !ProcessInfo.processInfo.arguments.contains("--diagnostic-only") { model.start() } } }.defaultSize(width: 1040, height: 720)
+        WindowGroup("Vemo", id: "library") { LibraryView(model: model).tint(VemoTheme.accent).buttonStyle(VemoButtonStyle()).frame(minWidth: 980, minHeight: 540).task { if !ProcessInfo.processInfo.arguments.contains("--diagnostic-only") { model.start() } } }.defaultSize(width: 1200, height: 720)
             .windowToolbarStyle(.unifiedCompact)
             .commands { CommandGroup(replacing: .newItem) { Button("파일 가져오기…") { model.chooseFiles() }.keyboardShortcut("o"); Button("앱 열기") { openWindow(id: "library"); NSApp.activate(ignoringOtherApps: true) } } }
         Settings { SettingsView(model: model).tint(VemoTheme.accent).buttonStyle(VemoButtonStyle()) }

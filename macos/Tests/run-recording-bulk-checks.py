@@ -47,6 +47,7 @@ actor FakeEngine {
  var zipChecked:Set<String> = [], zipRetryAfter:[String:Date] = [:]
  var activeExportTask:Task<URL?,Error>?, activeExportJobID:String?, activeExportKey:String?, zipExportFolder = "/fixture"
  init(root:URL) { libraryStore = LibraryFolderStore(root:root) }
+ func scheduleAutomaticOutputs() {}
  /* SELECTION */
  /* METHODS */
 }

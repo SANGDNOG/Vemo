@@ -39,6 +39,8 @@ struct SettingsView: View {
                     .disabled(model.zipExportBusy || model.completedZIPCount == 0 || model.zipExportFolder.isEmpty)
                 Text("준비된 녹음 \(model.completedZIPCount)개를 각각 ZIP으로 저장합니다. ZIP마다 원본 오디오·전사문 TXT·노트 Markdown, 총 3개 파일을 담습니다. 원본은 보존됩니다. Nextcloud 등 클라우드 데스크톱 앱이 저장 폴더의 동기화를 별도로 진행합니다.")
                     .font(.caption).foregroundStyle(.secondary)
+                Text("ZIP은 Vemo의 폴더·하위 폴더 구조를 따라 저장합니다. 녹음을 옮기거나 폴더 이름을 바꾸면 기존 ZIP도 이동하며, 미분류 녹음은 저장 위치의 최상위에 둡니다.")
+                    .font(.caption).foregroundStyle(.secondary)
                 if model.zipExportBusy {
                     HStack { ProgressView().controlSize(.small); Text(model.zipExportProgress).font(.caption) }
                 } else if !model.zipExportProgress.isEmpty {

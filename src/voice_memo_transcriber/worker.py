@@ -140,10 +140,13 @@ def main():
         atomic_json(sys.argv[2],result);return 0
     except Exception as exc:
         if locals().get('op')=='notes':
-            from .study_notes import StudyNotesError
+            from .study_notes import StudyNotesError,safe_diagnostics
             code=exc.code if isinstance(exc,StudyNotesError) else 'notes_failed'
-            atomic_json(sys.argv[2],{'notes_protocol':(request.get('notes_protocol') or ('legacy' if request.get('notes_checkpoint') else 'study_v1')),
-                'notes_error_code':code,'completed_units':None,'total_units':None})
+            result={'notes_protocol':(request.get('notes_protocol') or ('legacy' if request.get('notes_checkpoint') else 'study_v1')),
+                'notes_error_code':code,'completed_units':None,'total_units':None}
+            diagnostics=exc.diagnostics if isinstance(exc,StudyNotesError) else {'stage':'worker','reason':'runtime_error'}
+            if diagnostics is not None:result['notes_diagnostics']=safe_diagnostics(diagnostics)
+            atomic_json(sys.argv[2],result)
             return 0
         print('local_worker_failed: '+type(exc).__name__,file=sys.stderr);return 1
 if __name__=='__main__':sys.exit(main())

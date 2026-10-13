@@ -182,6 +182,7 @@ struct RecordingBulkConfirmation {
                 }
                 if value.revision >= library.revision { library = value }
                 libraryReady = true; reconcileLibrarySelection()
+                scheduleAutomaticOutputs()
             } catch { libraryReady = false; problem = "폴더 분류를 읽지 못했습니다. 기존 분류 파일은 보존됩니다. " + error.localizedDescription }
         }
     }
@@ -190,10 +191,11 @@ struct RecordingBulkConfirmation {
         libraryBusy = true
         let store = libraryStore
         libraryWriteTask = Task {
-            defer { libraryBusy = false }
+            defer { libraryBusy = false; scheduleAutomaticOutputs() }
             do {
                 let value = try await operation(store)
                 if value.revision >= library.revision { library = value }
+                cancelObsoleteExport()
                 if libraryFilter != "all", libraryFilter != "unfiled", libraryFilter != "trash", !library.folders.contains(where: { $0.id == libraryFilter }) { libraryFilter = "all" }
                 reconcileLibrarySelection()
             } catch { problem = error.localizedDescription }
@@ -361,7 +363,7 @@ struct RecordingBulkConfirmation {
                     let job = try value.decoded(Job.self); trackRefreshState(value)
                     if let i = jobs.firstIndex(where: { $0.id == job.id }) {
                         if jobs[i].status != job.status || jobs[i].notes_status != job.notes_status {
-                            zipChecked.remove(AutomaticRecordingPolicy.zipKey(jobs[i],destination:zipExportFolder))
+                            zipChecked.remove(AutomaticRecordingPolicy.zipKey(jobs[i],destination:zipExportFolder,libraryRevision:library.revision))
                         }
                         jobs[i] = job
                     } else { jobs.append(job) }
@@ -638,8 +640,9 @@ struct RecordingBulkConfirmation {
     }
     private func cancelObsoleteExport() {
         guard let id = activeExportJobID else { return }
-        guard let job = jobs.first(where: { $0.id == id }), AutomaticRecordingPolicy.zipEligible(job),
-              !recordingCommandPending(id), AutomaticRecordingPolicy.zipKey(job,destination:zipExportFolder) == activeExportKey else {
+        guard let job = jobs.first(where: { $0.id == id }), job.deleted_at == nil,
+              !recordingCommandPending(id), libraryReady, !libraryBusy,
+              AutomaticRecordingPolicy.zipKey(job,destination:zipExportFolder,libraryRevision:library.revision) == activeExportKey else {
             activeExportTask?.cancel()
             return
         }
@@ -682,13 +685,13 @@ struct RecordingBulkConfirmation {
     }
     func exportCompletedZIP() { checkRecordingZIPs(manual:true,reconcile:true) }
     private func checkRecordingZIPs(manual: Bool, reconcile: Bool) {
-        guard !DemoContent.enabled, connected, !zipExportClosing, !zipExportFolder.isEmpty else { return }
+        guard !DemoContent.enabled, connected, !zipExportClosing, !zipExportFolder.isEmpty, libraryReady, !libraryBusy else { return }
         if zipExportBusy { zipRescheduleRequested = true; return }
         let destination = URL(fileURLWithPath:zipExportFolder)
         let now = Date()
         let candidates = jobs.filter { job in
-            guard AutomaticRecordingPolicy.zipEligible(job), !recordingCommandPending(job.id) else { return false }
-            let key = AutomaticRecordingPolicy.zipKey(job,destination:destination.path)
+            guard job.deleted_at == nil, !recordingCommandPending(job.id) else { return false }
+            let key = AutomaticRecordingPolicy.zipKey(job,destination:destination.path,libraryRevision:library.revision)
             return (manual || (zipRetryAfter[key] ?? .distantPast) <= now) && (reconcile || !zipChecked.contains(key))
         }.map(\.id)
         guard !candidates.isEmpty else { return }
@@ -703,14 +706,22 @@ struct RecordingBulkConfirmation {
             for id in candidates {
                 guard !zipExportClosing, manual || autoZIPEnabled else { break }
                 // Resolve the latest immutable value immediately before the actor call.
-                guard let job = jobs.first(where: { $0.id == id }), AutomaticRecordingPolicy.zipEligible(job), !recordingCommandPending(id) else { continue }
-                let key = AutomaticRecordingPolicy.zipKey(job,destination:destination.path)
+                guard let job = jobs.first(where: { $0.id == id }), job.deleted_at == nil, !recordingCommandPending(id) else { continue }
+                guard libraryReady, !libraryBusy else { zipRescheduleRequested = true; break }
+                let organization = library
+                let key = AutomaticRecordingPolicy.zipKey(job,destination:destination.path,libraryRevision:organization.revision)
                 activeExportJobID = id; activeExportKey = key
                 let child = Task { [self] in
                     try Task.checkCancellation()
-                    return try await perRecordingZIPStore.exportIfNeeded(job:job,destination:destination) { [weak self] message in
+                    let moved = try await perRecordingZIPStore.relocateIfNeeded(jobID:id,destination:destination,organization:organization) { [weak self] message in
                         await self?.updateZIPProgress(message)
                     }
+                    try Task.checkCancellation()
+                    guard AutomaticRecordingPolicy.zipEligible(job) else { return moved }
+                    let created = try await perRecordingZIPStore.exportIfNeeded(job:job,destination:destination,organization:organization) { [weak self] message in
+                        await self?.updateZIPProgress(message)
+                    }
+                    return created ?? moved
                 }
                 activeExportTask = child
                 defer { activeExportTask = nil; activeExportJobID = nil; activeExportKey = nil }
@@ -903,8 +914,8 @@ enum AutomaticRecordingPolicy {
         settled(job) && job.artifact_path != nil && job.audio_path != nil && job.notes_path != nil && job.notes_status == "completed"
     }
     static func notesKey(_ job: Job) -> String { key([job.id,job.artifact_path]) }
-    static func zipKey(_ job: Job, destination: String) -> String {
-        key([destination,job.id,job.title,job.recording_date,job.audio_path,job.artifact_path,job.notes_path])
+    static func zipKey(_ job: Job, destination: String, libraryRevision: Int = 0) -> String {
+        key([destination,job.id,job.title,job.recording_date,job.audio_path,job.artifact_path,job.notes_path,String(libraryRevision),job.status,job.notes_status,job.deleted_at])
     }
     private static func key(_ values: [String?]) -> String {
         String(decoding:(try? JSONEncoder().encode(values)) ?? Data(),as:UTF8.self)

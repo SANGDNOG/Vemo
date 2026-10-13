@@ -18,13 +18,9 @@ struct LibraryView: View {
 
     var body: some View {
         splitContent
-        .toolbar(removing: .sidebarToggle)
         // Let the full-height split panes draw one continuous column boundary.
         .toolbarBackground(.hidden, for: .windowToolbar)
         .toolbar {
-            ToolbarItem(placement: .navigation) {
-                if columnVisibility == .detailOnly { sidebarToggle }
-            }
             ToolbarItem(placement: .principal) { Text(model.overallStatus).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
             ToolbarItem { if model.importing { ProgressView().controlSize(.small).help("오디오를 안전하게 가져오는 중") } }
             ToolbarItem { Button { model.chooseFiles() } label: { Label("파일 가져오기", systemImage: "square.and.arrow.down") }.help("파일 가져오기 ⌘O") }
@@ -87,19 +83,6 @@ struct LibraryView: View {
         return scope + " 안에 있던 녹음은 미분류로 돌아가며, 녹음 파일·전사문·노트는 보존됩니다."
     }
 
-    private var sidebarToggle: some View {
-        Button {
-            withAnimation(VemoTheme.motion(reducedMotion)) {
-                columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
-            }
-        } label: {
-            Image(systemName: "sidebar.left")
-        }
-        .accessibilityLabel(columnVisibility == .detailOnly ? "사이드바 보기" : "사이드바 가리기")
-        .help(columnVisibility == .detailOnly ? "사이드바 보기" : "사이드바 가리기")
-        .keyboardShortcut("s", modifiers: [.command, .control])
-    }
-
     private var folderNavigation: some View {
         VStack(spacing: 3) {
             HStack {
@@ -148,7 +131,7 @@ struct LibraryView: View {
                             }
                         }.animation(VemoTheme.motion(reducedMotion), value: folderTreeRows)
                             .background(VemoScrollAppearance())
-                    }.frame(maxHeight: min(CGFloat(folderTreeRows.count) * 37, 200))
+                    }.frame(maxHeight: .infinity)
                 }
             }
         }.padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 12)
@@ -221,40 +204,64 @@ struct LibraryView: View {
     }
     private var splitContent: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            VStack(spacing: 0) {
-                folderNavigation
-                Divider().padding(.horizontal, 14)
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("제목·전사·키워드 검색", text: $model.search).textFieldStyle(.plain).accessibilityLabel("녹음 검색")
-                    if !model.search.isEmpty { Button { model.search = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("검색 지우기") }
-                }.font(.callout).padding(9).background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9)).padding(12)
-                HStack { Text(model.libraryTitle).font(.caption.weight(.semibold)).lineLimit(1).help(model.libraryTitle); Spacer(); Text(model.selectedIDs.count > 1 ? "\(model.selectedIDs.count)개 선택됨" : "\(model.visibleJobs.count)").font(.caption.monospacedDigit()) }.foregroundStyle(.secondary).padding(.horizontal, 17).padding(.bottom, 6)
-                if model.visibleJobs.isEmpty {
-                    VStack(spacing: 9) { Image(systemName: model.search.isEmpty ? "folder" : "magnifyingglass").font(.title2); Text(model.search.isEmpty ? "이 폴더는 비어 있습니다" : "검색 결과가 없습니다").font(.callout); if model.search.isEmpty { Text(model.libraryFilter == "trash" ? "원본 파일은 삭제되지 않습니다." : "녹음을 폴더로 드래그해 정리하세요.").font(.caption) } }.foregroundStyle(.secondary).padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    recordingsList
-                }
-                HStack {
-                    Spacer()
-                    Button { model.chooseFiles() } label: {
-                        Image(systemName:"plus").font(.system(size:20,weight:.medium))
-                            .foregroundStyle(.white).frame(width:42,height:42)
-                            .background(VemoTheme.accent,in:Circle()).contentShape(Circle())
-                    }.buttonStyle(.plain).accessibilityLabel("오디오 가져오기").help("오디오 가져오기 ⌘O")
-                }.padding(14)
-            }.frame(minWidth: 250, idealWidth: 290)
-                .navigationSplitViewColumnWidth(min: 250, ideal: 290, max: 420)
+            foldersColumn
+                .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 250)
+        } content: {
+            recordingsColumn
                 .toolbar(removing: .sidebarToggle)
-                .toolbar {
-                    if columnVisibility != .detailOnly {
-                        if #available(macOS 26.0, *) {
-                            ToolbarSpacer(.flexible, placement: .primaryAction)
-                        }
-                        ToolbarItem(placement: .primaryAction) { sidebarToggle }
-                    }
-                }
+                .navigationSplitViewColumnWidth(min: 280, ideal: 310, max: 360)
         } detail: {
+            recordingDetail
+                .toolbar(removing: .sidebarToggle)
+        }
+        .navigationSplitViewStyle(.balanced)
+    }
+    private var foldersColumn: some View {
+        folderNavigation
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+    private var recordingsColumn: some View {
+        VStack(spacing: 0) {
+            recordingSearch
+            HStack {
+                Text(model.libraryTitle).font(.caption.weight(.semibold)).lineLimit(1).help(model.libraryTitle)
+                Spacer()
+                Text(model.selectedIDs.count > 1 ? "\(model.selectedIDs.count)개 선택됨" : "\(model.visibleJobs.count)")
+                    .font(.caption.monospacedDigit())
+            }.foregroundStyle(.secondary).padding(.horizontal, 17).padding(.bottom, 6)
+            if model.visibleJobs.isEmpty { emptyRecordings } else { recordingsList }
+            HStack {
+                Spacer()
+                Button { model.chooseFiles() } label: {
+                    Image(systemName:"plus").font(.system(size:20,weight:.medium))
+                        .foregroundStyle(.white).frame(width:42,height:42)
+                        .background(VemoTheme.accent,in:Circle()).contentShape(Circle())
+                }.buttonStyle(.plain).accessibilityLabel("오디오 가져오기").help("오디오 가져오기 ⌘O")
+            }.padding(14)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+    private var recordingSearch: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("제목·전사·키워드 검색", text: $model.search)
+                .textFieldStyle(.plain).accessibilityLabel("녹음 검색")
+            if !model.search.isEmpty {
+                Button { model.search = "" } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("검색 지우기")
+            }
+        }.font(.callout).padding(9)
+            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9)).padding(12)
+    }
+    private var emptyRecordings: some View {
+        VStack(spacing: 9) {
+            Image(systemName: model.search.isEmpty ? "folder" : "magnifyingglass").font(.title2)
+            Text(model.search.isEmpty ? "이 폴더는 비어 있습니다" : "검색 결과가 없습니다").font(.callout)
+            if model.search.isEmpty {
+                Text(model.libraryFilter == "trash" ? "원본 파일은 삭제되지 않습니다." : "녹음을 폴더로 드래그해 정리하세요.").font(.caption)
+            }
+        }.foregroundStyle(.secondary).padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+    @ViewBuilder private var recordingDetail: some View {
             if let job = model.selected {
                 if job.deleted_at != nil {
                     VStack(spacing:16) {
@@ -271,7 +278,6 @@ struct LibraryView: View {
             } else if model.libraryFilter == "trash" {
                 ContentUnavailableView("휴지통이 비어 있습니다",systemImage:"trash",description:Text("Vemo에서 숨긴 녹음을 여기에서 복원할 수 있습니다. 원본 파일은 삭제되지 않습니다."))
             } else { onboarding }
-        }
     }
     private var recordingsList: some View {
                     List(model.visibleJobs, selection: Binding<Set<String>>(get:{ model.selectedIDs },set:{ model.setRecordingSelection($0) })) { job in

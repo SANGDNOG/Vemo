@@ -28,6 +28,13 @@ actor FakeEngine {
 actor FakeZIPStore {
  var calls:[String] = []
  var published:[String] = []
+ var relocations:[String] = []
+ var organizations:[LibraryOrganization] = []
+ func movedIDs() -> [String] { relocations }
+ func capturedOrganizations() -> [LibraryOrganization] { organizations }
+ func relocateIfNeeded(jobID:String,destination:URL,organization:LibraryOrganization,progress:@escaping @Sendable(String)async->Void) async throws -> URL? {
+  try Task.checkCancellation();relocations.append(jobID);organizations.append(organization);return nil
+ }
  func publishedIDs() -> [String] { published }
  var blocked = false
  var entered = false
@@ -35,7 +42,7 @@ actor FakeZIPStore {
  func blockNext() { blocked = true; entered = false }
  func waitForEntry() async { while !entered { await Task.yield() } }
  func release() { waiter?.resume(); waiter = nil }
- func exportIfNeeded(job:Job,destination:URL,progress:@escaping @Sendable(String)async->Void) async throws -> URL? {
+ func exportIfNeeded(job:Job,destination:URL,organization:LibraryOrganization,progress:@escaping @Sendable(String)async->Void) async throws -> URL? {
   calls.append(job.id)
   if blocked { blocked = false; entered = true; await withCheckedContinuation { waiter = $0 } }
   try Task.checkCancellation()
@@ -47,6 +54,7 @@ actor FakeZIPStore {
 }
 @MainActor final class Fixture {
  var jobs:[Job] = []
+ var library = LibraryOrganization(), libraryReady = true, libraryBusy = false
  var internalBrokerReplies:Set<String> = []
  var nativeSnapshotTasks:[String:[UUID:Task<Void,Never>]] = [:]
  var connected = true, paused = false, notesModelReady = true
@@ -70,6 +78,8 @@ actor FakeZIPStore {
    if notes { value["notes_path"] = "/fixture/"+id+"-notes.json"; value["notes_status"] = "completed" }
    return try JSONDecoder().decode(Job.self,from:JSONSerialization.data(withJSONObject:value))
   }
+  let keyJob = try job("key",notes:true)
+  try check(AutomaticRecordingPolicy.zipKey(keyJob,destination:"/fixture",libraryRevision:1) != AutomaticRecordingPolicy.zipKey(keyJob,destination:"/fixture",libraryRevision:2),"folder revision changes ZIP coordinator key")
   let notes = Fixture(); notes.jobs = [try job("legacy",notes:false)]; notes.paused = true
   notes.scheduleAutomaticOutputs(); await notes.automaticNotesTask?.value
   try check(await notes.engine.commands().isEmpty,"paused user sends no automatic note or resume command")
@@ -130,7 +140,7 @@ actor FakeZIPStore {
   fresh.scheduleAutomaticOutputs()
   await fresh.perRecordingZIPStore.release(); await fresh.zipExportTask?.value
   try check(await fresh.perRecordingZIPStore.ids() == ["first"],"latest job recheck excludes trash while previous archive is in flight")
-  for mutation in ["trash","refresh","retitle","busy","manual notes","recording date"] {
+  for mutation in ["trash","refresh","retitle","busy","manual notes","recording date","folder revision"] {
    let changed = Fixture(); changed.jobs = [try job("first",notes:true),try job("second",notes:true)]
    await changed.perRecordingZIPStore.blockNext(); changed.exportCompletedZIP(); await changed.perRecordingZIPStore.waitForEntry()
    switch mutation {
@@ -139,6 +149,7 @@ actor FakeZIPStore {
    case "retitle": changed.jobs[0].topic = "changed"
    case "recording date": changed.command("set_recording_date",["job_id":.string("first")])
    case "manual notes": changed.pendingRecordingCommands["request"] = "first"
+   case "folder revision": changed.library.revision += 1
    default: changed.jobs[0].status = "noting"
    }
    changed.cancelObsoleteExport()
@@ -147,6 +158,18 @@ actor FakeZIPStore {
    try check(await changed.perRecordingZIPStore.publishedIDs() == ["second"],"\(mutation) prevents stale publication and continues other job")
    try check(changed.zipExportError == nil && changed.zipRetryAfter.isEmpty,"\(mutation) cancellation is not persisted as export failure")
   }
+  let folderOnly = Fixture(); folderOnly.jobs = [try job("no-notes",notes:false)]
+  folderOnly.jobs[0].notes_status = "failed"
+  folderOnly.library.revision = 7
+  folderOnly.exportCompletedZIP(); await folderOnly.zipExportTask?.value
+  let noNotesExports = await folderOnly.perRecordingZIPStore.ids()
+  let noNotesMoves = await folderOnly.perRecordingZIPStore.movedIDs()
+  try check(noNotesExports.isEmpty && noNotesMoves == ["no-notes"],"existing ZIP relocation works without completed notes and never creates incomplete ZIP")
+  try check(await folderOnly.perRecordingZIPStore.capturedOrganizations().first?.revision == 7,"relocation captures current committed library organization")
+  folderOnly.libraryReady = false; folderOnly.exportCompletedZIP(); await folderOnly.zipExportTask?.value
+  try check(await folderOnly.perRecordingZIPStore.movedIDs().count == 1,"unloaded library cannot move ZIP to incorrect root")
+  folderOnly.libraryReady = true; folderOnly.libraryBusy = true; folderOnly.exportCompletedZIP(); await folderOnly.zipExportTask?.value
+  try check(await folderOnly.perRecordingZIPStore.movedIDs().count == 1,"pending folder transaction cannot start ZIP relocation")
   let shutdown = Fixture(); shutdown.jobs = [try job("first",notes:true),try job("second",notes:true)]
   await shutdown.perRecordingZIPStore.blockNext(); shutdown.exportCompletedZIP(); await shutdown.perRecordingZIPStore.waitForEntry()
   let closing = Task { await shutdown.flushZIPExport() }; await Task.yield()

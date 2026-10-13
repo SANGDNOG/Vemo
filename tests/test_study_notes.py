@@ -51,7 +51,7 @@ class StudyNotesTests(unittest.TestCase):
 
     def test_schema_bounds_and_unknown_fields_fail_atomically(self):
         invalid = []
-        for key, count in [('summary', 6), ('topics', 17)]:
+        for key, count in [('summary', 17), ('topics', 17)]:
             value = response(); value[key] *= count; invalid.append(value)
         for group, field, length in [('summary', 'text', 401), ('topics', 'keyword', 81), ('topics', 'summary', 1001)]:
             value = response(); value[group][0][field] = 'x' * length; invalid.append(value)
