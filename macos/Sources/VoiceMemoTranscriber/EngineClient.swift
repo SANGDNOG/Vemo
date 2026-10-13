@@ -3,37 +3,77 @@ import Darwin
 import NativeCore
 
 // Foundation FileHandle.AsyncBytes uses a shared serial IO actor; a silent stderr can block stdout.
-// Each pipe gets its own blocking-reader queue, with bounded queued chunks and explicit overflow failure.
+// Read on demand: the OS pipe supplies backpressure while an event waits for the UI.
 private enum EnginePipeReader {
-    static func chunks(_ handle: FileHandle, label: String) -> AsyncThrowingStream<Data,Error> {
-        AsyncThrowingStream(bufferingPolicy:.bufferingOldest(16)) { continuation in
-            DispatchQueue(label:label,qos:.utility).async {
-                do {
-                    var buffer = [UInt8](repeating:0,count:65_536)
-                    while true {
-                        let count = buffer.withUnsafeMutableBytes { Darwin.read(handle.fileDescriptor,$0.baseAddress,$0.count) }
-                        if count == 0 { break }
-                        if count < 0 { if errno == EINTR { continue }; throw NativeFailure.invalid("엔진 pipe를 읽지 못했습니다.") }
-                        switch continuation.yield(Data(buffer.prefix(count))) {
-                        case .enqueued: break
-                        case .dropped: continuation.finish(throwing:NativeFailure.invalid("엔진 응답 처리가 지연되어 연결을 다시 시작해야 합니다.")); return
-                        case .terminated: return
-                        @unknown default: return
-                        }
+    private final class Reader: @unchecked Sendable {
+        private let descriptor: Int32
+        private let openError: Int32
+        private let queue: DispatchQueue
+        private let lock = NSLock()
+        private var cancelled = false
+        init(_ handle: FileHandle, label: String) {
+            descriptor = fcntl(handle.fileDescriptor,F_DUPFD_CLOEXEC,0)
+            openError = descriptor < 0 ? errno : 0
+            queue = DispatchQueue(label:label,qos:.utility)
+        }
+        // Queued reads retain this owner; its descriptor is never closed during a read.
+        deinit { if descriptor >= 0 { Darwin.close(descriptor) } }
+        private func cancel() { lock.lock(); cancelled = true; lock.unlock() }
+        private func checkCancellation() throws {
+            lock.lock(); let stopped = cancelled; lock.unlock()
+            if stopped { throw CancellationError() }
+        }
+        func next() async throws -> Data? {
+            try await withTaskCancellationHandler {
+                try Task.checkCancellation()
+                return try await withCheckedThrowingContinuation { continuation in
+                    queue.async {
+                        do {
+                            try self.checkCancellation()
+                            guard self.descriptor >= 0 else { throw NativeFailure.invalid("엔진 pipe 열기 오류 (errno \(self.openError)).") }
+                            var buffer = [UInt8](repeating:0,count:65_536)
+                            while true {
+                                try self.checkCancellation()
+                                var fd = pollfd(fd:self.descriptor,events:Int16(POLLIN),revents:0)
+                                let ready = Darwin.poll(&fd,1,100)
+                                if ready == 0 { continue }
+                                if ready < 0 { if errno == EINTR { continue }; throw NativeFailure.invalid("엔진 pipe 대기 오류 (errno \(errno)).") }
+                                try self.checkCancellation()
+                                let count = buffer.withUnsafeMutableBytes { Darwin.read(self.descriptor,$0.baseAddress,$0.count) }
+                                if count < 0 { if errno == EINTR || errno == EAGAIN { continue }; throw NativeFailure.invalid("엔진 pipe 읽기 오류 (errno \(errno)).") }
+                                try self.checkCancellation()
+                                continuation.resume(returning:count == 0 ? nil : Data(buffer.prefix(count))); return
+                            }
+                        } catch { continuation.resume(throwing:error) }
                     }
-                    continuation.finish()
-                } catch { continuation.finish(throwing:error) }
-            }
+                }
+            } onCancel: { self.cancel() }
         }
     }
-    static func drain(_ handle: FileHandle) {
-        DispatchQueue(label:"local.voice-memo.engine.stderr",qos:.utility).async {
-            var buffer = [UInt8](repeating:0,count:65_536)
-            while true {
-                let count = buffer.withUnsafeMutableBytes { Darwin.read(handle.fileDescriptor,$0.baseAddress,$0.count) }
-                if count <= 0 { if count < 0 && errno == EINTR { continue }; break }
+    static func chunks(_ handle: FileHandle, label: String) -> AsyncThrowingStream<Data,Error> {
+        let reader = Reader(handle,label:label)
+        return AsyncThrowingStream(unfolding:{ try await reader.next() })
+    }
+    static func drain(_ handle: FileHandle) -> Task<Void,Never> {
+        Task.detached {
+            do { for try await _ in chunks(handle,label:"local.voice-memo.engine.stderr") { try Task.checkCancellation() } }
+            catch {}
+        }
+    }
+    static func diagnostic(_ error: Error) -> String {
+        if case NativeFailure.invalid(let message) = error { return message }
+        if let decoding = error as? DecodingError {
+            switch decoding {
+            case .dataCorrupted: return "엔진 JSON 응답이 올바르지 않습니다 (dataCorrupted)."
+            case .keyNotFound(let key,_):
+                let safeKey = ["sequence","protocol_version","kind","payload"].contains(key.stringValue) ? key.stringValue : "field"
+                return "엔진 JSON 응답 필드가 없습니다 (keyNotFound: \(safeKey))."
+            case .typeMismatch: return "엔진 JSON 응답 필드 형식이 올바르지 않습니다 (typeMismatch)."
+            case .valueNotFound: return "엔진 JSON 응답 값이 없습니다 (valueNotFound)."
+            @unknown default: return "엔진 JSON 응답 해석 오류입니다."
             }
         }
+        return "엔진 응답 처리 오류입니다."
     }
 }
 actor EngineClient {
@@ -42,6 +82,7 @@ actor EngineClient {
     private var output: FileHandle?
     private var errors: FileHandle?
     private var readTask: Task<Void,Never>?
+    private var errorTask: Task<Void,Never>?
     private var monitorTask: Task<Void,Never>?
     private var captured: [ProcessCleanup.Identity] = []
     private var generation = UUID()
@@ -80,16 +121,21 @@ actor EngineClient {
                 do {
                     var buffer = Data(); var sequence = -1
                     for try await chunk in EnginePipeReader.chunks(stdout.fileHandleForReading,label:"local.voice-memo.engine.stdout") {
+                        try Task.checkCancellation()
                         for byte in chunk {
                             if byte == 10 {
-                                if !buffer.isEmpty { let message = try WireCodec.decode(buffer,after:sequence); sequence = message.sequence; await event(message); buffer.removeAll(keepingCapacity:true) }
+                                if !buffer.isEmpty { let message = try WireCodec.decode(buffer,after:sequence); sequence = message.sequence; try Task.checkCancellation(); await event(message); buffer.removeAll(keepingCapacity:true) }
                             } else { buffer.append(byte); guard buffer.count <= WireCodec.limit else { throw NativeFailure.invalid("엔진 메시지 제한을 초과했습니다.") } }
                         }
                     }
+                    try Task.checkCancellation()
+                    guard buffer.isEmpty else { throw NativeFailure.invalid("엔진 JSON 응답이 끝나기 전에 연결이 종료되었습니다 (truncated_frame).") }
                     await self?.connectionEnded(token:token,message:"엔진 연결이 종료되었습니다. 마지막 결과는 유지됩니다.",callback:ended)
-                } catch { await self?.connectionEnded(token:token,message:"엔진 응답을 읽지 못했습니다. 다시 연결하세요.",callback:ended) }
+                } catch is CancellationError {} catch {
+                    await self?.connectionEnded(token:token,message:"엔진 응답을 읽지 못했습니다: \(EnginePipeReader.diagnostic(error)) 다시 연결하세요.",callback:ended)
+                }
             }
-            EnginePipeReader.drain(stderr.fileHandleForReading)
+            errorTask = EnginePipeReader.drain(stderr.fileHandleForReading)
             monitorTask = Task { [weak self] in
                 while !Task.isCancelled { try? await Task.sleep(for:.milliseconds(250)); guard !Task.isCancelled else { break }; await self?.capture(token:token) }
             }
@@ -106,7 +152,9 @@ actor EngineClient {
     @discardableResult func shutdown() async -> Bool {
         if let cleanup { return await cleanup.value }
         generation = UUID(); monitorTask?.cancel(); monitorTask = nil
-        try? send(WireCommand("shutdown")); try? input?.close(); input = nil
+        readTask?.cancel(); errorTask?.cancel(); errorTask = nil
+        // EOF triggers service shutdown without a write that can block on full stdin.
+        try? input?.close(); input = nil
         let p = process, prior = captured; captured = []
         let task = Task { if let p { return await ProcessCleanup.stop(p,captured:prior) }; return true }; cleanup = task
         let stopped = await task.value
