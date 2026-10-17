@@ -11,10 +11,13 @@ import hashlib
 import json
 import os
 import pathlib
+import posixpath
+import re
 import shutil
 import stat
 import sys
 import tempfile
+import urllib.parse
 import zipfile
 
 PUBLICATION = 'windows/artifacts/publication-20261018-native'
@@ -142,6 +145,37 @@ def verify_archive(path, expected):
             with archive.open(info) as stream:
                 if digest(stream) != entry['sha256']:
                     raise ValueError('ZIP SHA-256 mismatch: ' + info.orig_filename)
+
+
+def verify_markdown_links(path):
+    """Check inline/reference file targets in every Markdown member, not URL/anchor availability."""
+    counts = {'markdown_files': 0, 'relative_links': 0}
+    missing = []
+    destination = r'(?:<([^>\n]+)>|([^\s)]+))'
+    patterns = (r'\[[^\]\n]*\]\(\s*' + destination,
+                r'(?m)^[ \t]{0,3}\[[^\]\n]+\]:[ \t]*' + destination)
+    with zipfile.ZipFile(path) as archive:
+        names = set(archive.namelist())
+        for name in sorted(names):
+            if not name.lower().endswith('.md'):
+                continue
+            counts['markdown_files'] += 1
+            text = archive.read(name).decode('utf-8-sig')
+            for pattern in patterns:
+                for match in re.finditer(pattern, text):
+                    target = match.group(1) or match.group(2)
+                    url = urllib.parse.urlsplit(target)
+                    if url.scheme or url.netloc or not url.path:
+                        continue
+                    counts['relative_links'] += 1
+                    local = urllib.parse.unquote(url.path)
+                    resolved = posixpath.normpath(posixpath.join(posixpath.dirname(name), local))
+                    if (local.startswith('/') or resolved == '..' or resolved.startswith('../')
+                            or (resolved not in names and not any(n.startswith(resolved.rstrip('/') + '/') for n in names))):
+                        missing.append(name + ' -> ' + target)
+    if missing:
+        raise ValueError('Missing/out-of-package Markdown targets:\n' + '\n'.join(missing))
+    return counts
 
 
 def verify_publication(repo):
@@ -279,6 +313,14 @@ def snapshots(repo, publication, index):
 def write_distribution(path, arch, publication, manifest, shared):
     payload = dict(shared)
     payload['README.md'] = quickstart(arch)
+    # The frozen provisioner notice uses licenses/... relative to its own folder.
+    # Supplement that folder with exact shared copies; never rewrite published bytes.
+    for name, data in shared.items():
+        if name.startswith('windows/licenses/'):
+            target = 'windows/provision-win-' + arch + '/' + name.removeprefix('windows/')
+            if target in payload:
+                raise ValueError('Duplicate package destination: ' + target)
+            payload[target] = data
     expected = {name: record(data) for name, data in payload.items()}
     bundles = [prefix + 'win-' + arch for prefix in ('', 'provision-', 'validation-')]
     for name in bundles:
@@ -315,8 +357,10 @@ def write_distribution(path, arch, publication, manifest, shared):
                     with source.open('rb') as stream:
                         shutil.copyfileobj(stream, dest, 1024 * 1024)
     verify_archive(path, expected)
+    markdown = verify_markdown_links(path)
     return {'path': 'dist/' + path.name, 'architecture': arch, 'bytes': path.stat().st_size,
             'sha256': file_digest(path), 'file_count': len(expected),
+            'markdown_links': markdown,
             'package_manifest_sha256': record(package_manifest)['sha256']}
 
 
@@ -355,6 +399,7 @@ def main():
                   'source_script_sha256': file_digest(pathlib.Path(__file__).resolve()),
                   'verification': {'publication_file_hashes': True, 'publication_archive_hashes': True,
                                    'archive_member_hashes_and_windows_paths': True,
+                                   'markdown_relative_targets': True,
                                    'license_coverage': True, 'new_native_execution': False},
                   'documentation': {name: record(shared[name]) for name in ('windows/README.md', 'docs/FUNCTIONAL_PREVIEW.md')},
                   'distributions': outputs}

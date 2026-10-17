@@ -16,6 +16,8 @@ Vemo는 Apple Silicon Mac에서 한국어 중심의 음성을 전사하는 로�
 
 별도 개발 브랜치에는 Android 녹음·Google 연결, Mac 모델 선택·모바일 연결, Windows 기능 프리뷰가 있습니다. 공개 Mac DMG에는 아직 포함되지 않습니다. [Android·Mac 설정과 검증 범위](docs/MOBILE_PREVIEW.md), [Windows 실행·모델 설정 안내](windows/README.md)를 참고하세요. Windows는 서명 없는 x64·ARM64 포터블 빌드이며, 직접 Google OAuth와 폰 자체 AI 처리는 후속 단계입니다.
 
+실제 모델 처리와 Windows VM 검사 결과, 아직 확인하지 못한 항목은 [기능 프리뷰 검증 기록](docs/FUNCTIONAL_PREVIEW.md)에 정리했습니다.
+
 ## 화면 예시
 
 아래는 Vemo의 실제 UI에 가상의 녹음과 전사문을 넣은 예시입니다. 처리 진행률도 설명용 샘플이며 실제 녹음이나 측정 결과가 아닙니다.
