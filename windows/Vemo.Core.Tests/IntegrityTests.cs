@@ -15,6 +15,13 @@ public sealed class IntegrityTests : IDisposable
     LibraryStore Open() => new(P("state"));
     string Audio() { var p = P("source.wav"); File.WriteAllBytes(p, [1, 2, 3]); return p; }
     static void Done(LibraryStore store, string id) { Assert.True(store.TryStart(id)); store.SaveTranscript(id, "old transcript"); store.Complete(id, "old notes"); }
+    static void AssertBlockedLibraryWrite(Action action)
+    {
+        // Replacing library.json with a directory yields IOException on Unix and
+        // UnauthorizedAccessException on Windows; both must still fail the write.
+        var error = Record.Exception(action);
+        Assert.True(error is IOException or UnauthorizedAccessException, error?.ToString() ?? "Blocked library write unexpectedly succeeded.");
+    }
     string Request(LibraryStore store, string recording, byte[] bytes)
     {
         var hash = Convert.ToHexStringLower(SHA256.HashData(bytes)); var dir = P("sync", "recordings", recording, hash); Directory.CreateDirectory(dir);
@@ -108,7 +115,7 @@ public sealed class IntegrityTests : IDisposable
     {
         using var store = Open(); var job = store.Import(Audio()); store.CancelQueued([job.Id]); store.Trash([job.Id]);
         File.Delete(P("state", "library.json")); Directory.CreateDirectory(P("state", "library.json"));
-        Assert.ThrowsAny<IOException>(() => store.Purge([job.Id])); Assert.True(File.Exists(Item(job.Id, "original.wav"))); Assert.Equal(JobState.Cancelled, store.Get(job.Id).State);
+        AssertBlockedLibraryWrite(() => store.Purge([job.Id])); Assert.True(File.Exists(Item(job.Id, "original.wav"))); Assert.Equal(JobState.Cancelled, store.Get(job.Id).State);
     }
     [Fact]
     public async Task ChangedAsrRetryKeepsCommittedOutputsThroughCancellationThenCommitsFreshPair()
@@ -167,7 +174,7 @@ public sealed class IntegrityTests : IDisposable
             var adapter = new MobileFolderAdapter(store); adapter.Register(P("sync")); var recording = Guid.NewGuid().ToString(); Request(store, recording, [1, 2, 3]); await adapter.ScanAsync(); var job = Assert.Single(store.Jobs); id = job.Id; Done(store, id); adapter.Publish(id); result = P("sync", "results", recording, job.AudioSha256, "result.json"); published = File.ReadAllBytes(result);
             store.Fail(id, "retry fixture"); store.UpdateSettings(store.Settings with { Models = new() { WhisperModel = "new.bin" } }); store.Retry([id], true); Assert.True(store.TryStart(id)); store.SaveTranscript(id, "new transcript"); revision = store.Get(id).PendingArtifactRevision!;
             File.Move(P("state", "library.json"), P("saved-library.json")); Directory.CreateDirectory(P("state", "library.json"));
-            Assert.ThrowsAny<IOException>(() => store.Complete(id, "new notes")); Assert.Equal(JobState.GeneratingNotes, store.Get(id).State); Assert.Equal("old transcript", store.ReadTranscript(id)); Assert.Equal("old notes", store.ReadNotes(id)); Assert.Throws<InvalidOperationException>(() => adapter.Publish(id)); Assert.Equal(published, File.ReadAllBytes(result));
+            AssertBlockedLibraryWrite(() => store.Complete(id, "new notes")); Assert.Equal(JobState.GeneratingNotes, store.Get(id).State); Assert.Equal("old transcript", store.ReadTranscript(id)); Assert.Equal("old notes", store.ReadNotes(id)); Assert.Throws<InvalidOperationException>(() => adapter.Publish(id)); Assert.Equal(published, File.ReadAllBytes(result));
             Directory.Delete(P("state", "library.json")); File.Move(P("saved-library.json"), P("state", "library.json"));
         }
         using var reopened = Open(); Assert.Equal(JobState.Queued, reopened.Get(id).State); Assert.Equal(revision, reopened.Get(id).PendingArtifactRevision); Assert.Equal("old transcript", reopened.ReadTranscript(id)); Assert.Equal("old notes", reopened.ReadNotes(id)); Assert.Equal("new transcript", reopened.ReadTranscriptForProcessing(id)); Assert.Equal(published, File.ReadAllBytes(result));
@@ -195,7 +202,7 @@ public sealed class IntegrityTests : IDisposable
             File.Move(P("state", "library.json"), P("saved-library.json")); Directory.CreateDirectory(P("state", "library.json"));
             try
             {
-                Assert.ThrowsAny<IOException>(() => store.Complete(id, "uncommitted NEW notes"));
+                AssertBlockedLibraryWrite(() => store.Complete(id, "uncommitted NEW notes"));
                 Assert.Equal("old transcript", store.ReadTranscript(id)); Assert.Equal("old notes", store.ReadNotes(id)); Assert.Equal(committedRevision, store.Get(id).ArtifactRevision); Assert.Equal("keep old work", File.ReadAllText(Path.Combine(oldWork, "canary"))); Assert.Equal(archived, File.ReadAllBytes(archive));
                 revision = Assert.IsType<string>(store.Get(id).PendingArtifactRevision); Assert.NotEqual(committedRevision, revision);
             }

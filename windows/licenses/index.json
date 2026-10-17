@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "collected_at_utc": "2026-10-17T19:50:13.611984+00:00",
-  "publication_manifest_sha256": "518e151828895869cf5e06b423ee29d9544b9742899741a8ddc2d44ba3bf4191",
+  "publication_manifest_sha256": "5941f231e20e820ba3f0499e029dadf92a093a559639c58567867b9687dfa29f",
   "scope": "Published deps.json package dependencies, both self-contained .NET runtime packs, and the shipped xUnit VS adapter from project.assets.json. Meta packages are conservatively included. No inference runtimes or model weights.",
   "packages": [
     {

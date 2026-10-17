@@ -17,8 +17,8 @@ import sys
 import tempfile
 import zipfile
 
-PUBLICATION = 'windows/artifacts/publication-20261018-ready'
-PUBLICATION_SHA256 = '518e151828895869cf5e06b423ee29d9544b9742899741a8ddc2d44ba3bf4191'
+PUBLICATION = 'windows/artifacts/publication-20261018-native'
+PUBLICATION_SHA256 = '5941f231e20e820ba3f0499e029dadf92a093a559639c58567867b9687dfa29f'
 ARCHES = ('x64', 'arm64')
 BUNDLES = {prefix + 'win-' + arch for arch in ARCHES
            for prefix in ('', 'provision-', 'validation-')}
@@ -212,6 +212,8 @@ ZIP 전체를 쓰기 가능한 로컬 폴더에 풀어 주세요. 파일을 ZIP 
 모델 가중치·음성/노트 추론 런타임·개인 인증정보는 포함하지 않습니다. 서명되지 않은 포터블 프리뷰입니다.
 
 ## 처음 사용하기
+
+먼저 [Microsoft Visual C++ v14 재배포 패키지](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)를 PC 아키텍처에 맞게 설치하세요. 별도 음성·노트 런타임이 필요로 하며 Vemo의 .NET 포함과 별개입니다. 설치 파일은 Microsoft 공식 문서에서 받습니다.
 
 1. 압축을 푼 폴더에서 PowerShell을 열고 아래 명령으로 CPU 기본 모델(turbo + 9B)을 받으세요. 여러 GB의 다운로드와 충분한 메모리/저장 공간이 필요합니다. 새 설치 폴더를 사용하세요.
 
