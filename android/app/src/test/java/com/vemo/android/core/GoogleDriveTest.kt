@@ -148,6 +148,34 @@ class GoogleDriveTest {
             assertTrue(fake.requests.none { it.method == "PUT" })
         }
     }
+    @Test fun resumableSessionAcceptsOptionalCredentialAndRejectsMalformedVariants() {
+        val base = "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=synthetic"
+        for (suffix in listOf("", "&session_crd=Synthetic_-123", "&session_crd=" + "a".repeat(2048))) {
+            val fake = FakeDrive().apply { sessionLocation = base + suffix }
+            GoogleDriveCloud(api(fake), binding, Reservations()).putImmutable("audio.m4a", 5, "audio/mp4") {
+                ByteArrayInputStream("audio".toByteArray())
+            }
+            assertEquals(1, fake.requests.count { it.method == "PUT" })
+        }
+        for (suffix in listOf("&session_crd=", "&session_crd", "&session_crd=a&session_crd=b",
+            "&session_crd=a%2Fb", "&session_crd=" + "a".repeat(2049),
+            "&session_crd=a&unknown=b", "&session_crd=a&uploadType=media")) {
+            val requests = mutableListOf<HttpRequest>()
+            val api = GoogleDriveApi({ "synthetic" }, HttpTransport { request ->
+                requests.add(request)
+                HttpReply(200, mapOf("Location" to base + suffix), ByteArrayInputStream(byteArrayOf()))
+            })
+            var sourceOpened = false
+            assertThrows(ProtocolException::class.java) {
+                api.upload("{}".toByteArray(), 5, "audio/mp4") {
+                    sourceOpened = true
+                    ByteArrayInputStream("audio".toByteArray())
+                }
+            }
+            assertFalse(sourceOpened)
+            assertEquals(listOf("POST"), requests.map { it.method })
+        }
+    }
     @Test fun cancellationStopsRequestsWithoutOpeningAuthorizationOrWriting() {
         val fake = FakeDrive()
         val api = GoogleDriveApi({ "synthetic" }, fake) { true }

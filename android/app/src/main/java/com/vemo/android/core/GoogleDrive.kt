@@ -62,9 +62,15 @@ class GoogleDriveApi(private val token: () -> String, private val transport: Htt
         }
         // A resumable Location is the sole allowed reference, checked before sending credentials or audio.
         val url = try { location.toHttpUrl() } catch (_: Exception) { throw ProtocolException("Invalid Drive upload session") }
+        // Google may add an opaque session credential. Preserve it only in its bounded, single-value form.
+        val sessionCredentials = url.queryParameterValues("session_crd")
+        val expectedKeys = if (sessionCredentials.isEmpty()) setOf("uploadType", "upload_id")
+            else setOf("uploadType", "upload_id", "session_crd")
         if (location.length > 8192 || url.scheme != "https" || url.host != "www.googleapis.com" || url.port != 443 ||
             url.username.isNotEmpty() || url.password.isNotEmpty() || url.fragment != null || url.encodedPath != "/upload/drive/v3/files" ||
-            url.queryParameterNames != setOf("uploadType", "upload_id") || url.queryParameterValues("uploadType") != listOf("resumable") ||
+            url.queryParameterNames != expectedKeys ||
+            (sessionCredentials.isNotEmpty() && (sessionCredentials.size != 1 || !Regex("[A-Za-z0-9_-]{1,2048}").matches(sessionCredentials.single().orEmpty()))) ||
+            url.queryParameterValues("uploadType") != listOf("resumable") ||
             url.queryParameterValues("upload_id").size != 1 || !Regex("[A-Za-z0-9_-]{1,2048}").matches(url.queryParameter("upload_id").orEmpty())) throw ProtocolException("Untrusted Drive upload session")
         execute(HttpRequest("PUT", url.toUri(), size = size, mime = mime, body = source)).use {
             if (it.code !in listOf(200, 201, 409)) throw ProtocolException("Drive upload incomplete (HTTP ${it.code}); retry with same identity")
