@@ -14,7 +14,7 @@ Vemo는 Apple Silicon Mac에서 한국어 중심의 음성을 전사하는 로�
 
 ## 개발 중인 모바일 연결
 
-별도 개발 브랜치에는 Android 녹음 프리뷰와 Mac 모델 선택·모바일 연결 코드가 있습니다. 설치된 build 23과 공개 DMG에는 아직 포함되지 않습니다. [프리뷰 설정·빌드·검증 범위](docs/MOBILE_PREVIEW.md)를 참고하세요. Android의 Google Drive 자동 왕복, Windows 앱, 폰 자체 AI 처리는 후속 단계입니다.
+별도 개발 브랜치에는 Android 녹음·Google 연결, Mac 모델 선택·모바일 연결, Windows 기능 프리뷰가 있습니다. 공개 Mac DMG에는 아직 포함되지 않습니다. [Android·Mac 설정과 검증 범위](docs/MOBILE_PREVIEW.md), [Windows 실행·모델 설정 안내](windows/README.md)를 참고하세요. Windows는 서명 없는 x64·ARM64 포터블 빌드이며, 직접 Google OAuth와 폰 자체 AI 처리는 후속 단계입니다.
 
 ## 화면 예시
 

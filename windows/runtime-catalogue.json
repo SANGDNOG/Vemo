@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "runtimes": [
+    {
+      "file": "llama-b11714-bin-win-cpu-x64.zip",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11714/llama-b11714-bin-win-cpu-x64.zip",
+      "size": 19662606,
+      "sha256": "f78eded047061a3f86372db426797400a2f1bb0ec37868d5927dd820eb3386c0",
+      "actual_sha256": "f78eded047061a3f86372db426797400a2f1bb0ec37868d5927dd820eb3386c0",
+      "publisher_checksum_available": true,
+      "kind": "runtime",
+      "version": "b11714",
+      "architecture": "x64",
+      "engine": "llama"
+    },
+    {
+      "file": "whisper-bin-win-cpu-arm64.zip",
+      "url": "https://github.com/ggml-org/whisper.cpp/releases/download/b5454/whisper-bin-win-cpu-arm64.zip",
+      "size": 4371193,
+      "sha256": "28c37e7b598c3d9bbfef94f3bd67f2ee6f12b7c86f3da5edcf5e4308d615ff6d",
+      "actual_sha256": "28c37e7b598c3d9bbfef94f3bd67f2ee6f12b7c86f3da5edcf5e4308d615ff6d",
+      "publisher_checksum_available": true,
+      "kind": "runtime",
+      "version": "b5454",
+      "architecture": "arm64",
+      "engine": "whisper"
+    },
+    {
+      "file": "whisper-bin-x64.zip",
+      "url": "https://github.com/ggml-org/whisper.cpp/releases/download/b5454/whisper-bin-x64.zip",
+      "size": 8928640,
+      "sha256": "6ba69e3482d7826214f90a6a9c84ca07782aec1e1d0c6a7c30c994fd5d816ccb",
+      "actual_sha256": "6ba69e3482d7826214f90a6a9c84ca07782aec1e1d0c6a7c30c994fd5d816ccb",
+      "publisher_checksum_available": true,
+      "kind": "runtime",
+      "version": "b5454",
+      "architecture": "x64",
+      "engine": "whisper"
+    },
+    {
+      "file": "llama-b11714-bin-win-cpu-arm64.zip",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11714/llama-b11714-bin-win-cpu-arm64.zip",
+      "size": 12549882,
+      "sha256": "0cd03bc416426424575c3426be288858ad322eed7f68f83725e0b41a67016bad",
+      "actual_sha256": "0cd03bc416426424575c3426be288858ad322eed7f68f83725e0b41a67016bad",
+      "publisher_checksum_available": true,
+      "kind": "runtime",
+      "version": "b11714",
+      "architecture": "arm64",
+      "engine": "llama"
+    }
+  ],
+  "models": [
+    {
+      "repo": "ggerganov/whisper.cpp",
+      "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
+      "file": "ggml-large-v3-turbo.bin",
+      "size": 1624555275,
+      "sha256": "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
+      "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-large-v3-turbo.bin"
+    },
+    {
+      "repo": "ggerganov/whisper.cpp",
+      "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
+      "file": "ggml-small.bin",
+      "size": 487601967,
+      "sha256": "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+      "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small.bin"
+    },
+    {
+      "repo": "unsloth/Qwen3.5-9B-GGUF",
+      "revision": "3885219b6810b007914f3a7950a8d1b469d598a5",
+      "file": "Qwen3.5-9B-Q4_K_M.gguf",
+      "size": 5680522464,
+      "sha256": "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8",
+      "url": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/Qwen3.5-9B-Q4_K_M.gguf"
+    },
+    {
+      "repo": "unsloth/Qwen3.5-27B-GGUF",
+      "revision": "3221f178a6b842d04f1fb42f1c413534adcc0a6a",
+      "file": "Qwen3.5-27B-Q4_K_M.gguf",
+      "size": 16740812704,
+      "sha256": "84b5f7f112156d63836a01a69dc3f11a6ba63b10a23b8ca7a7efaf52d5a2d806",
+      "url": "https://huggingface.co/unsloth/Qwen3.5-27B-GGUF/resolve/3221f178a6b842d04f1fb42f1c413534adcc0a6a/Qwen3.5-27B-Q4_K_M.gguf"
+    }
+  ],
+  "ffmpeg": {
+    "file": "ffmpeg-n8.1.3-18-g46d899d7a0-win64-lgpl-8.1.zip",
+    "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-16-13-04/ffmpeg-n8.1.3-18-g46d899d7a0-win64-lgpl-8.1.zip",
+    "size": 170544161,
+    "sha256": "186cb8509a86ca2eb6146870661b69a224ccd486f384f6a5f441fa775f79cc04",
+    "version": "n8.1.3-18-g46d899d7a0 / autobuild-2026-10-16-13-04",
+    "architecture": "x64",
+    "license": "LGPL build; preserve archive licenses and source/build information",
+    "provider": "BtbN/FFmpeg-Builds, provider linked by ffmpeg.org"
+  }
+}
