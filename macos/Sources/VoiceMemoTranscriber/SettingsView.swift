@@ -24,7 +24,8 @@ struct SettingsView: View {
                 Text("iCloud Drive · Google Drive · Dropbox · OneDrive의 Mac 동기화 폴더를 선택할 수 있습니다. 같은 Drive 안에 Recordings(입력)와 Notes(결과)를 따로 두세요. 결과는 로컬 폴더에 저장하며 폰으로의 업로드는 Drive 앱이 진행합니다.").font(.caption).foregroundStyle(.secondary)
                 HStack { Text(model.connection); Spacer(); Button("다시 연결") { model.connect() } }
             }
-            Section("Android Vemo 연결 · 프리뷰") {
+            GoogleSettingsView(model: model.googleConnection, onSync: { model.checkGoogleSync() })
+            Section("Android Vemo · 로컬 동기화 폴더") {
                 Text(model.mobileSyncFolder.isEmpty ? "동기화 폴더를 선택하세요" : model.mobileSyncFolder)
                     .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 HStack {
@@ -36,7 +37,7 @@ struct SettingsView: View {
                 Text(model.mobileSyncStatus).font(.caption).foregroundStyle(.secondary)
                 Text("클라우드 데스크톱 앱으로 동기화한 Vemo 전용 폴더를 선택하세요. 일반 입력·결과·ZIP 폴더와 분리합니다. 폰에서 녹음 완료 후 전사와 노트를 만들고 결과를 같은 폴더로 돌려보냅니다.")
                     .font(.caption).foregroundStyle(.secondary)
-                Text("Android 자동 연결은 현재 Nextcloud 방식부터 검증합니다. Google Drive는 PC의 폴더 연결을 사용할 수 있으며, 폰 자동 왕복은 아직 검증 중입니다.")
+                Text("Nextcloud 등 데스크톱 동기화 앱을 사용하는 연결입니다. Google 직접 연결은 위의 별도 설정을 사용하며, 실제 폰과의 왕복은 검증 중입니다.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("ZIP 내보내기") {

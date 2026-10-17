@@ -14,6 +14,7 @@ import android.text.InputType
 import android.view.*
 import android.widget.*
 import com.vemo.android.core.*
+import com.google.android.gms.auth.api.identity.Identity
 import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
 
@@ -41,7 +42,7 @@ class MainActivity : Activity() {
     }
     private val poll = object : Runnable {
         override fun run() {
-            if (!vemo().gate.busy() && vemo().vault.configured() && vemo().store.list().any { it.mode == Mode.DESKTOP && it.uploaded && vemo().store.result(it) == null }) vemo().sync()
+            if (!vemo().gate.busy() && vemo().cloudConfigured() && vemo().store.list().any { it.mode == Mode.DESKTOP && it.uploaded && vemo().store.result(it) == null }) vemo().sync()
             handler.postDelayed(this, 30_000)
         }
     }
@@ -119,7 +120,7 @@ class MainActivity : Activity() {
         if (active == null) {
             val group = RadioGroup(this)
             val local = RadioButton(this).apply { id = View.generateViewId(); text = "녹음만 · 폴더 저장/공유" }
-            val desktop = RadioButton(this).apply { id = View.generateViewId(); text = "PC 자동 처리 · Nextcloud 연결 시" }
+            val desktop = RadioButton(this).apply { id = View.generateViewId(); text = "PC 자동 처리 · 클라우드 연결 시" }
             group.addView(local); group.addView(desktop); group.check(if (vemo().mode() == Mode.DESKTOP) desktop.id else local.id)
             group.setOnCheckedChangeListener { _, selected -> vemo().preferences.edit().putString("mode", if (selected == desktop.id) "desktop" else "record_only").apply() }
             content.addView(group)
@@ -170,7 +171,7 @@ class MainActivity : Activity() {
             })
         }
         gap()
-        if (vemo().vault.configured()) content.addView(button(if (vemo().syncing) "동기화 중…" else "완료한 녹음 업로드 / 결과 확인") { vemo().sync(true) }.apply { isEnabled = !vemo().gate.busy() })
+        if (vemo().cloudConfigured()) content.addView(button(if (vemo().syncing) "동기화 중…" else "완료한 녹음 업로드 / 결과 확인") { vemo().sync(true) }.apply { isEnabled = !vemo().gate.busy() })
     }
     private fun detail(id: String) {
         val item = try { vemo().store.get(id) } catch (_: Exception) { detailId = null; recordings(); return }
@@ -187,7 +188,7 @@ class MainActivity : Activity() {
                 addView(button("폴더에 복사") { vemo().export(id) }, LinearLayout.LayoutParams(0, dp(52), 1f))
                 addView(button("공유") { try { startActivity(Intent.createChooser(ShareAudio.intent(this@MainActivity, item), "녹음 공유")) } catch (error: Exception) { vemo().notify(safeError(error)) } }, LinearLayout.LayoutParams(0, dp(52), 1f))
             })
-            if (vemo().vault.configured()) content.addView(button("동기화 다시 시도 / PC 결과 확인") { vemo().sync(true) }.apply { isEnabled = !vemo().gate.busy() })
+            if (vemo().cloudConfigured()) content.addView(button("동기화 다시 시도 / PC 결과 확인") { vemo().sync(true) }.apply { isEnabled = !vemo().gate.busy() })
         } else if (item.state == CaptureState.INTERRUPTED) content.addView(button("보존한 오디오 복구 시도") { vemo().recover(id) })
         gap()
         if (result != null) {
@@ -198,7 +199,7 @@ class MainActivity : Activity() {
             content.addView(text(result.notes).apply { setTextIsSelectable(true) })
         } else if (item.mode == Mode.DESKTOP && item.uploadable) {
             label("PC 결과 대기 중")
-            content.addView(text(if (item.uploaded) "서버에 저장했습니다. 등록한 PC에서 전사와 노트가 완료되면 여기에 표시됩니다." else "Nextcloud 연결 후 완료한 녹음을 업로드하세요. 기기 원본은 오프라인에서도 유지됩니다.", 15f, muted))
+            content.addView(text(if (item.uploaded) "서버에 저장했습니다. 등록한 PC에서 전사와 노트가 완료되면 여기에 표시됩니다." else "클라우드 연결 후 완료한 녹음을 업로드하세요. 기기 원본은 오프라인에서도 유지됩니다.", 15f, muted))
         }
         gap()
         if (item.state !in setOf(CaptureState.RECORDING, CaptureState.PAUSED, CaptureState.FINALIZING)) content.addView(button("목록에서 숨기기") {
@@ -208,6 +209,8 @@ class MainActivity : Activity() {
     }
     private fun settings() {
         label("저장 및 연결")
+        content.addView(text("자동 동기화: " + if (vemo().preferences.getString("provider", "nextcloud") == "google") "Google Drive" else "Nextcloud", 14f, muted))
+        if (vemo().syncing && vemo().preferences.getString("provider", "nextcloud") == "google") content.addView(button("Drive 동기화 취소") { vemo().google.cancel(); vemo().notify("Drive 동기화 취소 요청 · 다시 시도할 수 있습니다.") })
         content.addView(text("기기 원본은 앱 내부에 보관합니다. 앱 삭제/데이터 초기화 전에는 폴더 복사 또는 공유로 내보내세요.", 14f, muted))
         gap()
         label("시스템 저장 폴더")
@@ -221,6 +224,8 @@ class MainActivity : Activity() {
             vemo().preferences.edit().remove("folder").apply(); render()
         })
         content.addView(text("표시되는 폴더 공급자는 Android가 결정합니다. Google Drive가 폴더 선택에 표시되지 않으면 녹음의 공유 버튼에서 Drive를 선택하세요. 공유는 자동 PC 처리 연결과 별개입니다.", 13f, muted))
+        gap(20)
+        googleSettings()
         gap(20)
         label("Nextcloud · 선택 사항")
         content.addView(text("HTTPS WebDAV 폴더로 완료한 녹음과 PC 결과를 교환합니다. 데스크톱에서 같은 폴더를 등록하세요.", 14f, muted))
@@ -252,6 +257,7 @@ class MainActivity : Activity() {
                     val bytes = cloud.read("processor.json", Wire.MAX_JSON)
                     val processor = bytes?.let { Wire.processor(it) }
                     vemo().vault.save(credentials)
+                    vemo().preferences.edit().putString("provider", "nextcloud").apply()
                     vemo().message = if (processor == null) "로그인 정보를 보호 저장했습니다. 선택한 폴더에 processor.json이 없습니다. PC에서 먼저 등록하세요." else "Nextcloud 연결됨 · ${processor.displayName}"
                     SyncJobService.schedule(this)
                 } catch (error: Exception) { vemo().message = safeError(error) }
@@ -263,10 +269,93 @@ class MainActivity : Activity() {
             try { vemo().vault.clear(); getSystemService(android.app.job.JobScheduler::class.java).cancel(8); vemo().notify("Nextcloud 연결을 해제했습니다. 기기 원본은 보존했습니다."); render() }
             catch (error: Exception) { vemo().notify(safeError(error)) }
         })
-        content.addView(text("비밀번호는 Android Keystore로 암호화합니다. TLS 인증서 검증과 콘텐츠 충돌 보호를 사용합니다. Google Drive 자동 동기화는 이 버전에서 제공하지 않습니다.", 13f, muted))
+        content.addView(text("비밀번호는 Android Keystore로 암호화합니다. TLS 인증서 검증과 콘텐츠 충돌 보호를 사용합니다.", 13f, muted))
+    }
+    private fun googleSettings() {
+        label("Google Drive · 선택 사항")
+        val binding = try { vemo().google.binding() } catch (_: Exception) { null }
+        content.addView(text(if (binding == null) "Mac에서 먼저 Google Drive 처리기를 등록한 뒤 연결하세요." else "Google 계정 ID: ${binding.accountId}\n연결된 Drive root: ${binding.rootId}\n처리기: ${binding.processorId}", 14f, muted))
+        content.addView(text("Vemo 앱 파일 권한만 요청합니다. Google 프로젝트 vemo-511910의 Android OAuth 등록이 필요합니다.", 13f, muted))
+        content.addView(button("Google 로그인 / 재승인 및 폴더 선택", true) {
+            if (!vemo().gate.beginSync()) { vemo().notify("녹음/동기화가 끝난 뒤 연결하세요."); return@button }
+            Identity.getAuthorizationClient(this).authorize(vemo().google.request())
+                .addOnSuccessListener { result ->
+                    vemo().gate.endSync()
+                    try {
+                        if (result.hasResolution()) {
+                            if (isFinishing || isDestroyed || !hasWindowFocus()) throw AuthException()
+                            startIntentSenderForResult(result.pendingIntent!!.intentSender, 61, null, 0, 0, 0)
+                        } else discoverGoogle(result.accessToken ?: throw AuthException())
+                    } catch (_: Exception) { vemo().notify("Google 승인 화면을 열 수 없습니다. 다시 시도하세요.") }
+                }.addOnFailureListener { _ ->
+                    vemo().gate.endSync()
+                    vemo().notify("Google 로그인 실패 · Cloud 프로젝트의 Android 패키지/서명 등록과 네트워크를 확인하세요.")
+                }
+        })
+        if (binding != null) {
+            content.addView(button("이 Google Drive 연결 사용") {
+                if (vemo().gate.busy()) { vemo().notify("진행 중 작업을 마친 뒤 변경하세요."); return@button }
+                vemo().preferences.edit().putString("provider", "google").apply()
+                vemo().notify("Google Drive 연결을 선택했습니다."); SyncJobService.schedule(this)
+            })
+            content.addView(button("Google Drive 연결 해제") {
+                if (vemo().gate.busy()) { vemo().notify("진행 중 작업을 마친 뒤 해제하세요."); return@button }
+                try {
+                    vemo().google.disconnect()
+                    getSystemService(android.app.job.JobScheduler::class.java).cancel(8)
+                    vemo().notify("이 기기의 Google Drive 연결을 해제했습니다. 원본과 녹음별 이전 연결은 보존했습니다.")
+                    render()
+                } catch (error: Exception) { vemo().notify(safeError(error)) }
+            })
+        }
+    }
+    private fun discoverGoogle(token: String) {
+        if (!vemo().gate.beginSync()) { vemo().notify("진행 중 작업 후 다시 승인하세요."); return }
+        vemo().google.accept(token)
+        vemo().io.execute {
+            try {
+                val api = vemo().google.api()
+                val account = api.accountId()
+                val roots = api.discoverRoots()
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed && hasWindowFocus()) {
+                        if (roots.isEmpty()) vemo().notify("접근 가능한 Vemo root가 없습니다. 같은 Google 계정으로 Mac에서 먼저 등록하세요.")
+                        else AlertDialog.Builder(this).setTitle("Mac 처리기 폴더 선택")
+                            .setItems(roots.map { "${it.name} · ${it.processorId} · ${it.id}" }.toTypedArray()) { _, index ->
+                                selectGoogle(DriveBinding(account, roots[index].id, roots[index].processorId))
+                            }.setNegativeButton("취소", null).show()
+                    } else vemo().notify("설정에서 Google 연결을 다시 눌러 폴더를 선택하세요.")
+                }
+            } catch (error: Exception) {
+                if (error is AuthException) vemo().google.invalidate()
+                vemo().notify(safeError(error))
+            } finally { vemo().gate.endSync() }
+        }
+    }
+    private fun selectGoogle(binding: DriveBinding) {
+        if (!vemo().gate.beginSync()) { vemo().notify("진행 중 작업 후 다시 연결하세요."); return }
+        vemo().io.execute {
+            try {
+                vemo().google.select(binding)
+                vemo().preferences.edit().putString("provider", "google").apply()
+                vemo().notify("Google Drive 연결됨 · 기존 녹음의 계정/폴더/처리기 연결은 보존합니다.")
+                SyncJobService.schedule(this)
+                runOnUiThread { if (!isFinishing && !isDestroyed) render() }
+            } catch (error: Exception) { vemo().notify(safeError(error)) }
+            finally { vemo().gate.endSync() }
+        }
     }
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 61) {
+            if (resultCode != RESULT_OK) { vemo().notify("Google 승인을 취소했습니다. 기존 연결은 보존했습니다."); return }
+            try {
+                val result = Identity.getAuthorizationClient(this).getAuthorizationResultFromIntent(data)
+                val token = result.accessToken ?: throw AuthException()
+                discoverGoogle(token)
+            } catch (_: Exception) { vemo().notify("Google 승인을 완료하지 못했습니다. 설정에서 다시 연결하세요.") }
+            return
+        }
         if (requestCode == 51 && resultCode == RESULT_OK) {
             val uri = data?.data ?: return
             try {

@@ -1,6 +1,11 @@
 import Foundation
 import Darwin
 
+public enum MobileSyncNamespace: Sendable {
+    case localFolder
+    case googleDrive
+}
+
 /// Exchanges completed recording/result JSON with a user-selected LOCAL synced
 /// folder. Successful writes are local receipts, not remote upload confirmations.
 public actor MobileSyncBroker {
@@ -27,11 +32,27 @@ public actor MobileSyncBroker {
         let notes_markdown: String
     }
     private let root: URL
+    private let namespace: MobileSyncNamespace
     private var busy = false
-    private var native: URL { root.appendingPathComponent("native") }
+    private var native: URL {
+        let base = root.appendingPathComponent("native")
+        return namespace == .googleDrive ? base.appendingPathComponent("google-mobile") : base
+    }
     private var registryURL: URL { native.appendingPathComponent("mobile-sync.json") }
 
-    public init(root: URL) { self.root = root.standardizedFileURL }
+    public init(root: URL, namespace: MobileSyncNamespace = .localFolder) {
+        self.root = root.standardizedFileURL
+        self.namespace = namespace
+    }
+
+    /// Persist identity before remote root registration, retaining the real
+    /// artifact root while isolating provider-specific mappings and locks.
+    public func processorIdentity() throws -> String {
+        let lock = try begin(); defer { end(lock) }
+        let registry = try load()
+        try save(registry)
+        return registry.processorID
+    }
 
     private func begin() throws -> Int32 {
         guard !busy else { throw BrokerFailure("broker_busy", "모바일 폴더 작업이 진행 중입니다.") }
@@ -84,7 +105,15 @@ public actor MobileSyncBroker {
               !displayName.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
               displayName.utf8.count <= 1024 else { throw BrokerFailure("invalid_sync_configuration", "로컬 동기화 폴더와 처리기 이름을 확인하세요.") }
         let path = syncRoot.standardizedFileURL
-        try FolderConnection.validate(input: root, output: path)
+        // Drive's owned mirror is intentionally inside stateRoot. Exempt only
+        // its canonical digest directory; user-selected local folders and all
+        // other internal directories retain the overlap prohibition.
+        let googleCache = root.appendingPathComponent("native/google-drive/cache")
+        let isGoogleCache = namespace == .googleDrive
+            && path.deletingLastPathComponent().path == googleCache.path
+            && (try? MobileSyncValidation.hash(path.lastPathComponent)) != nil
+        if isGoogleCache { try BrokerFiles.noLinks(path) }
+        else { try FolderConnection.validate(input: root, output: path) }
         let directory = try MobileSyncFiles.Directory(path)
         var info = stat(); guard fstat(directory.fd, &info) == 0 else { throw BrokerFiles.fail() }
         var registry = try load()

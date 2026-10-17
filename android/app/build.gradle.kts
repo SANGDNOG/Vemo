@@ -19,6 +19,7 @@ android {
     lint { abortOnError = true; warningsAsErrors = false; disable += setOf("NewerVersionAvailable", "AndroidGradlePluginVersion") }
 }
 dependencies {
+    implementation("com.google.android.gms:play-services-auth:22.0.0")
     implementation("com.google.code.gson:gson:2.13.2")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     testImplementation("junit:junit:4.13.2")

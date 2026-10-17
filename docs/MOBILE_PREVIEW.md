@@ -4,9 +4,9 @@
 
 ## 저장 방식
 
-- **Mac / Windows 설계:** 사용자가 Google Drive 데스크톱 앱 또는 Nextcloud 동기화 앱을 설치한 뒤, Vemo에서 로컬 동기화 폴더를 선택합니다. 별도의 Vemo Google Cloud 프로젝트나 Google 로그인이 필요한 방식이 아닙니다. 현재 실행 가능한 데스크톱 앱은 Mac이며 Windows 구현/검증은 후속 단계입니다.
+- **Mac:** Google OAuth 직접 연결을 추가하는 중입니다. 기존 Google Drive 데스크톱 앱·Nextcloud 로컬 동기화 폴더 선택도 유지합니다. Windows 구현과 검증은 후속 단계입니다.
 - **Android:** 녹음은 앱 내부에 먼저 저장합니다. 기기 폴더를 선택해 복사하거나 공유 메뉴로 Drive 등 다른 앱에 보낼 수 있습니다. 기본 Drive 앱이 PC처럼 일반 동기화 폴더를 제공한다고 가정하지 않습니다.
-- **Android 자동 왕복:** 이번 연결 구현은 선택 사항인 Nextcloud HTTPS WebDAV를 사용합니다. Google Drive 자동 왕복은 Android 공급자 권한과 결과 접근을 추가 검증해야 하므로 아직 지원 완료로 표시하지 않습니다.
+- **Android 자동 왕복:** Nextcloud HTTPS WebDAV 또는 Google Drive OAuth 연결을 선택합니다. Google 연결 코드는 구현됐으며 실제 계정의 Android↔Mac 왕복은 검증 중입니다.
 - 녹음만 모드는 파일 저장/업로드만 합니다. PC 자동 처리 모드는 지정한 PC가 전사·제목·상세 노트를 만들고 완료 결과를 폰에 돌려줍니다. 폰 자체 AI 처리 기능은 후속 단계입니다.
 
 ## Nextcloud 시험 연결
@@ -18,6 +18,22 @@
 5. PC의 모델과 결과 폴더를 준비하고 처리를 켭니다. 전사와 노트가 완료되면 결과가 동기화 폴더에 저장되고, Nextcloud 업로드 후 폰에서 확인할 수 있습니다.
 
 `로컬 폴더 저장 완료`는 서버 도착 확인과 다릅니다. PC가 꺼져 있거나 네트워크가 없으면 녹음은 보존되고 연결 후 처리를 계속합니다. 다른 PC가 이미 등록된 폴더는 자동으로 덮어쓰지 않습니다.
+
+## Google OAuth 개발 프리뷰
+
+현재 공개 DMG와 설치된 Mac build 23에는 이 기능이 없습니다. 소스 개발판을 대상으로 하며, 실제 계정 왕복을 검증하기 전에는 기존 녹음 대신 별도 테스트 폴더와 합성 녹음으로 확인합니다.
+
+1. 같은 Google Cloud 프로젝트에서 Drive API를 켜고 OAuth 동의 화면을 설정합니다. 권한은 `https://www.googleapis.com/auth/drive.file`만 사용합니다.
+2. Desktop 클라이언트를 만들고 생성 시 JSON을 저장합니다. Google이 보안 비밀번호를 가린 뒤에는 다시 다운로드할 수 없을 수 있습니다. 이 경우 같은 클라이언트에 새 보안 비밀번호를 추가하고 생성 화면에서 JSON을 저장합니다. 파일과 토큰을 저장소에 커밋하지 않습니다.
+3. Android 클라이언트에는 `com.vemo.android`와 설치할 APK의 서명 인증서 SHA-1을 등록합니다. 다른 개발자의 debug 키나 release 서명은 별도 등록해야 합니다. 저장소에 개인 서명 키를 공유하지 않습니다.
+4. 테스트 상태에서는 사용할 계정을 테스트 사용자에 등록합니다. Mac 개발판 설정의 **Google Drive → OAuth JSON 선택 → Google 연결**에서 브라우저 승인을 진행합니다. Mac은 전용 `Vemo 테스트` 폴더와 처리기 정보를 준비합니다.
+5. Android 설정에서 Google Drive를 선택하고 같은 계정으로 승인합니다. Mac이 만든 전용 폴더를 선택한 뒤 완료 녹음을 동기화합니다.
+
+`drive.file`은 앱이 만들거나 사용자가 앱에 허용한 파일에 대한 권한입니다. 임의의 기존 폴더를 선택했다고 그 안의 모든 파일에 대한 접근이 생기지는 않습니다. 같은 프로젝트의 두 클라이언트가 전용 파일을 공유할 수 있는지는 실계정 시험으로 확인해야 합니다.
+
+Mac의 refresh token은 로컬 Keychain에, 가져온 JSON은 앱 전용 위치에 사용자 전용 권한으로 저장합니다. 연결 해제는 로컬 토큰만 삭제하며 Google 파일이나 계정의 앱 권한을 지우지 않습니다. 현재 Mac 프리뷰는 최초 계정·폴더 연결을 유지하고 다른 계정으로 자동 전환하지 않습니다. 테스트 상태의 OAuth 토큰 만료 등으로 재승인이 필요할 수 있습니다.
+
+참고: [Google 네이티브 앱 OAuth](https://developers.google.com/identity/protocols/oauth2/native-app), [Drive 권한 범위](https://developers.google.com/workspace/drive/api/guides/api-specific-auth).
 
 ## 모델 선택
 
@@ -49,9 +65,9 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ![Android 녹음 화면 — API 36 에뮬레이터](images/android-preview.png)
 
-Google Drive를 쓰려면 Android의 공유 메뉴에서 Drive로 녹음을 보내고, Mac에서는 Drive 앱이 내려받은 입력 폴더를 기존 **Drive · 파일 폴더**로 지정할 수 있습니다. 이는 수동 전달이며, Android Vemo 앱 안으로 전사·노트가 자동으로 돌아오는 기능은 아직 구현되지 않았습니다. Google Cloud 프로젝트나 OAuth 등록은 이 방식에 필요하지 않습니다.
+Google Drive의 수동 전달도 유지합니다. Android 공유 메뉴로 Drive에 녹음을 보내고 Mac의 **Drive · 파일 폴더**로 가져오는 방식은 OAuth 등록이 필요하지 않으며, 처리 결과를 Android 앱으로 자동 반환하지는 않습니다.
 
-## 이번 개발 단계의 검증
+## 녹음·모델 선택 단계의 검증 (OAuth 추가 전)
 
 - Mac 소스 빌드 성공. 기존 native broker 검사 723항목, 자동 처리 coordinator 61항목 통과. 모바일 broker는 10개 합성 사례를 별도 assertion runner로 실행했습니다. 현재 Command Line Tools 환경에는 XCTest가 없어 `swift test` 성공으로 표시하지 않습니다.
 - Python 3.12 전체 단위·회귀 검사 199개 통과(181.424초). 모델 자체 정확도 평가는 이 숫자에 포함되지 않습니다.
@@ -59,3 +75,12 @@ Google Drive를 쓰려면 Android의 공유 메뉴에서 Drive로 녹음을 보�
 - API 36 에뮬레이터에서 녹음·일시정지·재개·완료·다시 열기·읽기 전용 공유 smoke test 통과.
 - 실제 Kotlin marker → Swift broker → Python import → Swift result → Kotlin result를 가상 파일로 연결해 날짜, 내용, 중복 재실행 및 휴지통 영구 삭제 후 재수집 방지를 확인했습니다. 클라우드 서버 통신 검증과는 구분합니다.
 - 이번 작업으로 설치된 Mac build 23이나 공개 DMG를 교체하지 않았습니다.
+
+## Google OAuth 추가 검증 (2026-10-17)
+
+- Desktop·Android OAuth 클라이언트를 같은 테스트 프로젝트에 등록했습니다. Mac의 브라우저 승인은 사용자가 직접 완료했으며, 전용 원격 root와 처리기 메타데이터를 준비했습니다. 고정 서명한 검증 앱을 재실행하여 기존 연결 복원과 빈 폴더 동기화를 확인했습니다. 실제 Android↔Mac 왕복 완료와는 구분합니다.
+- OAuth 합성 검사 43개, Drive 합성 검사 15개, 연결 coordinator 합성 검사 36개, Android 단위 검사 36개 통과. Android lint 오류 0개·경고 18개이며 debug APK 빌드에 성공했습니다.
+- 동기화 중 삭제·다시 전사·노트 변경이 발생하면 업로드 직전에 현재 작업을 다시 확인합니다. 독립 수명주기 검사 8개와 Android 취소 검사 2개를 통과했습니다. 이미 서버에 전송된 요청을 사후 취소하거나 원격 파일을 삭제하지는 않습니다.
+- 실제 OkHttp HTTPS 스트리밍을 localhost에서 지연시켜 취소를 검사했습니다. 이 검사는 Google 실서버 로그인 검증과 별개입니다.
+- Mac 내부 Google 캐시가 기존 폴더 겹침 검사에 걸리는 오류를 재현하고 수정했습니다. Google 전용 캐시의 정해진 경로만 허용하며, 일반 입력·출력 폴더의 겹침과 심볼릭 링크는 계속 차단합니다.
+- 가상 Drive 서버에서 Kotlin 녹음 업로드 → Swift 가져오기 → 합성 전사·노트 결과 게시 → Kotlin 결과 수신을 확인했습니다. AI 추론 품질·실제 클라우드 권한 공유 성공을 뜻하지 않습니다.

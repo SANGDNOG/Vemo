@@ -108,6 +108,8 @@ struct RecordingBulkConfirmation {
     private var started = false
     private lazy var imports = ImportBroker(root:stateRoot)
     private lazy var mobileSync = MobileSyncBroker(root:stateRoot)
+    lazy var googleConnection = GoogleConnectionModel(root: stateRoot)
+    private var googleSyncTask: Task<Void, Never>?
     @Published var mobileSyncFolder = ""
     @Published var mobileSyncStatus = "연결하지 않음"
     @Published var mobileSyncBusy = false
@@ -539,7 +541,7 @@ struct RecordingBulkConfirmation {
     private func tick() { currentTime = player?.currentTime ?? currentTime; playing = player?.isPlaying ?? false
         ticks += 1
         if ticks % 5 == 0 && connected { scanSources() }
-        if ticks % 30 == 0 && connected { checkMobileSync() }
+        if ticks % 30 == 0 && connected { checkMobileSync(); checkGoogleSync() }
         if ticks % 60 == 0 { scheduleAutomaticOutputs(reconcile:true) }
     }
     func setPolicy(_ value: Bool) { UserDefaults.standard.set(value,forKey:"acOnly"); if connected { command("set_policy",["ac_only":.bool(value)]) } }
@@ -695,7 +697,7 @@ struct RecordingBulkConfirmation {
         cancelObsoleteExport()
         guard !DemoContent.enabled, connected, !zipExportClosing else { return }
         requestMissingNotes()
-        if !mobileSyncLoaded || reconcile { checkMobileSync() }
+        if !mobileSyncLoaded || reconcile { checkMobileSync(); checkGoogleSync() }
         guard autoZIPEnabled else { return }
         checkRecordingZIPs(manual:false,reconcile:reconcile)
     }
@@ -788,11 +790,29 @@ struct RecordingBulkConfirmation {
     }
     func flushZIPExport() async {
         zipExportClosing = true
+        googleSyncTask?.cancel()
+        await googleConnection.shutdown()
+        await googleSyncTask?.value
         mobileSyncTask?.cancel()
         await mobileSyncTask?.value
         if zipExportBusy { zipExportProgress = "종료 대기 · ZIP 내보내기를 마치는 중" }
         await automaticNotesTask?.value
         await zipExportTask?.value
+    }
+    func checkGoogleSync() {
+        guard !DemoContent.enabled, connected, googleSyncTask == nil, !zipExportClosing else { return }
+        googleSyncTask = Task { [self] in
+            defer { googleSyncTask = nil }
+            await googleConnection.restoreIfNeeded()
+            guard !Task.isCancelled, !zipExportClosing else { return }
+            // Withhold any job whose delete/restore/refresh command is still pending.
+            if await googleConnection.synchronize(imports: imports, jobs: { [weak self] in
+                guard let self, !self.zipExportClosing else { return [] }
+                return self.jobs.filter { !self.recordingCommandPending($0.id) }
+            }), !Task.isCancelled {
+                await deliverPendingImports()
+            }
+        }
     }
     func chooseMobileSyncFolder() {
         guard !DemoContent.enabled, !mobileSyncBusy, !zipExportClosing else { return }

@@ -16,6 +16,8 @@ class VemoApp : Application() {
     val listeners = CopyOnWriteArraySet<() -> Unit>()
     private val main = Handler(Looper.getMainLooper())
     lateinit var vault: CredentialVault; private set
+    lateinit var google: GoogleConnection; private set
+    fun cloudConfigured(): Boolean = if (preferences.getString("provider", "nextcloud") == "google") google.configured() else vault.configured()
     val preferences by lazy { getSharedPreferences("preferences", Context.MODE_PRIVATE) }
     @Volatile var message = "녹음은 기기에 먼저 안전하게 저장됩니다."
     @Volatile var elapsedMs = 0L
@@ -25,6 +27,7 @@ class VemoApp : Application() {
         store = RecordingStore(File(filesDir, "recordings"))
         store.recoverInterrupted()
         vault = CredentialVault(this)
+        google = GoogleConnection(this)
     }
     fun changed() { main.post { listeners.forEach { it() } } }
     fun notify(message: String) { this.message = message; changed() }
@@ -34,8 +37,19 @@ class VemoApp : Application() {
         syncing = true; changed()
         io.execute {
             try {
-                val credentials = vault.load() ?: throw ProtocolException("Nextcloud는 선택 기능입니다. 설정에서 연결하거나 폴더 저장/공유를 이용하세요.")
-                val cloud = WebDavCloud(DavConfig(credentials.endpoint, credentials.folder), credentials.user, credentials.password)
+                val useGoogle = preferences.getString("provider", "nextcloud") == "google"
+                val credentials = if (useGoogle) null else vault.load()
+                val driveBinding = if (useGoogle) google.binding() ?: throw ProtocolException("설정에서 Google Drive를 연결하세요.") else null
+                val cloud: CloudStorage
+                val cloudKey: String
+                if (driveBinding != null) {
+                    cloud = google.cloud(driveBinding)
+                    cloudKey = driveBinding.identity()
+                } else {
+                    val dav = credentials ?: throw ProtocolException("설정에서 클라우드를 연결하거나 폴더 저장/공유를 이용하세요.")
+                    cloud = WebDavCloud(DavConfig(dav.endpoint, dav.folder), dav.user, dav.password)
+                    cloudKey = dav.identity()
+                }
                 val engine = SyncEngine(cloud)
                 var processor: Processor? = null
                 var failures = 0
@@ -43,11 +57,14 @@ class VemoApp : Application() {
                 for (original in store.list().filter { it.uploadable && (manual || it.mode == Mode.DESKTOP) }) {
                     if (Thread.currentThread().isInterrupted) break
                     try {
-                        if (original.cloudKey != null && original.cloudKey != credentials.identity()) throw ProtocolException("이 녹음은 다른 클라우드 폴더에 연결되어 있습니다. 원래 연결로 돌아가세요.")
-                        if (original.mode == Mode.DESKTOP && processor == null) processor = engine.processor()
+                        if (original.cloudKey != null && original.cloudKey != cloudKey) throw ProtocolException("이 녹음은 다른 클라우드 폴더에 연결되어 있습니다. 원래 연결로 돌아가세요.")
+                        if ((original.mode == Mode.DESKTOP || driveBinding != null) && processor == null) {
+                            processor = engine.processor()
+                            if (driveBinding != null && processor.id != driveBinding.processorId) throw ProtocolException("Drive 처리기 정보가 변경되었습니다.")
+                        }
                         if (original.targetProcessor != null && original.targetProcessor != processor?.id) throw ProtocolException("등록된 데스크톱 처리기가 다릅니다. 원본과 이전 연결을 보존했습니다.")
                         val record = store.update(original.id) {
-                            it.copy(targetProcessor = it.targetProcessor ?: if (it.mode == Mode.DESKTOP) processor?.id else null, cloudKey = it.cloudKey ?: credentials.identity(), status = "동기화 중…")
+                            it.copy(targetProcessor = it.targetProcessor ?: if (it.mode == Mode.DESKTOP) processor?.id else null, cloudKey = it.cloudKey ?: cloudKey, status = "동기화 중…")
                         }
                         if (!record.uploaded) {
                             engine.upload(record, store.audio(record.id))
@@ -63,12 +80,13 @@ class VemoApp : Application() {
                         checked++
                     } catch (error: Exception) {
                         failures++
+                        if (error is AuthException && useGoogle) google.invalidate()
                         store.update(original.id) { it.copy(status = safeError(error)) }
                     }
                     changed()
                 }
                 message = "동기화 확인: ${checked}개 완료" + if (failures > 0) " · ${failures}개 오류 (각 항목에서 확인)" else ""
-            } catch (error: Exception) { message = safeError(error) }
+            } catch (error: Exception) { if (error is AuthException && preferences.getString("provider", "nextcloud") == "google") google.invalidate(); message = safeError(error) }
             finally {
                 syncing = false; gate.endSync(); changed(); done?.invoke()
             }
@@ -109,7 +127,7 @@ class VemoApp : Application() {
 }
 fun Context.vemo(): VemoApp = applicationContext as VemoApp
 fun safeError(error: Exception): String = when (error) {
-    is AuthException -> "서버 인증/권한 오류 · 설정에서 자격 증명을 확인하세요."
+    is AuthException -> "서버 인증/권한 오류 · 설정에서 다시 로그인/승인하세요."
     is ConflictException -> "원격 콘텐츠 충돌 · 덮어쓰지 않았습니다. 기기 원본을 보존했습니다."
     is ProtocolException -> error.message ?: "동기화 계약 검증 오류"
     is SecurityException -> "권한이 취소되었습니다. 마이크 또는 저장 폴더 권한을 다시 허용하세요. 원본은 보존했습니다."

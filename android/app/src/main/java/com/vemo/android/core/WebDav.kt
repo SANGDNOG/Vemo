@@ -10,11 +10,14 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okio.BufferedSink
 
 /** No redirect following, cookies, retry, logging, or non-default trust manager. */
-class SecureHttpTransport : HttpTransport {
-    private val client = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
+class SecureHttpTransport internal constructor(private val client: OkHttpClient) : HttpTransport {
+    constructor() : this(OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
         .retryOnConnectionFailure(false).connectTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
         .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS).writeTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
-        .callTimeout(20, java.util.concurrent.TimeUnit.MINUTES).build()
+        .callTimeout(20, java.util.concurrent.TimeUnit.MINUTES).build())
+    // Synchronous calls leave OkHttp's dispatcher after headers, before body consumption.
+    private val active = mutableSetOf<Call>()
+    fun cancel() { synchronized(active) { active.toList() }.forEach { it.cancel() } }
     override fun execute(request: HttpRequest): HttpReply {
         if (request.url.scheme != "https") throw ProtocolException("HTTPS required")
         val body = request.body?.let { source -> object : RequestBody() {
@@ -24,6 +27,7 @@ class SecureHttpTransport : HttpTransport {
                 val buffer = ByteArray(64 * 1024)
                 var size = 0L
                 while (true) {
+                    if (Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException()
                     val count = stream.read(buffer)
                     if (count < 0) break
                     size += count
@@ -35,11 +39,47 @@ class SecureHttpTransport : HttpTransport {
         } }
         val builder = Request.Builder().url(request.url.toString()).method(request.method, body)
         request.headers.forEach { (key, value) -> builder.header(key, value) }
-        val response = client.newCall(builder.build()).execute()
-        val stream = response.body?.byteStream() ?: ByteArrayInputStream(byteArrayOf())
-        return HttpReply(response.code, response.headers.toMap(), object : FilterInputStream(stream) {
-            override fun close() { response.close() }
-        })
+        val call = client.newCall(builder.build())
+        synchronized(active) { active.add(call) }
+        try {
+            val response = call.execute()
+            val stream = response.body?.byteStream() ?: ByteArrayInputStream(byteArrayOf())
+            val owned = object : FilterInputStream(stream) {
+                override fun close() {
+                    try { response.close() } finally { synchronized(active) { active.remove(call) } }
+                }
+            }
+            return HttpReply(response.code, response.headers.toMap(), cancellationChecked(owned) { call.isCanceled() })
+        } catch (error: Exception) {
+            synchronized(active) { active.remove(call) }
+            throw error
+        }
+    }
+}
+/** Check after blocking reads as well, including EOF, so cancellation cannot report success. */
+internal fun cancellationChecked(stream: InputStream, cancelled: () -> Boolean): InputStream = object : FilterInputStream(stream) {
+    private fun checkCancellation() {
+        if (Thread.currentThread().isInterrupted || cancelled()) {
+            try { close() } finally { throw InterruptedIOException("HTTP operation cancelled") }
+        }
+    }
+    override fun read(): Int {
+        checkCancellation()
+        val value = `in`.read()
+        checkCancellation()
+        return value
+    }
+    override fun read(bytes: ByteArray, offset: Int, length: Int): Int {
+        checkCancellation()
+        val count = `in`.read(bytes, offset, length)
+        checkCancellation()
+        return count
+    }
+    override fun skip(count: Long): Long {
+        checkCancellation()
+        val skipped = `in`.skip(count)
+        checkCancellation()
+        return skipped
     }
 }
 data class HttpRequest(val method: String, val url: URI, val headers: Map<String, String> = emptyMap(), val size: Long = 0,
