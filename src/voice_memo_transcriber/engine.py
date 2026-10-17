@@ -8,13 +8,14 @@ from .protocol import parse_command
 from .media import validate_owned,chunk_ranges,extract_chunk,global_segments
 from .artifacts import atomic_json,build_publication,valid_receipt,sha256
 from .models import model_status,ModelInventory
+from .model_catalog import DEFAULT_SELECTION,PROFILES,device_capabilities,recommendations,validate_selection
 from .process import ManagedProcess
 from .notes import validate_notes,source_chunks,source_digest
 from .study_notes import ERROR_CODES,safe_diagnostics
 
 JOB_FIELDS=('id','uuid','topic','recording_date','recorded_at','duration_s','status','wait_reason','stage','completed_units','total_units','elapsed_seconds','artifact_path','audio_path','pcm_path','error','title_status','alignment_status','original_title','notes_path','notes_status','notes_error','notes_protocol','deleted_at')
 RUNNING={'preparing','transcribing','aligning','titling','noting'}
-RESULT_FIELDS=('pcm_hash','frames','duration_s','audio_path','pcm_path','artifact_path','asr_chunks','aligned_chunks','alignment_status','topic','title_status','title_checkpoint','notes_path','notes_status','notes_error','notes_protocol','notes_checkpoint','notes_only','notes_prior_status','publication_id','manifest_path','receipt')
+RESULT_FIELDS=('model_selection','pcm_hash','frames','duration_s','audio_path','pcm_path','artifact_path','asr_chunks','aligned_chunks','alignment_status','topic','title_status','title_checkpoint','notes_path','notes_status','notes_error','notes_protocol','notes_checkpoint','notes_only','notes_prior_status','publication_id','manifest_path','receipt')
 
 def on_ac_power():
     try:
@@ -32,12 +33,17 @@ class Engine:
         self.emit_callback=emit;self.sequence=0;self.active=None;self.download=None;self.closed=False;self.stopping=False
         self.worker_command=worker_command or [sys.executable,'-m','voice_memo_transcriber.worker']
         self.worker_timeout=worker_timeout;self.ffmpeg_path=ffmpeg_path;self.power_check=power_check or on_ac_power
-        self.inventory=ModelInventory(self.model_root) if readiness is None else None
+        self.selection=self.store.get_meta('model_selection',dict(DEFAULT_SELECTION))
+        self.device=device_capabilities()
+        self.inventory=ModelInventory(self.model_root,self.selection) if readiness is None else None
         self.readiness=readiness or self.inventory.snapshot;self.models=self.readiness()
-        self.last_power=float("-inf");self.power=False;self.last_models=float("-inf");self.last_replay={};self.started={};self.changed=set()
+        self.last_power=float("-inf");self.power=False;self.last_models=float("-inf");self.last_replay={};self.started={};self.changed=set();self.last_model_change_reason=object()
         # In-flight work was never committed. Recover the same phase/chunk.
         with self.store.transaction():
             for job in self.store.jobs():
+                # Legacy checkpoints always used the original pinned profiles.
+                if not job.get('deleted_at') and 'model_selection' not in job and job.get('status') not in {'completed','needs_recording_date'} and (job.get('phase') in {'prepare','asr','align','title','notes'} or job.get('pcm_hash')):
+                    job['model_selection']=dict(DEFAULT_SELECTION);self.store.put(job)
                 if job.get('deleted_at'):
                     job['queued']=False;self.store.put(job)
                 elif job['phase']=='snapshot' and job['queued'] and job.get('snapshot_request_id'):
@@ -65,8 +71,29 @@ class Engine:
             job=self.store.get(jid)
             if job.get('purged_at'):self.emit('job_removed',{'job_id':jid})
             else:self.emit('job_changed',{'job':self.view(job)})
+        reason=self.model_change_reason()
+        if reason!=self.last_model_change_reason:
+            self.last_model_change_reason=reason;self.emit('engine_status',self.engine_status())
+    def model_change_reason(self):
+        if self.download or self.store.get_meta('download_requested',False):return 'download_active'
+        if self.active or any(not j.get('deleted_at') and j.get('queued') and j['status'] not in {'completed','needs_recording_date','failed'} and j['phase'] not in {'snapshot','publish'} for j in self.store.jobs()):return 'processing'
+        return None
+    def job_selection(self,job):
+        return job.get('model_selection') or (DEFAULT_SELECTION if job.get('pcm_hash') or job.get('artifact_path') or job.get('notes_checkpoint') else self.selection)
+    def job_model_status(self,job):
+        profiles=self.models.get('profile_status')
+        if profiles is None:return self.models  # Embedders may supply legacy readiness.
+        selection=self.job_selection(job)
+        selected={role:profiles.get(identifier,{'state':'missing_or_invalid'}) for role,identifier in selection.items()}
+        states={**self.models.get('model_status',{}),**selected}
+        return {**self.models,'model_status':states,'models_ready':all(states.get(n,{}).get('state')=='ready' for n in ('asr','aligner','title')),'notes_ready':selected['notes']['state']=='ready'}
     def engine_status(self):
-        return {**self.models,'paused':self.store.get_meta('paused',False),'ac_only':self.store.get_meta('ac_only',True)}
+        reason=self.model_change_reason()
+        profiles=self.models.get('profile_status',{})
+        catalog=[dict(id=identifier,**{k:v for k,v in p.items() if k!='storage'},supported=self.device['mlx_supported'] and p.get('selectable',True),disabled_reason='notes_schema_validation_failed' if not p.get('selectable',True) else None if self.device['mlx_supported'] else 'unsupported_model_backend',state=profiles.get(identifier,{}).get('state','verifying')) for identifier,p in PROFILES.items()]
+        preparation={role:profiles.get(identifier,self.models.get('model_status',{}).get(role,{})).get('state','verifying') for role,identifier in self.selection.items()}
+        return {**self.models,'paused':self.store.get_meta('paused',False),'ac_only':self.store.get_meta('ac_only',True),
+                'model_catalog':catalog,'model_selection':{**self.selection,'can_change':reason is None,'disabled_reason':reason,'preparation':preparation},'model_recommendations':recommendations(self.device)}
     def snapshot(self):
         return {'jobs':[self.view(j) for j in self.store.jobs() if not j.get('purged_at')],'engine_status':self.engine_status()}
     def command(self,command):
@@ -79,9 +106,15 @@ class Engine:
                 result=self.finish_purge(command['payload']['job_id'],command['request_id'])
         except (ValueError,TypeError,KeyError,OverflowError) as exc:
             self.changed=set();result={'ok':False,'error':failure('invalid_command',str(exc) if isinstance(exc,ValueError) else 'invalid payload')}
+        selected=self.store.get_meta('model_selection',dict(DEFAULT_SELECTION))
+        if selected!=self.selection:
+            self.selection=selected
+            if self.inventory:
+                self.inventory.selection=dict(self.selection)
+                self.models=self.readiness()
         self.flush_changed()
         if command.get('kind') in {'hello','snapshot'} and result['ok']:self.emit('snapshot',self.snapshot())
-        if command.get('kind') in {'pause','resume','set_policy'} and result['ok']:self.emit('engine_status',self.engine_status())
+        if command.get('kind') in {'pause','resume','set_policy','set_models','download_models'} and result['ok']:self.emit('engine_status',self.engine_status())
         self.emit('command_result',{'request_id':command.get('request_id',''),**result})
         if command.get('kind')=='shutdown' and result['ok']:self.stopping=True
         return result
@@ -262,9 +295,19 @@ class Engine:
         if kind=='set_policy':
             if type(payload.get('ac_only')) is not bool:raise ValueError('ac_only_must_be_boolean')
             self.store.set_meta('ac_only',payload['ac_only']);return {'ok':True}
+        if kind=='set_models':
+            if self.model_change_reason():return {'ok':False,'error':failure('models_busy',self.model_change_reason())}
+            try:selected=validate_selection(payload,self.device)
+            except ValueError as exc:return {'ok':False,'error':failure(str(exc))}
+            self.store.set_meta('model_selection',selected)
+            return {'ok':True}
         if kind=='download_models':
             notes_only=payload.get('notes_only',False)
             if type(notes_only) is not bool:raise ValueError('notes_only_must_be_boolean')
+            if self.download:return {'ok':False,'error':failure('models_busy','download_active')}
+            try:validate_selection(self.selection,self.device)
+            except ValueError as exc:return {'ok':False,'error':failure(str(exc))}
+            self.store.set_meta('download_model_selection',dict(self.selection))
             self.store.set_meta('download_notes_only',notes_only)
             self.store.set_meta('download_requested',True);return {'ok':True}
         if kind in {'enqueue','backfill'}:
@@ -331,6 +374,7 @@ class Engine:
             if (self.active and self.active['job_id']==job['id']) or job['phase'] in {'notes','prepare','snapshot','asr','align','title'} and job['status'] not in {'completed','needs_recording_date','failed'}:raise ValueError('job_busy')
             validate_owned(self.root,job['artifact_path'])
             job.pop('notes_checkpoint',None)
+            job['model_selection']={**(job.get('model_selection') or DEFAULT_SELECTION),'notes':self.selection['notes']}
             if not job.get('topic'):job.update(topic='음성 녹음',title_status='fallback')
             job.update(notes_protocol='study_v1',notes_only=True,notes_prior_status=job['status'],notes_status='pending',notes_error=None,phase='notes',stage='noting',queued=True,status='waiting',wait_reason=None,error=None,attempts={},completed_units=None,total_units=None)
             self.save(job);return {'ok':True}
@@ -382,7 +426,8 @@ class Engine:
         return {'code':code,'message':str(error.get('message',code))[:1024],'recoverable':error.get('recoverable') is True}
     def launch(self,job,op,data):
         directory=self.root/'work'/job['id']/'tasks'/uuid.uuid4().hex;directory.mkdir(parents=True,exist_ok=True)
-        request={'op':op,'uuid':job['uuid'],'state_root':str(self.root),'model_root':str(self.model_root),'ffmpeg_path':self.ffmpeg_path,**data}
+        if 'model_selection' not in job:job['model_selection']=dict(self.job_selection(job))
+        request={'model_selection':dict(job['model_selection']),'op':op,'uuid':job['uuid'],'state_root':str(self.root),'model_root':str(self.model_root),'ffmpeg_path':self.ffmpeg_path,**data}
         req=directory/'request.json';out=directory/'result.json';atomic_json(req,request)
         env=os.environ.copy();env.update(HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',HF_DATASETS_OFFLINE='1',TOKENIZERS_PARALLELISM='false')
         with self.lifecycle_lock:
@@ -558,7 +603,7 @@ class Engine:
         paused=self.store.get_meta('paused',False)
         for job in self.store.jobs():
             if not job.get('deleted_at') and job['phase']=='publish' and job.get('publication_id') and job['status']=='saving':self.replay(job)
-        if self.active:return
+        if self.active or self.download:return
         for job in self.store.jobs():
             if job.get('deleted_at') or not job['queued'] or job['status']=='failed':continue
             if job.get('refresh_requested'):
@@ -574,21 +619,22 @@ class Engine:
                     try:
                         transcript=json.loads(Path(job['artifact_path']).read_text())
                         notes=json.loads(validate_owned(self.root,job['notes_path']).read_text(encoding='utf-8')) if job.get('notes_path') else None
-                        manifest_path=build_publication(self.root,job,transcript,self.model_manifest(),notes=notes)
+                        manifest_path=build_publication(self.root,job,transcript,self.model_manifest(job),notes=notes)
                         manifest=json.loads(Path(manifest_path).read_text())
                         job.update(manifest_path=manifest_path,publication_id=manifest['publication_id'],status='saving',stage='saving',wait_reason='publication',completed_units=None,total_units=None)
                     except (OSError,ValueError,KeyError):job.update(status='failed',queued=False,error=failure('artifact_failed'))
                     with self.store.transaction():self.save(job)
                 self.replay(job);continue
-            reason='paused' if paused else 'ac_power' if self.store.get_meta('ac_only',True) and not self.power else 'models' if not self.models['models_ready'] and not (job['phase']=='notes' and not job.get('notes_checkpoint') and (job.get('notes_protocol') or 'study_v1')=='study_v1') else 'source_incomplete' if job['completion_evidence']!='finished' else None
+            job_models=self.job_model_status(job)
+            reason='paused' if paused else 'ac_power' if self.store.get_meta('ac_only',True) and not self.power else 'models' if not job_models['models_ready'] and not (job['phase']=='notes' and not job.get('notes_checkpoint') and (job.get('notes_protocol') or 'study_v1')=='study_v1') else 'source_incomplete' if job['completion_evidence']!='finished' else None
             if reason:
                 status='paused' if paused else 'waiting'
                 if job['status']!=status or job['wait_reason']!=reason:
                     job.update(status=status,wait_reason=reason)
                     with self.store.transaction():self.save(job)
                 continue
-            if job['phase']=='notes' and not job.get('notes_checkpoint') and (job.get('notes_protocol') or 'study_v1')=='study_v1' and not self.models.get('notes_ready',False):
-                if self.models.get('model_status',{}).get('notes',{}).get('state')=='verifying':
+            if job['phase']=='notes' and not job.get('notes_checkpoint') and (job.get('notes_protocol') or 'study_v1')=='study_v1' and not job_models.get('notes_ready',False):
+                if job_models.get('model_status',{}).get('notes',{}).get('state')=='verifying':
                     job.update(status='waiting',stage='noting',wait_reason='models',completed_units=None,total_units=None)
                     with self.store.transaction():self.save(job)
                     continue
@@ -640,9 +686,10 @@ class Engine:
                 with self.store.transaction():self.save(job)
             break
         self.flush_changed()
-    def model_manifest(self):
-        try:return json.loads((self.model_root/'models.json').read_text())
-        except (OSError,ValueError):return {}
+    def model_manifest(self,job=None):
+        try:manifest=json.loads((self.model_root/'models.json').read_text())
+        except (OSError,ValueError):manifest={}
+        return {**manifest,'selection':dict((job or {}).get('model_selection') or DEFAULT_SELECTION)}
     def poll_download(self):
         if self.download:
             task=self.download['task'];path=self.download['progress']
@@ -668,6 +715,8 @@ class Engine:
             with self.lifecycle_lock:
                 if self.stopping:return
                 arguments=[sys.executable,'-m','voice_memo_transcriber.download_models','--model-root',str(self.model_root)]
+                selected=self.store.get_meta('download_model_selection',dict(DEFAULT_SELECTION))
+                arguments.extend(['--asr-profile',selected['asr'],'--notes-profile',selected['notes']])
                 if self.store.get_meta('download_notes_only',False):arguments.append('--notes-only')
                 with open(path,'wb') as out:task=ManagedProcess(arguments,timeout=6*3600,stdout=out)
                 if self.stopping:task.stop();return

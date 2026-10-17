@@ -4,6 +4,7 @@ from pathlib import Path
 from .artifacts import atomic_json,sync_dir
 from .media import stable_copy,pcm_identity,validate_owned
 from .titles import token_chunks
+from .model_catalog import DEFAULT_SELECTION,profile_storage
 
 def check_network_event(event,args):
     if event in {'socket.connect','socket.connect_ex','socket.getaddrinfo','socket.sendto'}:
@@ -29,7 +30,7 @@ def prepare(request):
     return {'pcm_hash':h,'duration_s':duration,'frames':frames,'audio_path':str(audio),'pcm_path':str(pcm)}
 
 def local_model(request,name):
-    path=Path(request['model_root']).resolve()/name
+    path=Path(request['model_root']).resolve()/profile_storage(request.get('model_selection') or DEFAULT_SELECTION,name)
     if not path.is_dir() or path.is_symlink() or not (path/'config.json').is_file() or not list(path.glob('*.safetensors')):
         raise ValueError('local_model_missing')
     return str(path)

@@ -37,6 +37,47 @@ public actor ImportBroker {
         try BrokerFiles.atomic(BrokerFiles.json(registry), to: registryURL); retained = true
         return memo
     }
+    // Mobile imports use assigned identity, never content-only deduplication. The
+    // same imports registry/lock lets backend purge tombstones protect this path.
+    func importMobileFile(_ url: URL, metadata: MobileSyncImportMetadata) async throws -> Memo {
+        try BrokerFiles.directory(native)
+        let lock = try BrokerFiles.lock(native.appendingPathComponent("imports.lock")); defer { close(lock) }
+        var registry = try load()
+        let request = metadata.recording
+        try MobileSyncValidation.uuid(metadata.memoUUID)
+        let timezone = try MobileSyncValidation.timezone(request.recorded_at)
+        if let existing = registry.entries[metadata.sourceReference] {
+            guard existing.purged != true else { throw purgedFailure() }
+            guard existing.hash == request.audio_sha256, existing.memo.uuid == metadata.memoUUID,
+                  existing.memo.recorded_at == request.recorded_at, existing.memo.original_title == request.title,
+                  existing.memo.source_kind == "import", existing.memo.source_reference == metadata.sourceReference else {
+                throw BrokerFailure("mobile_identity_conflict", "보관된 모바일 녹음 정보와 일치하지 않습니다.")
+            }
+            let source = try Validation.owned(existing.path, root: root)
+            guard try BrokerFiles.hash(source) == request.audio_sha256 else { throw BrokerFailure("import_conflict", "보관된 모바일 오디오가 변경되었습니다.") }
+            return existing.memo
+        }
+        guard !registry.entries.values.contains(where: { $0.hash == request.audio_sha256 && $0.purged == true }) else { throw purgedFailure() }
+        let copies = root.appendingPathComponent("snapshots/imports"); try BrokerFiles.directory(copies)
+        let copy = copies.appendingPathComponent(UUID().uuidString + ".m4a")
+        var retained = false; defer { if !retained { try? FileManager.default.removeItem(at: copy) } }
+        _ = try BrokerFiles.stableCopy(url, to: copy)
+        guard try BrokerFiles.stamp(copy).size == request.audio_bytes, try BrokerFiles.hash(copy) == request.audio_sha256 else { throw BrokerFailure("audio_hash_mismatch", "모바일 오디오가 변경되었습니다.") }
+        let duration = try BrokerFiles.decodeAudio(copy)
+        let memo = Memo(uuid: metadata.memoUUID, recorded_at: request.recorded_at, recorded_at_source: "mobile_sync", original_timezone: timezone, duration_s: duration, media_revision: try BrokerFiles.stamp(copy).revision, completion_evidence: "finished", source_kind: "import", source_reference: metadata.sourceReference, original_title: request.title)
+        registry.entries[metadata.sourceReference] = Entry(memo: memo, path: copy.path, hash: request.audio_sha256, delivered: false)
+        let data = try BrokerFiles.json(registry)
+        guard data.count <= WireCodec.limit else { throw BrokerFailure("oversize_file", "가져오기 기록이 크기 제한을 초과했습니다.") }
+        try BrokerFiles.atomic(data, to: registryURL); retained = true
+        return memo
+    }
+    func validateMobileImport(reference: String, uuid: String, hash: String) throws {
+        try BrokerFiles.directory(native)
+        let lock = try BrokerFiles.lock(native.appendingPathComponent("imports.lock")); defer { close(lock) }
+        guard let entry = try load().entries[reference], entry.memo.uuid == uuid, entry.hash == hash,
+              entry.memo.source_reference == reference, entry.memo.source_kind == "import" else { throw BrokerFailure("mobile_identity_conflict", "모바일 가져오기 기록이 일치하지 않습니다.") }
+        guard entry.purged != true else { throw purgedFailure() }
+    }
     private func purgedFailure() -> BrokerFailure { BrokerFailure("import_purged", "영구 삭제한 가져오기 녹음입니다. 같은 오디오를 다시 가져올 수 없습니다.") }
     public func pendingImports() throws -> [Memo] { try load().entries.values.filter { !$0.delivered && $0.purged != true }.map(\.memo) }
     public func markDelivered(reference: String) throws {

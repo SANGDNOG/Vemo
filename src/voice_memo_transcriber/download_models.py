@@ -2,7 +2,8 @@
 """Explicit online bootstrap. Operational inference never calls this implicitly."""
 import argparse,json,os,sys,threading,time
 from pathlib import Path
-from voice_memo_transcriber.models import PINS,OPTIONAL_PINS,write_manifest
+from voice_memo_transcriber.models import PINS,write_manifest,model_status
+from voice_memo_transcriber.model_catalog import DEFAULT_SELECTION,PROFILES,validate_selection
 from voice_memo_transcriber.artifacts import sha256
 
 def observed_bytes(root):
@@ -27,17 +28,27 @@ def verified_files(local,siblings):
     return files
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--model-root',type=Path,required=True);parser.add_argument('--disable-xet',action='store_true');parser.add_argument('--notes-only',action='store_true');args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--model-root',type=Path,required=True);parser.add_argument('--disable-xet',action='store_true');parser.add_argument('--notes-only',action='store_true');parser.add_argument('--asr-profile',default=DEFAULT_SELECTION['asr']);parser.add_argument('--notes-profile',default=DEFAULT_SELECTION['notes']);args=parser.parse_args()
+    selection=validate_selection({'asr':args.asr_profile,'notes':args.notes_profile})
     if args.disable_xet:os.environ['HF_HUB_DISABLE_XET']='1'
     from huggingface_hub import HfApi,snapshot_download
     args.model_root.mkdir(parents=True,exist_ok=True)
     try:entries=json.loads((args.model_root/'models.json').read_text())['models']
     except (OSError,ValueError,KeyError):entries={}
+    if not isinstance(entries,dict):entries={}
     def emit(name,downloaded,total,state,error=None):
         payload={'model':name,'downloaded_bytes':downloaded,'total_bytes':total,'state':state}
         if error:payload['error']=error
         print(json.dumps({'kind':'model_progress','payload':payload}),flush=True)
-    for name,pin in (OPTIONAL_PINS if args.notes_only else PINS).items():
+    chosen={} if args.notes_only else {name:pin for name,pin in PINS.items() if name!='asr'}
+    for role in (('notes',) if args.notes_only else ('asr','notes')):
+        profile=PROFILES[selection[role]]
+        chosen[profile['storage']]={k:profile[k] for k in ('repo_id','revision')}
+    # Ready caches are immutable inputs to inference; never overwrite them.
+    status=model_status(args.model_root)
+    for name,pin in chosen.items():
+        if status['model_status'].get(name,{}).get('state')=='ready':
+            emit(name,observed_bytes(args.model_root/name),None,'ready');continue
         local=args.model_root/name;local.mkdir(parents=True,exist_ok=True);total=None;done=threading.Event()
         emit(name,observed_bytes(local),None,'resolving')
         try:

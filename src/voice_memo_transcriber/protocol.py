@@ -1,6 +1,6 @@
 import json
 LIMIT=8*1024*1024
-KINDS={'hello','snapshot','discover','import','enqueue','backfill','snapshot_ready','pause','resume','retry','retitle','set_recording_date','publish_ack','shutdown','download_models','set_policy','generate_notes','trash_recording','restore_recording','refresh_recording','purge_recording'}
+KINDS={'hello','snapshot','discover','import','enqueue','backfill','snapshot_ready','pause','resume','retry','retitle','set_recording_date','publish_ack','shutdown','download_models','set_policy','set_models','generate_notes','trash_recording','restore_recording','refresh_recording','purge_recording'}
 
 def parse_command(line):
     if len(line)>LIMIT:

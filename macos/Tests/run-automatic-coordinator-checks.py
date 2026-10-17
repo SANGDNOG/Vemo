@@ -52,6 +52,17 @@ actor FakeZIPStore {
  }
  func ids() -> [String] { calls }
 }
+actor FakeMobileWork {
+ var entered = false
+ var waiter:CheckedContinuation<Void,Never>?
+ func run() async {
+  entered = true
+  // Cancellation requests cleanup; the gate controls when that cleanup finishes.
+  await withCheckedContinuation { waiter = $0 }
+ }
+ func waitForEntry() async { while !entered { await Task.yield() } }
+ func release() { waiter?.resume(); waiter = nil }
+}
 @MainActor final class Fixture {
  var jobs:[Job] = []
  var library = LibraryOrganization(), libraryReady = true, libraryBusy = false
@@ -64,6 +75,9 @@ actor FakeZIPStore {
  var automaticNoteRequests:[String:String] = [:], automaticNotesRetryAfter:[String:Date] = [:]
  var activeExportTask:Task<URL?,Error>?, activeExportJobID:String?, activeExportKey:String?
  var automaticNotesTask:Task<Void,Never>?, zipExportTask:Task<Void,Never>?
+ var mobileSyncLoaded = false, mobileSyncChecks = 0
+ var mobileSyncTask:Task<Void,Never>?
+ func checkMobileSync() { mobileSyncChecks += 1; mobileSyncLoaded = true }
  var zipExportFolder = "/synthetic-destination", zipExportProgress = ""
  var zipExportError:String?, zipExportResult:URL?, problem:String?
  let engine = FakeEngine(), perRecordingZIPStore = FakeZIPStore()
@@ -80,6 +94,17 @@ actor FakeZIPStore {
   }
   let keyJob = try job("key",notes:true)
   try check(AutomaticRecordingPolicy.zipKey(keyJob,destination:"/fixture",libraryRevision:1) != AutomaticRecordingPolicy.zipKey(keyJob,destination:"/fixture",libraryRevision:2),"folder revision changes ZIP coordinator key")
+  let mobile = Fixture(); mobile.autoZIPEnabled = false
+  mobile.scheduleAutomaticOutputs()
+  try check(mobile.mobileSyncChecks == 1,"initial scheduler checks mobile sync even when automatic ZIP is disabled")
+  mobile.scheduleAutomaticOutputs()
+  try check(mobile.mobileSyncChecks == 1,"ordinary repeated events do not reload initialized mobile sync")
+  mobile.scheduleAutomaticOutputs(reconcile:true)
+  try check(mobile.mobileSyncChecks == 2,"reconciliation checks mobile sync even when automatic ZIP is disabled")
+  mobile.connected = false; mobile.scheduleAutomaticOutputs(reconcile:true)
+  try check(mobile.mobileSyncChecks == 2,"disconnected scheduler starts no mobile check")
+  mobile.connected = true; mobile.zipExportClosing = true; mobile.scheduleAutomaticOutputs(reconcile:true)
+  try check(mobile.mobileSyncChecks == 2,"closing scheduler starts no mobile check")
   let notes = Fixture(); notes.jobs = [try job("legacy",notes:false)]; notes.paused = true
   notes.scheduleAutomaticOutputs(); await notes.automaticNotesTask?.value
   try check(await notes.engine.commands().isEmpty,"paused user sends no automatic note or resume command")
@@ -170,6 +195,19 @@ actor FakeZIPStore {
   try check(await folderOnly.perRecordingZIPStore.movedIDs().count == 1,"unloaded library cannot move ZIP to incorrect root")
   folderOnly.libraryReady = true; folderOnly.libraryBusy = true; folderOnly.exportCompletedZIP(); await folderOnly.zipExportTask?.value
   try check(await folderOnly.perRecordingZIPStore.movedIDs().count == 1,"pending folder transaction cannot start ZIP relocation")
+  let mobileShutdown = Fixture(), mobileWork = FakeMobileWork()
+  var mobileFinished = false, mobileCancelled = false, mobileFlushReturned = false
+  mobileShutdown.mobileSyncTask = Task {
+   await mobileWork.run()
+   mobileCancelled = Task.isCancelled; mobileFinished = true
+  }
+  await mobileWork.waitForEntry()
+  let mobileClosing = Task { await mobileShutdown.flushZIPExport(); mobileFlushReturned = true }
+  while !mobileShutdown.zipExportClosing { await Task.yield() }
+  try check(mobileShutdown.mobileSyncTask?.isCancelled == true,"shutdown cancels in-flight mobile sync")
+  try check(!mobileFinished && !mobileFlushReturned,"shutdown waits for mobile cancellation cleanup before returning")
+  await mobileWork.release(); await mobileClosing.value
+  try check(mobileFinished && mobileCancelled && mobileFlushReturned,"shutdown returns after cancelled mobile work finishes cleanup")
   let shutdown = Fixture(); shutdown.jobs = [try job("first",notes:true),try job("second",notes:true)]
   await shutdown.perRecordingZIPStore.blockNext(); shutdown.exportCompletedZIP(); await shutdown.perRecordingZIPStore.waitForEntry()
   let closing = Task { await shutdown.flushZIPExport() }; await Task.yield()

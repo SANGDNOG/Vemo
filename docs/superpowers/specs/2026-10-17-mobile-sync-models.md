@@ -1,6 +1,6 @@
 # Vemo 모바일 연결과 기기별 모델 선택
 
-사용자는 Android Vemo에서 녹음하고 선택한 Nextcloud 저장소를 통해 데스크톱과 전사·노트를 주고받기를 승인했다. Mac과 Windows 모두 모델을 선택한다. 첫 검증 PC는 9800X3D/64GB/RTX5070Ti 16GB, Android는 최신 안정 OS 에뮬레이터(실기기는 Galaxy S22 Ultra, 아직 준비 안 됨)다. 승인된 개발 순서는 공통 규칙과 모델 선택, Android 녹음/PC 처리/결과 열람, Android 자체 AI 처리다.
+사용자는 Android Vemo에서 녹음하고 선택한 클라우드 저장소를 통해 데스크톱과 전사·노트를 주고받기를 승인했다. Mac과 Windows 모두 모델을 선택한다. 첫 검증 PC는 9800X3D/64GB/RTX5070Ti 16GB, Android는 최신 안정 OS 에뮬레이터(실기기는 Galaxy S22 Ultra, 아직 준비 안 됨)다. 승인된 개발 순서는 공통 규칙과 모델 선택, Android 녹음/PC 처리/결과 열람, Android 자체 AI 처리다.
 
 ## 이번 연결 단계
 
@@ -47,3 +47,15 @@ Windows는 native 배포를 목표로 Python POSIX 잠금/프로세스와 MLX ba
 실제 개인 녹음/서버에 접근하지 않는 synthetic 테스트를 기본으로 한다. 사용자 Nextcloud 테스트 폴더 동의와 앱 내 로그인 이전에는 테스트 서버/로컬 폴더만 사용한다. credentials는 Android Keystore 기반 보호 저장소에 보관하고 로그/코드/클라우드에 넣지 않는다. HTTPS 인증서를 검증하고 cross-origin redirect로 인증을 유출하지 않는다. 큰 오디오는 streaming 전송한다. 원격 입력은 크기·경로·형식 검증을 거친다.
 
 필수 검증: 녹음 pause/resume/stop; offline 완료와 재시도; 잘린 업로드; 오디오 해시 불일치; 잘못된 날짜/UUID/경로; stale 결과; 다른 처리기; 같은 파일 재검색; 기존 Mac 모델/작업/노트 회귀; Android build/lint/unit 및 가능한 에뮬레이터 검사. 실기기·실제 서버·Windows 미검증은 분리해 기록한다.
+
+## 2026-10-17 사용자 추가 지시 — Google Drive 기본값
+
+Google Drive를 기본 공급자로 제공하고 Nextcloud를 선택 공급자로 유지한다. Android는 공통 저장소 interface 아래 Google AuthorizationClient + Drive REST v3와 Nextcloud WebDAV를 분리한다. Google은 drive.file 권한으로 Vemo 생성 파일만 접근하며 사용자 전체 Drive 권한으로 자동 확대하지 않는다. 앱 생성 Vemo 폴더는 실제 Drive 폴더로 보이고 폴더 이름 및 Vemo 내 목적지를 선택할 수 있다. 임의 기존 폴더 선택은 해당 폴더와 파일의 명시 권한이 가능한 경로에서만 제공한다. appDataFolder는 Desktop 동기화가 보이지 않으므로 사용하지 않는다.
+
+중요: drive.file은 선택한 폴더의 모든 자식 파일에 자동 권한을 주지 않는다. 따라서 Google 완전 자동 왕복은 Android와 데스크톱이 같은 OAuth 프로젝트/사용자로 Drive API에 접근하는 adapter를 사용해야 한다. 기존 Google Drive Desktop 폴더만으로 결과 접근이 된다고 주장하지 않는다. 로컬 folder broker는 provider-neutral 검증/처리 mirror로 계속 사용하며 Nextcloud Desktop 경로도 유지한다. Drive 파일은 이름뿐 아니라 ID/부모 ID로 식별하고 같은 이름 충돌·불완전 업로드·토큰 갱신·권한 철회를 테스트한다.
+
+실제 OAuth 프로젝트 등록은 사용자 계정의 설정이 필요하다. 등록 전에는 합성 fixture와 mock HTTP 계약으로 검증하며 Google 로그인/실서버 성공을 주장하지 않는다. 패키지명·서명 SHA1·Drive API 활성화·동의 화면 등 설정 절차를 준비한다. 사용자는 Nextcloud 별도 테스트 폴더 사용을 승인했지만 인증은 여전히 앱 UI에서 직접 한다.
+
+## 2026-10-17 재확인 — 데스크톱은 사용자 설치 Drive 폴더 선택 우선
+
+사용자는 별도 Vemo 데스크톱 OAuth 연결보다 Google Drive 데스크톱 앱 설치 후 Vemo에서 폴더 선택하는 방식을 선호한다고 명확히 했다. 이 경로를 유지하고 별도 데스크톱 API adapter 구현을 보류한다. Android Drive의 SAF tree 지원과 drive.file 결과 접근은 검증 전 보장하지 않는다. 이번 Android deliverable은 녹음·기기 폴더 저장·공유와 선택 Nextcloud 왕복이다. Google 자동 왕복은 Android 권한/공급자 실검증과 연결 방식 결정이 남으며 완료라고 표시하지 않는다. 이는 Google 전체 Drive 권한으로 우회할 이유가 아니다.

@@ -24,6 +24,21 @@ struct SettingsView: View {
                 Text("iCloud Drive · Google Drive · Dropbox · OneDrive의 Mac 동기화 폴더를 선택할 수 있습니다. 같은 Drive 안에 Recordings(입력)와 Notes(결과)를 따로 두세요. 결과는 로컬 폴더에 저장하며 폰으로의 업로드는 Drive 앱이 진행합니다.").font(.caption).foregroundStyle(.secondary)
                 HStack { Text(model.connection); Spacer(); Button("다시 연결") { model.connect() } }
             }
+            Section("Android Vemo 연결 · 프리뷰") {
+                Text(model.mobileSyncFolder.isEmpty ? "동기화 폴더를 선택하세요" : model.mobileSyncFolder)
+                    .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                HStack {
+                    Button("폴더 연결") { model.chooseMobileSyncFolder() }
+                    Button("지금 확인") { model.checkMobileSync() }.disabled(model.mobileSyncFolder.isEmpty)
+                    if !model.mobileSyncFolder.isEmpty { Button("연결 해제") { model.disconnectMobileSync() } }
+                }.disabled(model.mobileSyncBusy)
+                if model.mobileSyncBusy { ProgressView().controlSize(.small) }
+                Text(model.mobileSyncStatus).font(.caption).foregroundStyle(.secondary)
+                Text("클라우드 데스크톱 앱으로 동기화한 Vemo 전용 폴더를 선택하세요. 일반 입력·결과·ZIP 폴더와 분리합니다. 폰에서 녹음 완료 후 전사와 노트를 만들고 결과를 같은 폴더로 돌려보냅니다.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("Android 자동 연결은 현재 Nextcloud 방식부터 검증합니다. Google Drive는 PC의 폴더 연결을 사용할 수 있으며, 폰 자동 왕복은 아직 검증 중입니다.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("ZIP 내보내기") {
                 HStack {
                     VStack(alignment:.leading,spacing:4) {
@@ -52,18 +67,7 @@ struct SettingsView: View {
                     Button("ZIP 파일 위치 보기") { NSWorkspace.shared.activateFileViewerSelecting([result]) }
                 }
             }
-            Section("모델") {
-                Text(model.modelStatus)
-                Text("ASR: Qwen3-ASR-1.7B · 정렬: Qwen3-ForcedAligner-0.6B\n제목: Qwen3-4B-Instruct-2507-4bit").font(.caption).foregroundStyle(.secondary)
-                Button("모델 다운로드 / 재개") { model.command("download_models") }
-                Text("최초 다운로드에 네트워크와 저장 공간이 필요합니다. 처리할 때는 로컬 모델을 사용합니다.").font(.caption).foregroundStyle(.secondary)
-            }
-            Section("상세 노트 모델 · 선택 다운로드") {
-                Text(model.notesModelStatus)
-                Text("Qwen3.5-27B-4bit · 다운로드 약 16 GB · 메모리 24 GB 이상 권장").font(.caption).foregroundStyle(.secondary)
-                Button("상세 노트 모델 다운로드 / 재개") { model.downloadNotesModel() }
-                Text("노트 생성에만 사용합니다. 전사 · 시간 정렬 · 제목 생성에는 필요하지 않습니다. 다운로드 후 로컬에서 처리합니다.").font(.caption).foregroundStyle(.secondary)
-            }
+            ModelSettingsView(model: model)
             Section("동작") {
                 Toggle("전원 연결 시에만 처리", isOn: $model.acOnly).onChange(of: model.acOnly) { _, value in model.setPolicy(value) }
                 Toggle("로그인 시 앱 실행", isOn: Binding(get: { model.loginEnabled }, set: { model.setLogin($0) }))
