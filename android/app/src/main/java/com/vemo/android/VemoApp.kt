@@ -11,6 +11,7 @@ import java.util.concurrent.Executors
 
 class VemoApp : Application() {
     lateinit var store: RecordingStore; private set
+    lateinit var library: LibraryStore; private set
     val gate = OperationGate()
     val io = Executors.newSingleThreadExecutor()
     val listeners = CopyOnWriteArraySet<() -> Unit>()
@@ -26,6 +27,8 @@ class VemoApp : Application() {
         super.onCreate()
         store = RecordingStore(File(filesDir, "recordings"))
         store.recoverInterrupted()
+        library = LibraryStore(File(filesDir, "library.json"))
+        try { library.snapshot() } catch (error: Exception) { message = safeError(error) }
         vault = CredentialVault(this)
         google = GoogleConnection(this)
     }

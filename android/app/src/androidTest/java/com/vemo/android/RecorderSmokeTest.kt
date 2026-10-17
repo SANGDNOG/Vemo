@@ -26,10 +26,15 @@ class RecorderSmokeTest : InstrumentationTestCase() {
         shell("pm grant com.vemo.android android.permission.POST_NOTIFICATIONS")
         val ctx = instrumentation.targetContext
         val store = RecordingStore(java.io.File(ctx.filesDir, "recordings"))
+        assertFalse("Do not interrupt an existing recording", ctx.vemo().gate.busy())
+        var ownedId: String? = null
+        val existingIds = store.list().map { it.id }.toSet()
         val activity = instrumentation.startActivitySync(Intent(Intent.ACTION_MAIN).setComponent(ComponentName("com.vemo.android", "com.vemo.android.MainActivity")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         try {
             command("com.vemo.START")
             val recording = waitFor(store, CaptureState.RECORDING)
+            assertFalse("Smoke selected a pre-existing recording", recording.id in existingIds)
+            ownedId = recording.id
             Thread.sleep(1500)
             command("com.vemo.PAUSE")
             val paused = waitFor(store, CaptureState.PAUSED, recording.id)
@@ -55,6 +60,20 @@ class RecorderSmokeTest : InstrumentationTestCase() {
             assertTrue(share.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0)
             assertNotNull(share.clipData)
         } finally {
+            ownedId?.let { id ->
+                val state = store.get(id).state
+                if (state in setOf(CaptureState.RECORDING, CaptureState.PAUSED)) {
+                    command("com.vemo.STOP")
+                    waitFor(store, CaptureState.COMPLETE, id)
+                }
+                for (attempt in 0..100) {
+                    if (!ctx.vemo().gate.isRecording()) break
+                    Thread.sleep(100)
+                }
+                assertFalse("Smoke capture did not release gate", ctx.vemo().gate.isRecording())
+                ctx.vemo().library.assign(id, null)
+                assertTrue(java.io.File(ctx.filesDir, "recordings/$id").deleteRecursively())
+            }
             instrumentation.runOnMainSync { activity.finish() }
         }
     }

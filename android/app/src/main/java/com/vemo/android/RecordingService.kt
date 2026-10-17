@@ -13,6 +13,7 @@ class RecordingService : Service() {
     private var recorder: MediaRecorder? = null
     private var output: FileOutputStream? = null
     private var id: String? = null
+    private var classificationWarning: String? = null
     private var paused = false
     private var finishing = false
     private var accumulated = 0L
@@ -33,7 +34,7 @@ class RecordingService : Service() {
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            "com.vemo.START" -> start()
+            "com.vemo.START" -> start(intent.getStringExtra("com.vemo.FOLDER_ID"))
             "com.vemo.PAUSE" -> pause()
             "com.vemo.RESUME" -> resume()
             "com.vemo.STOP" -> finish()
@@ -41,7 +42,7 @@ class RecordingService : Service() {
         return START_NOT_STICKY
     }
     @Suppress("DEPRECATION")
-    private fun start() {
+    private fun start(folderId: String?) {
         val app = vemo()
         if (id != null || finishing) return
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) { app.notify("마이크 권한을 허용하세요."); stopSelf(); return }
@@ -71,7 +72,14 @@ class RecordingService : Service() {
             started = SystemClock.elapsedRealtime(); accumulated = 0; paused = false
             app.elapsedMs = 0
             handler.post(ticker)
-            app.notify("녹음 중 · 기기 내부에 저장합니다.")
+            classificationWarning = null
+            if (folderId != null) {
+                try { app.library.assign(record.id, folderId) }
+                catch (error: Exception) {
+                    classificationWarning = "폴더 지정 실패 · 녹음은 계속되며 원본은 기기에 보존됩니다. ${safeError(error)}"
+                }
+            }
+            app.notify(classificationWarning ?: "녹음 중 · 기기 내부에 저장합니다.")
         } catch (error: Exception) { interrupt(safeError(error)) }
     }
     private fun pause() {
@@ -107,7 +115,7 @@ class RecordingService : Service() {
                 try {
                     val duration = AudioValidation.duration(app.store.partial(current))
                     val complete = app.store.finish(current, duration)
-                    app.message = "기기에 저장 완료 · ${complete.bytes / 1024} KB"
+                    app.message = "기기에 저장 완료 · ${complete.bytes / 1024} KB" + (classificationWarning?.let { " · $it" } ?: "")
                 } catch (error: Exception) {
                     if (app.store.get(current).state == CaptureState.FINALIZING) app.store.transition(current, CaptureState.INTERRUPTED)
                     app.store.update(current) { it.copy(status = safeError(error)) }
