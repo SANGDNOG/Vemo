@@ -13,7 +13,21 @@ x64(일반 Intel/AMD PC) 또는 ARM64 빌드의 전체 폴더를 풀고 `Vemo.Ap
 3. 완료된 녹음을 가져옵니다. 원본은 복사하며, 녹음일을 모르면 `date-unknown`으로 표시합니다. 알고 있는 경우 시간대가 포함된 ISO 날짜를 직접 입력합니다. 전사·노트가 끝나면 폴더 구조에 맞춰 녹음별 ZIP이 만들어집니다. ZIP에는 녹음·전사·노트 3개만 들어갑니다.
 4. Ctrl/Shift 다중 선택, 폴더·하위 폴더 이동, 휴지통·복원·Vemo 소유 사본 영구 삭제를 지원합니다. 제목은 상세 화면에서 편집합니다. 원본과 이미 내보낸 ZIP은 유지합니다.
 
-Windows는 **Google Drive 직접 OAuth 연결**과 로컬 동기화 폴더 방식을 지원합니다. 배포 앱에서 설정 → Google Drive 연결로 로그인합니다. 사용자가 OAuth JSON을 준비할 필요는 없습니다. 실제 계정/폰 왕복 검증 상태는 [연결 가이드](../docs/WINDOWS_GOOGLE_SETUP.md)를 참고하세요. 자동 제목 생성, 14,000자 초과 전사문의 노트 생성, 폰 자체 AI, NVIDIA 실제 실행과 Windows GUI 수동 검증도 완료되지 않았습니다. macOS와 기능이 모두 같다고 보지 마세요.
+Windows는 **Google Drive 직접 OAuth 연결**과 로컬 동기화 폴더 방식을 지원합니다. 배포 앱에서 설정 → Google Drive 연결로 로그인합니다. 사용자가 OAuth JSON을 준비할 필요는 없습니다. 실제 계정/폰 왕복 검증 상태는 [연결 가이드](../docs/WINDOWS_GOOGLE_SETUP.md)를 참고하세요. 폰 자체 AI와 전체 Windows GUI 수동 검증은 완료되지 않았습니다. 긴 전사문은 분할해 노트를 생성하며, 실제 GPU 검증 범위는 별도 기록을 참고하세요. macOS와 기능이 모두 같다고 보지 마세요.
+
+## GPU 자동 설정과 긴 녹음
+
+설정의 처리 장치 기본값은 **Auto**입니다. Windows x64의 NVIDIA GPU와 드라이버가 확인되면 고정 버전의 Whisper·llama CUDA 엔진을 자동으로 준비하고 SHA-256, 설치 파일, 실제 CUDA 장치를 검증합니다. 처음에는 약 1.35GB의 엔진 다운로드와 설치 시간이 필요합니다. 기존 전사·노트 모델 파일은 그대로 사용하며 모델 가중치를 임의로 교체하거나 추가 다운로드하지 않습니다. NVIDIA 드라이버와 Visual C++ 런타임 설치는 별도입니다.
+
+노트 생성은 GPU 여유 메모리 2048MiB를 목표로 레이어를 자동 배치합니다. 모델 크기에 따라 CPU와 GPU를 함께 쓸 수 있으며 모든 모델이 GPU에 전부 올라간다는 뜻은 아닙니다. CPU를 직접 선택하면 GPU 준비를 건너뜁니다. AMD·Intel GPU와 ARM64의 GPU 자동 설정은 현재 지원하지 않습니다. 무결성 오류는 실행을 차단하며, 지원되지 않는 장치나 엔진 준비 실패는 상태에 이유를 표시합니다.
+
+긴 전사문은 전체 원문을 순서대로 분할해 상세 노트를 작성합니다. 진행률은 검증까지 끝난 조각 수를 기준으로 표시하며, 실패·취소 시 전사와 검증된 조각을 보존해 재시도에 사용합니다. 전체 노트가 완료되기 전에는 성공 결과와 ZIP을 게시하지 않습니다. 시간 정보 JSON이 크거나 손상돼도 유효한 전사 텍스트는 보존합니다. 분할 생성은 전체 강의의 주제를 완벽히 통합하거나 ASR 오류를 교정하는 기능은 아닙니다.
+
+## Windows GPU 실기기 검증 (2026-10-18)
+
+RTX 5070 Ti 16GB / RAM 64GB에서 Qwen3.5-9B-Q4_K_M와 Whisper large-v3-turbo를 검증했습니다. 약 33분 16초 녹음은 GPU 전사 약 110초 후 전사 구간 끝까지 저장됐으며, 수정된 분할 노트 생성과 녹음별 ZIP 저장도 완료했습니다. ZIP 3개 항목의 원본·전사·노트 바이트를 대조했고 Google Drive 결과 재읽기도 일치했습니다. 짧은 녹음의 Android 왕복은 확인했지만, 이번 긴 녹음의 Android 화면 재확인은 보류했습니다.
+
+노트 출력 문법은 현재 고정 llama.cpp b11714와 Qwen3.5의 대화 접두사를 기준으로 검증됐습니다. 다른 대화 템플릿의 임의 GGUF 모델은 호환을 보장하지 않습니다. 조건·예시 인용은 원문과 대조하지만, 요약 문장의 의미 정확성이나 전사 오류까지 자동 검증하는 것은 아닙니다. CUDA 설치 검증은 캐시된 공식 아카이브의 해시 확인·추출·장치 탐지까지 포함하며, 이 실험에서 신규 네트워크 다운로드를 재검증한 것은 아닙니다.
 
 ## Build and test
 
@@ -73,8 +87,8 @@ This mode uses the real CLI adapter, copies audio into a unique isolated state d
 
 ## Using the app
 
-1. Open Settings. Choose separate local export and (optionally) mobile-sync folders. Select native whisper.cpp, llama.cpp and FFmpeg executables and downloaded model files. CPU is the default. Model profile labels do not prove a file matches a profile; verify downloads against `model-catalogue.json`.
-2. Import **finished** audio files. The source is copied, never moved. Local file imports have an unknown recording date rather than an invented file-mtime date; supply an ISO timestamp with an explicit timezone if known. Mobile dates are immutable and retain the original timestamp/offset. Titles can be edited inline in the detail field.
+1. Open Settings. Choose separate local export and (optionally) mobile-sync folders. Select native whisper.cpp, llama.cpp and FFmpeg executables and downloaded model files. Auto is the default: on Windows x64 with a supported NVIDIA driver/device, Vemo verifies and prepares pinned CUDA engines before processing. CPU remains selectable; unsupported hardware falls back to CPU with a reason. The notes label follows the selected GGUF filename; filenames alone do not authenticate weights, so verify model downloads against `model-catalogue.json`.
+2. Import **finished** audio files. The source is copied, never moved. Local file imports have an unknown recording date rather than an invented file-mtime date; supply an ISO timestamp with an explicit timezone if known. Mobile dates are immutable and retain the original timestamp/offset. Titles can be edited inline with double-click/Enter or the recording menu. New imports derive a bounded title from the most prominent validated note headings after notes complete. Manual edits are protected, including edits made during processing; legacy titles remain unchanged until “저장된 노트로 제목 자동 생성” is selected. Recording-date suffixes use the stored recording day. Regeneration requires saved structured notes; it does not rerun the model. Existing notes headers and already exported ZIPs retain their historical content; newly exported filenames use the current title.
 3. Processing is queued durably. Pause stops starting new jobs. Select queued/running jobs and Cancel to cancel them. Retry snapshot keeps the job's original model/settings; Retry current models explicitly replaces its selection. Completed output survives settings changes/restarts. Missing runtime/model files are recoverable failures. Notes failure retains ASR so retry can reuse it.
 4. Create folders/subfolders under the selected folder. Move folder changes its parent; Move selected moves recordings. Ctrl/Shift selects multiple recordings. Trash hides jobs; Restore returns them to their stored folder. **Purge owned copies immediately and permanently removes only selected inactive trashed items under Vemo's owned state root.** Source files and exported ZIPs survive. Purged mobile identities remain as tombstones so scanning does not re-import them.
 5. Completed jobs automatically export three entries: `original.<ext>`, `transcript.txt`, `notes.md`. ZIP directories mirror the library folders; names use title and civil recording date (or `date-unknown`), with collision suffixes and no hashes. Existing archives are never overwritten or removed when recordings move, rename or are purged. Export errors are separate from successful inference and can be retried after choosing/fixing output storage.

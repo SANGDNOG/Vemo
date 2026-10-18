@@ -79,7 +79,7 @@ public sealed class ReadingIntegrityIndependentTests
     }
 
     [Fact]
-    public async Task Runner_ignores_foreign_and_late_progress_keeps_jitter_monotonic_and_notes_unmeasured()
+    public async Task Runner_ignores_foreign_and_late_progress_and_keeps_measured_stages_bounded_and_monotonic()
     {
         using var f = new StoreFixture(); var id = f.Store.Import(f.Audio, "Progress fixture").Id;
         var engine = new ReportingEngine(); var runner = new JobRunner(f.Store, engine);
@@ -88,15 +88,24 @@ public sealed class ReadingIntegrityIndependentTests
         Assert.True(await runner.RunNextAsync());
         Assert.Equal(JobState.Completed, f.Store.Get(id).State);
         var percentages = observed.Where(x => x.Stage == "transcribing" && x.Percent != null).Select(x => x.Percent!.Value).ToArray();
-        Assert.NotEmpty(percentages); Assert.All(percentages, x => Assert.InRange(x, 0, 99));
+        Assert.Equal(new double[] { 0, 12, 12, 12, 58, 99, 99 }, percentages);
+        Assert.All(percentages, x => Assert.InRange(x, 0, 99));
         Assert.Equal(percentages.Order(), percentages); Assert.Equal(99, percentages[^1]);
-        Assert.All(observed.Where(x => x.Stage == "notes"), x => Assert.Null(x.Percent));
-        Assert.Contains(observed, x => x.Stage == "notes");
+        var notes = observed.Where(x => x.Stage == "notes").ToArray();
+        Assert.Null(notes[0].Percent);
+        Assert.Single(notes, x => x.Percent == null);
+        var notesPercentages = notes.Where(x => x.Percent != null).Select(x => x.Percent!.Value).ToArray();
+        Assert.Equal(new double[] { 0, 25, 25, 83, 100, 100 }, notesPercentages);
+        Assert.All(notesPercentages, x => Assert.InRange(x, 0, 100));
+        Assert.Equal(notesPercentages.Order(), notesPercentages);
         Assert.All(observed, x => { Assert.Equal(id, x.JobId); Assert.True(x.Elapsed >= TimeSpan.Zero); });
         Assert.Equal(observed.Select(x => x.Elapsed).Order(), observed.Select(x => x.Elapsed));
         Assert.Equal("completed", runner.Progress!.Stage);
-        var final = runner.Progress; engine.Context!.Progress!.Report(new(id, "transcribing", 17, TimeSpan.Zero));
+        var final = runner.Progress; var count = observed.Count;
+        engine.Context!.Progress!.Report(new(id, "transcribing", 17, TimeSpan.Zero));
+        engine.Context.Progress.Report(new(id, "notes", 100, TimeSpan.Zero));
         Assert.Equal(final, runner.Progress);
+        Assert.Equal(count, observed.Count);
     }
 
     [Fact]
@@ -130,13 +139,19 @@ public sealed class ReadingIntegrityIndependentTests
         {
             Context = context; var report = context.Progress!;
             report.Report(new("foreign-job", "transcribing", 98, TimeSpan.Zero));
+            report.Report(new(context.Job.Id, "notes", 100, TimeSpan.Zero));
             foreach (var percent in new[] { -1d, 12d, 7d, 12d, 58d, 104d, 77d, double.NaN }) report.Report(new(context.Job.Id, "transcribing", percent, TimeSpan.Zero));
             return Task.FromResult("Exact fixture transcript.");
         }
         public Task<string> GenerateNotesAsync(InferenceContext context, IReadOnlyList<string> sources, CancellationToken ct)
         {
-            context.Progress!.Report(new(context.Job.Id, "notes", 83, TimeSpan.Zero));
-            context.Progress.Report(new(context.Job.Id, "transcribing", 19, TimeSpan.Zero));
+            var report = context.Progress!;
+            foreach (var percent in new[] { -1d, 25d }) report.Report(new(context.Job.Id, "notes", percent, TimeSpan.Zero));
+            report.Report(new("foreign-job", "notes", 100, TimeSpan.Zero));
+            report.Report(new(context.Job.Id, "transcribing", 19, TimeSpan.Zero));
+            report.Report(new(context.Job.Id, "saving", 100, TimeSpan.Zero));
+            report.Report(new(context.Job.Id, "notes", null, TimeSpan.Zero));
+            foreach (var percent in new[] { 7d, 83d, 104d, 77d, double.NaN, double.PositiveInfinity, double.NegativeInfinity }) report.Report(new(context.Job.Id, "notes", percent, TimeSpan.Zero));
             return Task.FromResult("{\"schema_version\":1,\"topics\":[{\"heading\":\"Fixture\",\"summary\":\"Fixture summary\",\"conditions\":[],\"examples\":[],\"refs\":[1]}]}");
         }
     }

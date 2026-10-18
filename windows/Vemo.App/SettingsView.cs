@@ -18,7 +18,7 @@ public sealed partial class SettingsView : UserControl
     Task pending = Task.CompletedTask;
     CancellationTokenSource? operation;
     event Action? BusyChanged;
-    public SettingsView(LibraryStore store, MobileFolderAdapter mobile, Action? close = null, GoogleConnectionService? google = null, bool traySupported = false)
+    public SettingsView(LibraryStore store, MobileFolderAdapter mobile, Action? close = null, GoogleConnectionService? google = null, bool traySupported = false, Func<string>? runtimeStatus = null)
     {
         Classes.Add("settings-view");
         CloseRequested += (_, _) => close?.Invoke();
@@ -123,7 +123,13 @@ public sealed partial class SettingsView : UserControl
         var autoExport = new ToggleSwitch { OnContent = null, OffContent = null, IsChecked = s.AutoExport }; NativeWhite.Label(autoExport, "완료된 녹음 자동 ZIP 저장"); Row("완료된 녹음 자동 ZIP 저장", autoExport);
         Section("모델", "");
         var whisperProfile = Choice("전사 모델", ["small", "large-v3-turbo"], m.WhisperProfile);
-        var notesProfile = Choice("노트 모델", ["Qwen3.5 9B GGUF", "Qwen3.5 27B GGUF"], m.NotesProfile);
+        var notesProfile = NativeWhite.Text(NotesProfileForFile(m.LlamaModel));
+        notesProfile.FontSize = 11; NativeWhite.Label(notesProfile, "노트 모델");
+        Row("노트 모델", notesProfile, "선택한 GGUF 파일 기준 · 모델 변경은 고급 경로 설정에서");
+        var notesFile = NativeWhite.Text(NotesFileName(m.LlamaModel) is { Length: > 0 } filename ? filename : "GGUF 파일을 선택하세요");
+        notesFile.Margin = new Thickness(14, 12); notesFile.FontSize = 12;
+        notesFile.FontWeight = Avalonia.Media.FontWeight.Medium;
+        NativeWhite.Label(notesFile, "사용할 노트 모델 파일"); AddRow(notesFile);
         var import = new Button { Content = "프리셋 설정 가져오기…" }; import.Classes.Add("quiet");
         var availability = NativeWhite.Text("", "caption"); availability.Margin = new Thickness(16, 12); group.Children.Add(availability);
         var modelGroup = group;
@@ -136,9 +142,14 @@ public sealed partial class SettingsView : UserControl
         Section("처리", "");
         var externalPower = new ToggleSwitch { OnContent = null, OffContent = null, IsChecked = s.RequireExternalPower }; NativeWhite.Label(externalPower, "전원 연결 시에만 처리"); Row("전원 연결 시에만 처리", externalPower); ToolTip.SetTip(externalPower, "배터리 사용 중에는 새 작업을 기다립니다.");
         var automatic = new ToggleSwitch { OnContent = null, OffContent = null, IsChecked = !s.QueuePaused }; NativeWhite.Label(automatic, "새 작업 자동 처리"); Row("새 작업 자동 처리", automatic); ToolTip.SetTip(automatic, "진행 중인 작업과 기존 결과는 유지합니다.");
-        var processingGroup = group; group = advancedFields;
-        var compute = Choice("처리 장치", ["CPU", "CUDA"], m.Compute);
-        var cuda = new CheckBox { Content = NativeWhite.Text("CUDA 실행 파일과 NVIDIA 장치 지원을 확인했습니다.", "secondary"), IsChecked = m.CudaConfirmed, Margin = new Thickness(16, 12) }; group.Children.Add(cuda);
+        var processingGroup = group;
+        var compute = Choice("처리 장치", ["Auto", "CPU", "CUDA"], m.ComputePreference);
+        var deviceStatus = NativeWhite.Text(runtimeStatus?.Invoke() ?? (string.IsNullOrEmpty(m.RuntimeDevice) ? "자동 · 지원 NVIDIA 장치는 실행 전에 준비합니다." : m.Compute + " · " + m.RuntimeDevice), "caption");
+        deviceStatus.Margin = new Thickness(14, 12); NativeWhite.Label(deviceStatus, "GPU 준비 상태"); group.Children.Add(deviceStatus);
+        var deviceTimer = new Avalonia.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        deviceTimer.Tick += (_, _) => { if (closed) { deviceTimer.Stop(); return; } if (runtimeStatus != null) deviceStatus.Text = runtimeStatus(); };
+        AttachedToVisualTree += (_, _) => deviceTimer.Start(); DetachedFromVisualTree += (_, _) => deviceTimer.Stop();
+        group = advancedFields;
         var layers = Field("GPU 레이어 수 · 부분 오프로딩", m.GpuLayers.ToString()); var timeout = Field("프로세스별 시간 제한 · 분", m.TimeoutMinutes.ToString());
         group = processingGroup;
         content.Children.Remove(archiveSection); content.Children.Add(archiveSection);
@@ -158,7 +169,9 @@ public sealed partial class SettingsView : UserControl
             var paths = new[] { whisperExe.Text, whisperModel.Text, llamaExe.Text, llamaModel.Text, ffmpeg.Text }; var missing = paths.Count(p => string.IsNullOrWhiteSpace(p) || !File.Exists(p));
             availability.Text = missing > 0 ? $"필수 파일 {missing}개를 선택하거나 경로를 확인하세요." : "모델 파일을 확인했습니다.";
             availability.Foreground = missing > 0 ? NativeWhite.Danger : NativeWhite.Secondary;
-            var gpu = compute.SelectedItem?.ToString() == "CUDA"; cuda.IsEnabled = gpu; layers.IsEnabled = gpu;
+            notesProfile.Text = NotesProfileForFile(llamaModel.Text);
+            notesFile.Text = NotesFileName(llamaModel.Text) is { Length: > 0 } filename ? filename : "GGUF 파일을 선택하세요";
+            layers.IsEnabled = false;
         }
         foreach (var field in new[] { whisperExe, whisperModel, llamaExe, llamaModel, ffmpeg }) field.TextChanged += (_, _) => UpdateAvailability(); compute.SelectionChanged += (_, _) => UpdateAvailability(); UpdateAvailability();
         BusyChanged += () => import.IsEnabled = !busy;
@@ -168,10 +181,10 @@ public sealed partial class SettingsView : UserControl
                 if (closed || token.IsCancellationRequested || files.Count == 0) return;
                 var path = files[0].TryGetLocalPath() ?? throw new IOException("이 PC에 저장된 설정 파일을 선택하세요.");
                 var preset = PresetSettings.Load(path); var selection = preset.Models;
-                whisperProfile.SelectedItem = selection.WhisperProfile; notesProfile.SelectedItem = selection.NotesProfile;
+                whisperProfile.SelectedItem = selection.WhisperProfile;
                 whisperExe.Text = selection.WhisperExecutable; whisperModel.Text = selection.WhisperModel;
                 llamaExe.Text = selection.LlamaExecutable; llamaModel.Text = selection.LlamaModel; ffmpeg.Text = selection.FfmpegExecutable;
-                compute.SelectedItem = "CPU"; cuda.IsChecked = false; layers.Text = selection.GpuLayers.ToString(); timeout.Text = selection.TimeoutMinutes.ToString();
+                compute.SelectedItem = selection.ComputePreference; layers.Text = selection.GpuLayers.ToString(); timeout.Text = selection.TimeoutMinutes.ToString();
                 if (!string.IsNullOrWhiteSpace(preset.OutputDirectory)) output.Text = preset.OutputDirectory;
                 message.Foreground = NativeWhite.Secondary; message.Text = "프리셋을 불러왔습니다. 경로를 확인하고 저장하세요."; UpdateAvailability();
         }, message);
@@ -190,11 +203,7 @@ public sealed partial class SettingsView : UserControl
                 }
                 var gpuLayers = compute.SelectedItem?.ToString() == "CUDA" ? Number(layers, 0, 256, "GPU 레이어 수") : m.GpuLayers;
                 var timeoutMinutes = Number(timeout, 1, 1440, "프로세스별 시간 제한 · 분");
-                if (compute.SelectedItem?.ToString() == "CUDA" && cuda.IsChecked != true)
-                {
-                    advanced.IsExpanded = true; cuda.Focus(); throw new InvalidDataException("CUDA 지원을 확인한 뒤 확인란을 선택하거나 CPU를 선택하세요.");
-                }
-                var updated = store.Settings with { InputDirectory = input.Text?.Trim() ?? "", AutoExport = autoExport.IsChecked == true, RequireExternalPower = externalPower.IsChecked == true, CloseToTray = traySupported ? closeToTray.IsChecked == true : store.Settings.CloseToTray, QueuePaused = automatic.IsChecked != true, OutputDirectory = output.Text?.Trim() ?? "", MobileDirectory = sync.Text?.Trim() ?? "", Models = store.Settings.Models with { WhisperProfile = whisperProfile.SelectedItem?.ToString() ?? "large-v3-turbo", NotesProfile = notesProfile.SelectedItem?.ToString() ?? "Qwen3.5 9B GGUF", WhisperExecutable = whisperExe.Text?.Trim() ?? "", WhisperModel = whisperModel.Text?.Trim() ?? "", LlamaExecutable = llamaExe.Text?.Trim() ?? "", LlamaModel = llamaModel.Text?.Trim() ?? "", FfmpegExecutable = ffmpeg.Text?.Trim() ?? "", Compute = compute.SelectedItem?.ToString() ?? "CPU", CudaConfirmed = cuda.IsChecked == true, GpuLayers = gpuLayers, TimeoutMinutes = timeoutMinutes } };
+                var updated = store.Settings with { InputDirectory = input.Text?.Trim() ?? "", AutoExport = autoExport.IsChecked == true, RequireExternalPower = externalPower.IsChecked == true, CloseToTray = traySupported ? closeToTray.IsChecked == true : store.Settings.CloseToTray, QueuePaused = automatic.IsChecked != true, OutputDirectory = output.Text?.Trim() ?? "", MobileDirectory = sync.Text?.Trim() ?? "", Models = store.Settings.Models with { WhisperProfile = whisperProfile.SelectedItem?.ToString() ?? "large-v3-turbo", NotesProfile = NotesProfileForFile(llamaModel.Text), WhisperExecutable = whisperExe.Text?.Trim() ?? "", WhisperModel = whisperModel.Text?.Trim() ?? "", LlamaExecutable = llamaExe.Text?.Trim() ?? "", LlamaModel = llamaModel.Text?.Trim() ?? "", FfmpegExecutable = ffmpeg.Text?.Trim() ?? "", CpuWhisperExecutable = whisperExe.Text?.Trim() != m.WhisperExecutable ? "" : store.Settings.Models.CpuWhisperExecutable, CpuLlamaExecutable = llamaExe.Text?.Trim() != m.LlamaExecutable ? "" : store.Settings.Models.CpuLlamaExecutable, ComputePreference = compute.SelectedItem?.ToString() ?? "Auto", Compute = compute.SelectedItem?.ToString() == "CPU" ? "CPU" : store.Settings.Models.Compute, AutoGpuLayers = compute.SelectedItem?.ToString() != "CPU" && store.Settings.Models.AutoGpuLayers, CudaConfirmed = compute.SelectedItem?.ToString() != "CPU" && store.Settings.Models.CudaConfirmed, GpuLayers = gpuLayers, TimeoutMinutes = timeoutMinutes } };
                 var changeStartup = OperatingSystem.IsWindows() && (startup.IsChecked == true) != startupInitial;
                 var previousStartup = false;
                 if (changeStartup)
@@ -214,6 +223,19 @@ public sealed partial class SettingsView : UserControl
             }
             catch (Exception e) { if (!closed) { message.Foreground = NativeWhite.Danger; message.Text = e.Message; } }
         };
+    }
+
+    // Handle Windows paths even in headless tests running on another platform.
+    static string NotesFileName(string? path) => (path ?? "").Trim().Replace('\\', '/').Split('/')[^1];
+
+    static string NotesProfileForFile(string? path)
+    {
+        var filename = NotesFileName(path);
+        if (filename.Length == 0) return "모델 파일 미선택";
+        var match = System.Text.RegularExpressions.Regex.Match(filename,
+            @"^Qwen3\.5[-_ ](9|27)B(?=[-_. ]|$).*\.gguf$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        return match.Success ? $"Qwen3.5 {match.Groups[1].Value}B GGUF" : "사용자 지정 GGUF";
     }
 
     async Task RunOperation(Func<CancellationToken, Task> action, TextBlock message)

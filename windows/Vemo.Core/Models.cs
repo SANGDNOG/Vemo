@@ -13,6 +13,11 @@ public sealed record ModelSelection
     public string LlamaModel { get; init; } = "";
     public string FfmpegExecutable { get; init; } = "";
     public string Compute { get; init; } = "CPU";
+    public string ComputePreference { get; init; } = "Auto";
+    public bool AutoGpuLayers { get; init; }
+    public string RuntimeDevice { get; init; } = "";
+    public string CpuWhisperExecutable { get; init; } = "";
+    public string CpuLlamaExecutable { get; init; } = "";
     public bool CudaConfirmed { get; init; }
     public int GpuLayers { get; init; } = 20;
     public int TimeoutMinutes { get; init; } = 120;
@@ -32,10 +37,13 @@ public sealed record AppSettings
 }
 public sealed record LibraryFolder(string Id, string Name, string? ParentId);
 public sealed record MobileOrigin(string SyncRoot, string RecordingId, string AudioSha256, string ProcessorId, string RecordedAt, string OriginalTitle);
+public enum TitleOwnership { Unknown, Imported, Automatic, Manual }
 public sealed record RecordingJob
 {
     public required string Id { get; init; }
     public required string Title { get; init; }
+    public TitleOwnership TitleOwnership { get; init; } = TitleOwnership.Unknown;
+    public long TitleRevision { get; init; }
     public string? RecordedAt { get; init; }
     public string? RecordingDate { get; init; }
     public string Extension { get; init; } = ".wav";

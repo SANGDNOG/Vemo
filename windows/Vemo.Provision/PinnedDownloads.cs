@@ -26,19 +26,21 @@ public sealed class PinnedDownloads(HttpClient http) {
             await VerifyAsync(partial,pin,ct);SafeFiles.NoLinks(dest);System.IO.File.Move(partial,dest,false);Console.WriteLine("SHA-256 verified "+pin.File);return dest;
         }finally{if(System.IO.File.Exists(partial))System.IO.File.Delete(partial);}
     }
-    public static void Extract(string archive,string destination){
+    public static void Extract(string archive,string destination,CancellationToken ct=default){
+        ct.ThrowIfCancellationRequested();
         SafeFiles.NoLinks(archive);SafeFiles.NoLinks(destination);if(Directory.Exists(destination))throw new IOException("Runtime extraction destination already exists.");
         var staging=destination+".staging-"+Guid.NewGuid();Directory.CreateDirectory(staging);
         try {
             using var zip=ZipFile.OpenRead(archive);if(zip.Entries.Count>10000)throw new InvalidDataException("Runtime archive has too many files.");long total=0;var seen=new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach(var entry in zip.Entries){
+                ct.ThrowIfCancellationRequested();
                 var name=entry.FullName.Replace('\\','/');var pieces=name.TrimEnd('/').Split('/');if(name.StartsWith('/')||pieces.Length==0||pieces.Any(p=>p is "" or "." or ".."))throw new InvalidDataException("Unsafe runtime archive path.");foreach(var piece in pieces)SafeFiles.Name(piece);
                 if(!seen.Add(string.Join('/',pieces)))throw new InvalidDataException("Duplicate runtime archive path.");var mode=(entry.ExternalAttributes>>16)&0xf000;if(mode is not (0 or 0x8000 or 0x4000)||(entry.ExternalAttributes&0x400)!=0)throw new InvalidDataException("Runtime archive contains a link or unsupported entry.");
                 total+=entry.Length;if(total>2L*1024*1024*1024)throw new InvalidDataException("Runtime extraction exceeds 2 GiB.");
                 var target=Path.Combine([staging,..pieces]);if(!SafeFiles.Within(staging,target))throw new InvalidDataException("Archive traversal.");
-                if(name.EndsWith('/'))Directory.CreateDirectory(target);else{Directory.CreateDirectory(Path.GetDirectoryName(target)!);entry.ExtractToFile(target,false);}
+                if(name.EndsWith('/'))Directory.CreateDirectory(target);else{Directory.CreateDirectory(Path.GetDirectoryName(target)!);using var input=entry.Open();using var output=new FileStream(target,FileMode.CreateNew,FileAccess.Write,FileShare.None);var buffer=new byte[1024*1024];int n;while((n=input.Read(buffer))>0){ct.ThrowIfCancellationRequested();output.Write(buffer,0,n);}}
             }
-            Directory.Move(staging,destination);
+            ct.ThrowIfCancellationRequested();Directory.Move(staging,destination);
         }finally{if(Directory.Exists(staging))SafeFiles.DeleteTree(staging);}
     }
     public static void RequirePe(string file,string arch){SafeFiles.NoLinks(file);using var reader=new BinaryReader(System.IO.File.OpenRead(file));if(reader.ReadUInt16()!=0x5a4d)throw new InvalidDataException("Selected executable is not a Windows native PE file: "+file);reader.BaseStream.Position=60;var offset=reader.ReadInt32();if(offset<64||offset>reader.BaseStream.Length-6)throw new InvalidDataException("Invalid PE header.");reader.BaseStream.Position=offset;if(reader.ReadUInt32()!=0x4550||reader.ReadUInt16()!=(arch=="x64"?0x8664:0xaa64))throw new InvalidDataException("Executable architecture does not match "+arch+": "+file);}

@@ -48,8 +48,31 @@ public sealed class LibraryStore : IDisposable
                 if (settings.OutputDirectory != "") SafeFiles.Disjoint(settings.InputDirectory, settings.OutputDirectory);
                 if (settings.MobileDirectory != "") SafeFiles.Disjoint(settings.InputDirectory, settings.MobileDirectory);
             }
+            if (settings.Models.ComputePreference is not ("Auto" or "CPU" or "CUDA")) throw new InvalidDataException("Invalid compute preference.");
             if (settings.Models.Compute is not ("CPU" or "CUDA") || settings.Models.TimeoutMinutes is < 1 or > 1440 || settings.Models.GpuLayers is < 0 or > 256) throw new InvalidDataException("Invalid runtime settings.");
             data.Settings = settings; Save();
+        }
+    }
+    // Compare complete model snapshots so a slow preparation cannot overwrite edited settings.
+    public bool TryApplyPreparedSettingsModels(ModelSelection expected, ModelSelection prepared)
+    {
+        lock (gate)
+        {
+            if (data.Settings.Models != expected) return false;
+            var previous = data.Settings;
+            data.Settings = previous with { Models = prepared };
+            try { Save(); } catch { data.Settings = previous; throw; }
+            return true;
+        }
+    }
+    public bool TryApplyPreparedJobModels(string id, ModelSelection expected, ModelSelection prepared)
+    {
+        lock (gate)
+        {
+            var job = Get(id);
+            if (job.State != JobState.Queued || job.Trashed || job.Models != expected) return false;
+            Replace(job with { Models = prepared });
+            return true;
         }
     }
     public RecordingJob Import(string source, string? title = null, string? recordedAt = null, MobileOrigin? mobile = null, string? folderId = null)
@@ -66,7 +89,7 @@ public sealed class LibraryStore : IDisposable
             {
                 var dest = Path.Combine(dir, "original" + ext); File.Copy(source, dest, false); var hash = SafeFiles.Hash(dest); if (hash != SafeFiles.Hash(source)) throw new IOException("Source changed while copying.");
                 if (mobile != null && (hash != mobile.AudioSha256 || recordedAt != mobile.RecordedAt)) throw new InvalidDataException("Mobile snapshot mismatch.");
-                var job = new RecordingJob { Id = id, Title = title, RecordedAt = recordedAt, Extension = ext, AudioSha256 = hash, Models = data.Settings.Models with { }, Mobile = mobile, FolderId = folderId }; data.Jobs.Add(job); try { Save(); } catch { data.Jobs.Remove(job); throw; } return job;
+                var job = new RecordingJob { Id = id, Title = title, TitleOwnership = TitleOwnership.Imported, RecordedAt = recordedAt, Extension = ext, AudioSha256 = hash, Models = data.Settings.Models with { }, Mobile = mobile, FolderId = folderId }; data.Jobs.Add(job); try { Save(); } catch { data.Jobs.Remove(job); throw; } return job;
             }
             catch { SafeFiles.DeleteTree(dir); throw; }
         }
@@ -88,14 +111,47 @@ public sealed class LibraryStore : IDisposable
         }
     }
     public void Rename(string id, string title)
-    { lock (gate) { var j = Get(id); Replace(j with { Title = RecordingTitles.BaseTitle(title), ExportPath = null }); } }
-    public void UpdateTitleAndDate(string id, string title, string? recordingDate)
+    { lock (gate) { var j = Get(id); Replace(j with { Title = RecordingTitles.BaseTitle(title), TitleOwnership = TitleOwnership.Manual, TitleRevision = checked(j.TitleRevision + 1), ExportPath = null }); } }
+    public void UpdateTitleAndDate(string id, string title, string? recordingDate, bool updateTitle = true)
     {
         lock (gate)
         {
-            var j = Get(id); var baseTitle = RecordingTitles.BaseTitle(title); RecordingTitles.ValidateDay(recordingDate);
+            var j = Get(id); var baseTitle = updateTitle ? RecordingTitles.BaseTitle(title) : j.Title; RecordingTitles.ValidateDay(recordingDate);
             if (j.Mobile != null && recordingDate != null && recordingDate != j.RecordedAt?[..10]) throw new InvalidOperationException("Mobile recording date is immutable.");
-            Replace(j with { Title = baseTitle, RecordingDate = recordingDate, ExportPath = null });
+            Replace(j with { Title = baseTitle, TitleOwnership = updateTitle ? TitleOwnership.Manual : j.TitleOwnership, TitleRevision = updateTitle ? checked(j.TitleRevision + 1) : j.TitleRevision, RecordingDate = recordingDate, ExportPath = null });
+        }
+    }
+    static bool SameTitleSnapshot(RecordingJob current, RecordingJob expected) => current.TitleRevision == expected.TitleRevision && current.TitleOwnership == expected.TitleOwnership && current.Title == expected.Title;
+    static RecordingJob AutomaticTitle(RecordingJob current, RecordingJob expected, NotesDocument notes)
+    {
+        if (current.TitleOwnership is not (TitleOwnership.Imported or TitleOwnership.Automatic) || !SameTitleSnapshot(current, expected)) return current;
+        var title = RecordingTitles.FromNotes(notes);
+        return title == null ? current : current with { Title = title, TitleOwnership = TitleOwnership.Automatic, TitleRevision = checked(current.TitleRevision + 1), ExportPath = null };
+    }
+    public bool TryApplyAutomaticTitle(RecordingJob expected, NotesDocument notes)
+    {
+        lock (gate)
+        {
+            var current = Get(expected.Id); var updated = AutomaticTitle(current, expected, notes);
+            if (ReferenceEquals(updated, current)) return false;
+            Replace(updated); return true;
+        }
+    }
+    public bool RegenerateTitle(string id)
+    {
+        lock (gate)
+        {
+            var job = Get(id);
+            // Only the committed artifact's structured notes are eligible, never a retry's work or arbitrary Markdown.
+            var path = Path.Combine(ArtifactDirectory(id, job.ArtifactRevision), "work", "notes.json");
+            SafeFiles.NoLinks(path);
+            if (job.State == JobState.Purged || string.IsNullOrWhiteSpace(ReadNotes(id)) || !File.Exists(path))
+                throw new InvalidOperationException("저장된 구조화 노트가 없습니다. 노트 생성을 완료한 뒤 다시 시도하세요.");
+            var notes = NotesDocument.Parse(SafeFiles.Read(path), JobRunner.SourceLines(ReadTranscript(id)));
+            var title = RecordingTitles.FromNotes(notes);
+            if (title == null) return false;
+            Replace(job with { Title = title, TitleOwnership = TitleOwnership.Automatic, TitleRevision = checked(job.TitleRevision + 1), ExportPath = null });
+            return true;
         }
     }
     public LibraryFolder CreateFolder(string name, string? parentId)
@@ -213,9 +269,24 @@ public sealed class LibraryStore : IDisposable
         lock (gate)
         {
             var j = Get(id); if (string.IsNullOrWhiteSpace(markdown) || string.IsNullOrWhiteSpace(ReadTranscriptForProcessing(id))) throw new InvalidDataException("Completion requires nonempty transcript and notes.");
-            SafeFiles.Atomic(Path.Combine(ProcessingDirectory(j), "notes.md"), markdown);
-            Replace(j with { State = JobState.Completed, Error = null, ArtifactRevision = j.PendingArtifactRevision ?? j.ArtifactRevision, PendingArtifactRevision = null, ExportPath = null, ExportError = null });
+            CompleteCore(j, markdown);
         }
+    }
+    // The runner supplies parsed, source-validated notes and its pre-generation title snapshot.
+    public void Complete(string id, NotesDocument notes, RecordingJob expected)
+    {
+        lock (gate)
+        {
+            var job = Get(id);
+            if (expected.Id != id || string.IsNullOrWhiteSpace(ReadTranscriptForProcessing(id))) throw new InvalidDataException("Completion requires matching transcript and notes.");
+            var updated = AutomaticTitle(job, expected, notes);
+            CompleteCore(updated, notes.Markdown(RecordingTitles.Display(updated)));
+        }
+    }
+    void CompleteCore(RecordingJob job, string markdown)
+    {
+        SafeFiles.Atomic(Path.Combine(ProcessingDirectory(job), "notes.md"), markdown);
+        Replace(job with { State = JobState.Completed, Error = null, ArtifactRevision = job.PendingArtifactRevision ?? job.ArtifactRevision, PendingArtifactRevision = null, ExportPath = null, ExportError = null });
     }
     public void Fail(string id, string error, bool cancelled = false) { lock (gate) Replace(Get(id) with { State = cancelled ? JobState.Cancelled : JobState.Failed, Error = error }); }
     public void CancelQueued(IEnumerable<string> ids) { lock (gate) { foreach (var id in ids.ToArray()) { var j = Get(id); if (j.State == JobState.Queued) Replace(j with { State = JobState.Cancelled, Error = "Cancelled before processing." }); } } }

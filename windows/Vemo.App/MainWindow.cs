@@ -9,11 +9,14 @@ using Avalonia.Media.Imaging;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using Vemo.Core;
+using Vemo.Runtime;
 using System.Globalization;
 namespace Vemo.App;
 
 public sealed partial class MainWindow : Window
 {
+    static readonly HttpClient runtimeHttp = new() { Timeout = Timeout.InfiniteTimeSpan };
+    readonly RuntimePreparation runtimePreparation; ModelSelection? preparedSettings;
     readonly LibraryStore store; readonly JobRunner runner; readonly MobileFolderAdapter mobile; readonly WatchedFolderImporter watched; readonly GoogleConnectionService google;
     readonly ListBox navigation = new(), folders = new(), jobs = new() { SelectionMode = SelectionMode.Multiple };
     readonly TextBox search = new() { PlaceholderText = "제목 · 전사 · 노트 검색" }, title = new() { IsReadOnly = true }, date = new() { PlaceholderText = "녹음 시작일 YYYY-MM-DD" };
@@ -43,7 +46,7 @@ public sealed partial class MainWindow : Window
     {
         Title = "Vemo"; Width = 1280; Height = 820; MinWidth = 980; MinHeight = 540;
         Icon = new WindowIcon(Avalonia.Platform.AssetLoader.Open(new Uri("avares://Vemo.App/Assets/vemo-icon.png")));
-        store = new(libraryRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Vemo", "WindowsPreview")); runner = new(store, new LocalCliInferenceEngine()); mobile = new(store); watched = new(store); google = GoogleConnectionService.Shared(store);
+        store = new(libraryRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Vemo", "WindowsPreview")); runtimePreparation = new(Path.Combine(store.Root, "runtime-auto"), runtimeHttp); runner = new(store, new LocalCliInferenceEngine(), runtimePreparation); mobile = new(store); watched = new(store); google = GoogleConnectionService.Shared(store);
         navigation.Classes.Add("navigation"); folders.Classes.Add("navigation"); jobs.Classes.Add("recordings"); search.Classes.Add("search"); title.Classes.Add("title"); transcript.Classes.Add("reading"); notes.Classes.Add("reading");
         NativeWhite.Label(navigation, "라이브러리", "방향키로 전체 녹음, 미분류, 휴지통 선택"); NativeWhite.Label(folders, "폴더", "방향키로 선택, F6으로 다음 영역"); NativeWhite.Label(jobs, "녹음 목록", "Ctrl/Shift 다중 선택, Ctrl+A 전체 선택, Delete 휴지통");
         NativeWhite.Label(search, "현재 목록의 제목, 전사, 노트 검색", "Ctrl+F 검색, Escape 지우기"); NativeWhite.Label(title, "녹음 제목", "Enter 저장, Escape 변경 취소"); NativeWhite.Label(date, "녹음 날짜", "실제 녹음 시작일 YYYY-MM-DD, 모르면 비워 두세요"); NativeWhite.Label(transcript, "전사 원문"); NativeWhite.Label(notes, "생성된 노트, Markdown 원문");
@@ -213,7 +216,7 @@ public sealed partial class MainWindow : Window
         var item = new MenuItem { Header = text }; if (gesture != null) item.InputGesture = KeyGesture.Parse(gesture); if (danger) item.Classes.Add("danger");
         item.Click += async (_, _) => await Execute(action); if (enabled != null) actions.Add((item, enabled)); return item;
     }
-    Control[] SelectionMenu() => [Menu("선택 이동…", Move, HasSelection), Menu("휴지통으로 이동", () => Action(ids => store.Trash(ids)), () => HasSelection() && SelectedJobs().All(j => !j.Trashed && j.State is not (JobState.Transcribing or JobState.GeneratingNotes)), "Delete", true), Menu("복원", () => Action(ids => store.Restore(ids)), () => HasSelection() && SelectedJobs().All(j => j.Trashed)), Menu("소유 사본 영구 삭제…", Purge, () => HasSelection() && SelectedJobs().All(j => j.Trashed && j.State is not (JobState.Transcribing or JobState.GeneratingNotes)), danger: true), new Separator(), Menu("작업 취소", Cancel, () => HasSelection() && SelectedJobs().Any(j => j.State is JobState.Queued or JobState.Transcribing or JobState.GeneratingNotes)), Menu("기존 모델 설정으로 재시도", () => Action(ids => store.Retry(ids)), Retryable), Menu("현재 모델 설정으로 재시도", () => Action(ids => store.Retry(ids, true)), Retryable), new Separator(), Menu("ZIP 내보내기", Export, () => HasSelection() && SelectedJobs().All(j => j.State == JobState.Completed)), Menu("모바일 결과 게시", Publish, () => HasSelection() && SelectedJobs().All(j => j.State == JobState.Completed && j.Mobile != null && j.Mobile.SyncRoot == store.Settings.MobileDirectory))];
+    Control[] SelectionMenu() => [Menu("제목 수정", () => { BeginTitleEdit(); return Task.CompletedTask; }, () => Selected().Count() == 1 && Current() is { Trashed: false }), Menu("저장된 노트로 제목 자동 생성", RegenerateTitle, () => Selected().Count() == 1 && !editing && Current() is { Trashed: false, State: not (JobState.Transcribing or JobState.GeneratingNotes or JobState.Purged) }), new Separator(), Menu("선택 이동…", Move, HasSelection), Menu("휴지통으로 이동", () => Action(ids => store.Trash(ids)), () => HasSelection() && SelectedJobs().All(j => !j.Trashed && j.State is not (JobState.Transcribing or JobState.GeneratingNotes)), "Delete", true), Menu("복원", () => Action(ids => store.Restore(ids)), () => HasSelection() && SelectedJobs().All(j => j.Trashed)), Menu("소유 사본 영구 삭제…", Purge, () => HasSelection() && SelectedJobs().All(j => j.Trashed && j.State is not (JobState.Transcribing or JobState.GeneratingNotes)), danger: true), new Separator(), Menu("작업 취소", Cancel, () => HasSelection() && SelectedJobs().Any(j => j.State is JobState.Queued or JobState.Transcribing or JobState.GeneratingNotes)), Menu("기존 모델 설정으로 재시도", () => Action(ids => store.Retry(ids)), Retryable), Menu("현재 모델 설정으로 재시도", () => Action(ids => store.Retry(ids, true)), Retryable), new Separator(), Menu("ZIP 내보내기", Export, () => HasSelection() && SelectedJobs().All(j => j.State == JobState.Completed)), Menu("모바일 결과 게시", Publish, () => HasSelection() && SelectedJobs().All(j => j.State == JobState.Completed && j.Mobile != null && j.Mobile.SyncRoot == store.Settings.MobileDirectory))];
     bool HasSelection() => Selected().Any();
     bool Retryable() => HasSelection() && SelectedJobs().All(j => !j.Trashed && j.State is JobState.Failed or JobState.Cancelled);
     IEnumerable<RecordingJob> SelectedJobs() => Selected().Select(store.Get);
@@ -221,7 +224,7 @@ public sealed partial class MainWindow : Window
     {
         if (settingsView != null) return Task.CompletedTask;
         settingsInvoker = FocusManager?.GetFocusedElement() as Control;
-        var pane = new SettingsView(store, mobile, CloseSettings, google, tray?.IsSupported == true);
+        var pane = new SettingsView(store, mobile, CloseSettings, google, tray?.IsSupported == true, () => runtimePreparation.Status);
         settingsView = pane; player.Stop();
         if (recordingDetail != null) recordingDetail.IsVisible = false;
         detailHost.Children.Add(pane);
@@ -271,6 +274,20 @@ public sealed partial class MainWindow : Window
         {
             while (!ct.IsCancellationRequested)
             {
+                if (preparedSettings != store.Settings.Models && runner.ActiveJobId == null)
+                {
+                    var expected = store.Settings.Models;
+                    try
+                    {
+                        var prepared = await Task.Run(() => runtimePreparation.PrepareAsync(expected, ct), ct);
+                        if (store.TryApplyPreparedSettingsModels(expected, prepared.Models)) preparedSettings = prepared.Models;
+                    }
+                    catch (Exception e) when (e is not OperationCanceledException)
+                    {
+                        preparedSettings = expected;
+                        await Dispatcher.UIThread.InvokeAsync(() => status.Text = runtimePreparation.Status + " · " + e.Message);
+                    }
+                }
                 if (DateTime.UtcNow - scanAt > TimeSpan.FromSeconds(15)) { scanAt = DateTime.UtcNow; try { var result = await Task.Run(() => mobile.ScanAsync(ct), ct); if (result.Issues.Count > 0) await Dispatcher.UIThread.InvokeAsync(() => status.Text = "Mobile: " + result.Issues[0].Message); } catch (Exception e) when (e is not OperationCanceledException) { await Dispatcher.UIThread.InvokeAsync(() => status.Text = e.Message); } }
                 if (DateTime.UtcNow - googleScanAt > TimeSpan.FromSeconds(30) && google.Status.Connected && google.Status.FolderId != null && !google.Status.Busy)
                 {
@@ -285,7 +302,11 @@ public sealed partial class MainWindow : Window
                     if (input.Issues.Count > 0) await Dispatcher.UIThread.InvokeAsync(() => status.Text = "입력 폴더: " + input.Issues[0].Message);
                     else if (input.Imported > 0) await Dispatcher.UIThread.InvokeAsync(() => status.Text = $"입력 폴더에서 {input.Imported}개 녹음을 가져왔습니다.");
                 }
-                ct.ThrowIfCancellationRequested(); if (!store.Settings.RequireExternalPower || WindowsPower.HasExternalPower()) await Task.Run(() => runner.RunNextAsync(ct), ct); ct.ThrowIfCancellationRequested(); foreach (var done in store.Jobs.Where(j => store.Settings.AutoExport && j.State == JobState.Completed && !j.Trashed)) { try { ct.ThrowIfCancellationRequested(); await Task.Run(() => store.Export(done.Id), ct); } catch (Exception e) when (e is not OperationCanceledException) { store.SetExportError(done.Id, e.Message); } }
+                ct.ThrowIfCancellationRequested();
+                try { if (!store.Settings.RequireExternalPower || WindowsPower.HasExternalPower()) await Task.Run(() => runner.RunNextAsync(ct), ct); }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested) { /* Cancelling runtime preparation must not stop background sync. */ }
+                catch (Exception e) when (e is not OperationCanceledException) { await Dispatcher.UIThread.InvokeAsync(() => status.Text = runtimePreparation.Status + " · " + e.Message); }
+                ct.ThrowIfCancellationRequested(); foreach (var done in store.Jobs.Where(j => store.Settings.AutoExport && j.State == JobState.Completed && !j.Trashed)) { try { ct.ThrowIfCancellationRequested(); await Task.Run(() => store.Export(done.Id), ct); } catch (Exception e) when (e is not OperationCanceledException) { store.SetExportError(done.Id, e.Message); } }
                 foreach (var j in store.Jobs.Where(j => j.State == JobState.Completed && !j.Trashed && j.Mobile != null && j.Mobile.SyncRoot == store.Settings.MobileDirectory)) { try { ct.ThrowIfCancellationRequested(); await Task.Run(() => mobile.Publish(j.Id), ct); } catch (Exception e) when (e is not OperationCanceledException) { await Dispatcher.UIThread.InvokeAsync(() => status.Text = "Mobile result: " + e.Message); } }
                 await Task.Delay(1000, ct);
             }
@@ -408,13 +429,23 @@ public sealed partial class MainWindow : Window
         }
         finally { importing = false; UpdateActions(); }
     }
+    Task RegenerateTitle()
+    {
+        var job = Current();
+        if (job != null)
+        {
+            status.Text = store.RegenerateTitle(job.Id) ? "저장된 노트로 제목을 만들었습니다." : "노트에 구체적인 주제 제목이 없습니다. 제목을 직접 수정하세요.";
+            detailId = null;
+        }
+        return Task.CompletedTask;
+    }
     Task SaveTitle()
     {
         var j = Current();
         if (j != null)
         {
             var draft = titleEditing ? title.Text ?? "" : RecordingTitles.BaseTitle(j.Title);
-            store.UpdateTitleAndDate(j.Id, draft, string.IsNullOrWhiteSpace(date.Text) ? null : date.Text.Trim());
+            store.UpdateTitleAndDate(j.Id, draft, string.IsNullOrWhiteSpace(date.Text) ? null : date.Text.Trim(), updateTitle: titleEditing);
             editing = titleEditing = false; title.IsReadOnly = true; status.Text = "제목과 녹음 날짜를 저장했습니다.";
         }
         return Task.CompletedTask;
