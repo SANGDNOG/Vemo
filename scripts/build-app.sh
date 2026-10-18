@@ -26,6 +26,11 @@ cp "$project_root/LICENSE" "$project_root/THIRD_PARTY_NOTICES.md" "$app_path/Con
 if [ "$demo_mode" != 1 ]; then
     ditto "$runtime_path" "$app_path/Contents/Resources/runtime"
 fi
+# Only this explicit external path can add public installed-client material to the bundle.
+# The helper strips downloaded metadata and refuses web/service/token or unknown fields.
+if [ -n "${VEMO_GOOGLE_CLIENT_JSON:-}" ]; then
+    python3 "$project_root/scripts/bundle-google-client.py" "$VEMO_GOOGLE_CLIENT_JSON" "$app_path/Contents/Resources/GoogleOAuthClient.json"
+fi
 python3 "$project_root/scripts/write-app-plist.py" "$app_path" "$bundle_id" "$app_version" "$app_build" "$demo_mode"
 signing_config="$HOME/Library/Application Support/VoiceMemoTranscriber/signing/identity.sha1"
 if [ -n "${SIGNING_IDENTITY:-}" ]; then

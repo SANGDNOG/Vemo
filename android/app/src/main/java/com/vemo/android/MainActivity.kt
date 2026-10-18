@@ -1323,9 +1323,9 @@ class MainActivity : Activity() {
     private fun googleSettings() {
         label("Google Drive · 선택 사항", 20f)
         val binding = try { vemo().google.binding() } catch (_: Exception) { null }
-        content.addView(text(if (binding == null) "Mac에서 먼저 Google Drive 처리기를 등록한 뒤 연결하세요." else "Google 계정 ID: ${binding.accountId}\n연결된 Drive root: ${binding.rootId}\n처리기: ${binding.processorId}", 14f, muted))
-        content.addView(text("Vemo 앱 파일 권한만 요청합니다. Google 프로젝트 vemo-511910의 Android OAuth 등록이 필요합니다.", 13f, muted))
-        content.addView(button("Google 로그인 / 재승인 및 폴더 선택", true) {
+        content.addView(text(if (binding == null) "Mac 또는 Windows Vemo에서 먼저 Google로 연결한 뒤, 같은 계정의 폴더를 선택하세요." else "Google 계정 ID: ${binding.accountId}\n연결된 Drive root: ${binding.rootId}\n처리기: ${binding.processorId}", 14f, muted))
+        content.addView(text("버튼을 눌러 Google 계정으로 로그인하고 Vemo 파일 접근을 승인하세요. 별도 설정 파일은 필요하지 않습니다.", 13f, muted))
+        content.addView(button(if (binding == null) "Google로 연결" else "같은 계정으로 다시 승인", true) {
             if (!vemo().gate.beginSync()) { vemo().notify("녹음/동기화가 끝난 뒤 연결하세요."); return@button }
             Identity.getAuthorizationClient(this).authorize(vemo().google.request())
                 .addOnSuccessListener { result ->
@@ -1338,7 +1338,7 @@ class MainActivity : Activity() {
                     } catch (_: Exception) { vemo().notify("Google 승인 화면을 열 수 없습니다. 다시 시도하세요.") }
                 }.addOnFailureListener { _ ->
                     vemo().gate.endSync()
-                    vemo().notify("Google 로그인 실패 · Cloud 프로젝트의 Android 패키지/서명 등록과 네트워크를 확인하세요.")
+                    vemo().notify("Google 로그인에 실패했습니다. 네트워크를 확인하고 다시 시도하세요. 계속되면 최신 Vemo로 업데이트한 뒤 지원팀에 문의하세요.")
                 }
         })
         if (binding != null) {
@@ -1368,8 +1368,8 @@ class MainActivity : Activity() {
                 val roots = api.discoverRoots()
                 runOnUiThread {
                     if (!isFinishing && !isDestroyed && hasWindowFocus()) {
-                        if (roots.isEmpty()) vemo().notify("접근 가능한 Vemo root가 없습니다. 같은 Google 계정으로 Mac에서 먼저 등록하세요.")
-                        else choiceDialog("Mac 처리기 폴더 선택", roots.map { "${it.name} · ${it.processorId} · ${it.id}" }) { index ->
+                        if (roots.isEmpty()) vemo().notify("연결할 Vemo 폴더가 없습니다. 같은 Google 계정으로 Mac 또는 Windows Vemo에서 먼저 연결하세요.")
+                        else choiceDialog("PC 처리기 폴더 선택", roots.map { "${it.name} · ${it.processorId} · ${it.id}" }) { index ->
                             selectGoogle(DriveBinding(account, roots[index].id, roots[index].processorId))
                         }
                     } else vemo().notify("설정에서 Google 연결을 다시 눌러 폴더를 선택하세요.")

@@ -43,6 +43,21 @@ public struct GoogleOAuthKeychainVault: GoogleOAuthTokenVault {
         } onCancel: { prompt.context.invalidate() }
     }
 
+    /// Attribute-only, noninteractive migration guard. Never reads or copies another client's token.
+    public static func hasAuthorization(accountPrefix: String) throws -> Bool {
+        let context = LAContext()
+        context.interactionNotAllowed = true
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "com.vemo.google-oauth", kSecAttrSynchronizable as String: false,
+            kSecUseAuthenticationContext as String: context, kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return false }
+        guard status == errSecSuccess, let items = result as? [[String: Any]] else { throw GoogleOAuthError.storage }
+        return items.contains { ($0[kSecAttrAccount as String] as? String)?.hasPrefix(accountPrefix) == true }
+    }
+
     public func loadRefreshToken() throws -> String? {
         var query = query; query[kSecReturnData as String] = true; query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?

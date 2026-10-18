@@ -60,8 +60,32 @@ private struct FailingVault: GoogleOAuthTokenVault {
         do {
             try await rejects(.invalidConfiguration) { _ = try GoogleOAuthClientConfiguration.loadInstalledJSON(Data(#"{"web":{"client_id":"x"}}"#.utf8)) }
         }
+        for json in [
+            #"{"installed":{"client_id":"synthetic.apps.googleusercontent.com","refresh_token":"forbidden"}}"#,
+            #"{"installed":{"client_id":"synthetic.apps.googleusercontent.com"},"web":{}}"#,
+            #"{"installed":{"client_id":"synthetic.apps.googleusercontent.com"},"access_token":"forbidden"}"#,
+            #"{"installed":{"client_id":"synthetic.apps.googleusercontent.com","private_key":"forbidden"}}"#,
+            #"{"installed":{"client_id":"synthetic.apps.googleusercontent.com","unknown":"forbidden"}}"#
+        ] {
+            try await rejects(.invalidConfiguration) { _ = try GoogleOAuthClientConfiguration.loadInstalledJSON(Data(json.utf8)) }
+        }
         try await rejects(.invalidConfiguration) { _ = try GoogleOAuthClientConfiguration(clientID: "evil.invalid") }
         try check(GoogleOAuthPKCE.challenge(for: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk") == "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", "RFC7636 S256 vector")
+        let normalized = try JSONSerialization.jsonObject(with: config.normalizedInstalledJSON()) as! [String: [String: String]]
+        try check(normalized == ["installed": ["client_id": "synthetic.apps.googleusercontent.com", "client_secret": "synthetic-secret"]], "normalized client strips metadata and endpoints")
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        try FileManager.default.createDirectory(at: scratch.appendingPathComponent("Fixture.bundle/Contents/Resources"), withIntermediateDirectories: true)
+        let bundleURL = scratch.appendingPathComponent("Fixture.bundle")
+        try Data("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>synthetic.oauth</string></dict></plist>".utf8).write(to: bundleURL.appendingPathComponent("Contents/Info.plist"))
+        let resource = bundleURL.appendingPathComponent("Contents/Resources/GoogleOAuthClient.json")
+        try config.normalizedInstalledJSON().write(to: resource)
+        let bundle = Bundle(url: bundleURL)!
+        try check(try GoogleOAuthClientConfiguration.loadBundled(in: bundle)?.clientID == config.clientID, "real bundle resource loads normalized desktop identity")
+        for bytes in [Data("{invalid".utf8), Data(repeating: 32, count: 65537), Data(#"{"web":{"client_id":"synthetic.apps.googleusercontent.com"}}"#.utf8), Data(#"{"installed":{"client_id":"synthetic.apps.googleusercontent.com","access_token":"forbidden"}}"#.utf8)] {
+            try bytes.write(to: resource)
+            try await rejects(.invalidConfiguration) { _ = try GoogleOAuthClientConfiguration.loadBundled(in: bundle) }
+        }
         let pkce = try GoogleOAuthPKCE(), other = try GoogleOAuthPKCE()
         try check(pkce.state != other.state && pkce.verifier != other.verifier && pkce.verifier.count == 43, "independent secure random state and verifier")
         let url = pkce.authorizationURL(configuration: config, redirectURI: URL(string: "http://127.0.0.1:12345/oauth/callback")!)

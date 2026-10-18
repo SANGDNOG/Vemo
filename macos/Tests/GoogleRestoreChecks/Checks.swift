@@ -19,6 +19,53 @@ import Foundation
                   label + ": no interactive authorization, recovery, root creation or config mutation")
             check(Probe.journal && Probe.hasToken, label + ": binding/token fixture retained")
         }
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        func bundle(_ name: String, _ json: String?) -> Bundle {
+            let url = scratch.appendingPathComponent(name + ".bundle")
+            try! FileManager.default.createDirectory(at: url.appendingPathComponent("Contents/Resources"), withIntermediateDirectories: true)
+            try! Data("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>synthetic.\(name)</string></dict></plist>".utf8).write(to: url.appendingPathComponent("Contents/Info.plist"))
+            if let json { try! Data(json.utf8).write(to: url.appendingPathComponent("Contents/Resources/GoogleOAuthClient.json")) }
+            return Bundle(url: url)!
+        }
+        let bundled = bundle("valid", #"{"installed":{"client_id":"bundled.apps.googleusercontent.com","client_secret":"synthetic-public"}}"#)
+        for kind in ["fresh", "custom", "bindingWithoutConfig", "orphanToken", "missing", "invalid"] {
+            Probe.reset()
+            Probe.bundle = kind == "missing" ? bundle("missing", nil) : kind == "invalid" ? bundle("invalid", "{invalid") : bundled
+            Probe.hasConfig = kind == "custom"
+            Probe.journal = kind == "bindingWithoutConfig"
+            Probe.orphanToken = kind == "orphanToken"
+            let m = GoogleConnectionModel(root: URL(fileURLWithPath: "/synthetic-unused-state"))
+            await m.restoreIfNeeded(now: time(0))
+            check(Probe.browserOpens == 0 && Probe.roots == 0 && Probe.oauthConnects == 0 && Probe.saves == 0,
+                  kind + ": startup never authorizes, creates root, or persists config")
+            let ready = kind == "fresh" || kind == "custom"
+            check(m.hasClientConfiguration == ready, kind + ": configuration availability")
+            if kind == "custom" {
+                check(Probe.installedIDs == ["custom.apps.googleusercontent.com"], "custom identity takes precedence")
+            }
+            m.connect()
+            for _ in 0..<1000 { if !m.isBusy { break }; await Task.yield() }
+            check(Probe.oauthConnects == (ready ? 1 : 0) && Probe.roots == (ready ? 1 : 0),
+                  kind + ": only explicit safe connection authorizes and prepares root")
+            check(Probe.saves == (kind == "fresh" ? 1 : 0), kind + ": bundled config pinned once without custom overwrite")
+            if kind == "fresh" { check(Probe.installedIDs.allSatisfy { $0 == "bundled.apps.googleusercontent.com" }, "bundle identity used") }
+            await m.shutdown()
+        }
+        Probe.reset(); Probe.bundle = bundled
+        let lazy = GoogleConnectionModel(root: URL(fileURLWithPath: "/synthetic-unused-state"))
+        lazy.connect()
+        for _ in 0..<1000 { if !lazy.isBusy { break }; await Task.yield() }
+        check(lazy.isConnected && Probe.saves == 1 && Probe.oauthConnects == 1, "connect lazily loads bundle without startup preflight")
+        check(Probe.savedConfiguration != nil, "bundle identity pinned before token-bearing connection")
+        await lazy.shutdown()
+        Probe.bundle = bundle("rotated", #"{"installed":{"client_id":"rotated.apps.googleusercontent.com"}}"#)
+        Probe.installedIDs = []
+        let updated = GoogleConnectionModel(root: URL(fileURLWithPath: "/synthetic-unused-state"))
+        await updated.restoreIfNeeded(now: time(0))
+        check(Probe.installedIDs == ["bundled.apps.googleusercontent.com"] && Probe.saves == 1,
+              "subsequent launch preserves pinned client despite bundle rotation")
+        await updated.shutdown()
         // Error injected at the actual await boundary, never into the retry classifier.
         let transient: [(String, any Error, Bool)] = [
             ("HTTP429", GoogleDriveError.http(429), false),

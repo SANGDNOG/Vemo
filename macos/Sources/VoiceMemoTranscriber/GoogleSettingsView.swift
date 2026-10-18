@@ -11,13 +11,9 @@ struct GoogleSettingsView: View {
                 .font(.callout)
             Text("Mac과 Galaxy에서 같은 Google 계정으로 연결하고, Galaxy에서는 이 Mac이 만든 Vemo 테스트 폴더와 ‘PC 자동 처리’ 모드를 선택하세요. Mac용 Google Drive 앱 설치는 필요하지 않습니다.")
                 .font(.caption).foregroundStyle(.secondary)
-            Text(model.hasClientConfiguration ? "Desktop OAuth 설정 준비됨" : "Desktop OAuth JSON을 먼저 선택하세요.")
-                .font(.caption).foregroundStyle(.secondary)
             HStack {
-                Button("OAuth JSON 선택…") { model.selectClientJSON() }
-                    .disabled(!model.canSelectClient)
-                Button(model.isConnected ? "같은 계정으로 다시 승인" : "Google 연결") { model.connect() }
-                    .disabled(model.isBusy || !model.hasClientConfiguration || model.needsKeychainRecovery)
+                Button(model.isConnected ? "같은 계정으로 다시 승인" : "Google로 연결") { model.connect() }
+                    .disabled(model.isBusy || model.needsKeychainRecovery)
                 Button("지금 확인", action: onSync)
                     .disabled(model.isBusy || !model.isConnected)
                 if model.canDisconnect {
@@ -27,6 +23,12 @@ struct GoogleSettingsView: View {
                     ProgressView().controlSize(.small)
                     Button("취소") { model.cancel() }
                 }
+            }
+            DisclosureGroup("고급 · 사용자 지정 OAuth 설정") {
+                Text("별도의 Desktop OAuth 클라이언트를 사용할 때만 JSON을 선택하세요. 기존 계정이나 폴더 연결은 자동으로 바꾸지 않습니다.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("OAuth JSON 선택…") { model.selectClientJSON() }
+                    .disabled(!model.canSelectClient)
             }
             if model.needsKeychainRecovery {
                 Button("Keychain 접근 복구…") { model.recoverKeychainAccess() }.disabled(model.isBusy)

@@ -16,6 +16,11 @@ import UniformTypeIdentifiers
     func release() { continuation?.resume(); continuation = nil }
 }
 @MainActor enum Probe {
+    static var bundle = Bundle.main
+    static let custom = Data(#"{"installed":{"client_id":"custom.apps.googleusercontent.com"}}"#.utf8)
+    static var installedIDs: [String] = []
+    static var savedConfiguration: Data?
+    static var orphanToken = false
     static var hasConfig = false, journal = false, hasToken = false
     static var prepareError: (any Error)?, tokenError: (any Error)?
     static var vaultReads = 0, configReads = 0
@@ -29,6 +34,7 @@ import UniformTypeIdentifiers
     static var recoveries = 0
     static var panel: ProbeOpenPanel?
     static func reset() {
+        bundle = Bundle.main; installedIDs = []; savedConfiguration = nil; orphanToken = false
         prepareError = nil; tokenError = nil; vaultReads = 0; configReads = 0
         wrongProcessor = false; cancelTaskOnToken = false
         hasConfig = false; journal = false; hasToken = false; tokenFailure = false
@@ -51,16 +57,19 @@ import UniformTypeIdentifiers
 @MainActor struct GoogleClientConfigurationFile {
     let directory: URL
     func hasJournal() throws -> Bool { Probe.journal }
-    func load() throws -> Data? { Probe.configReads += 1; return Probe.hasConfig ? Data("synthetic".utf8) : nil }
-    static func readSelected(_ url: URL) throws -> Data { Data("synthetic".utf8) }
-    func save(_ bytes: Data) throws { Probe.saves += 1; Probe.hasConfig = true }
-}
-struct GoogleOAuthClientConfiguration {
-    let clientID = "synthetic.invalid"
-    static func loadInstalledJSON(_ bytes: Data) throws -> Self { Self() }
+    func load() throws -> Data? { Probe.configReads += 1; return Probe.hasConfig ? (Probe.savedConfiguration ?? Probe.custom) : nil }
+    static func readSelected(_ url: URL) throws -> Data { Probe.custom }
+    func save(_ bytes: Data, replacingExisting: Bool = true) throws {
+        if !replacingExisting && Probe.hasConfig { throw GoogleOAuthError.storage }
+        Probe.saves += 1; Probe.hasConfig = true; Probe.savedConfiguration = bytes
+    }
 }
 @MainActor struct GoogleOAuthKeychainVault {
     let account: String
+    static func hasAuthorization(accountPrefix: String) throws -> Bool {
+        if Probe.storageFailure { throw GoogleOAuthError.storage }
+        return Probe.orphanToken
+    }
     func loadRefreshToken() throws -> String? {
         Probe.vaultReads += 1
         if Probe.storageFailure { throw GoogleOAuthError.storage }
@@ -75,11 +84,11 @@ struct GoogleOAuthClientConfiguration {
         return Probe.hasToken
     }
 }
-enum GoogleOAuthError: String, Error { case invalidConfiguration, invalidCallback, stateMismatch, accessDenied, expired, cancelled, busy, notConnected, reauthorizationRequired, transport, invalidResponse, storage, listener }
+public enum GoogleOAuthError: String, Error { case invalidConfiguration, invalidCallback, stateMismatch, accessDenied, expired, cancelled, busy, notConnected, reauthorizationRequired, transport, invalidResponse, storage, listener }
 enum GoogleDriveError: Error, Equatable { case invalidResponse, limit, invalidMetadata, busy, staleJob, conflict, accountMismatch, notConnected, http(Int) }
 struct BrokerFailure: Error { let code: String }
 @MainActor final class GoogleOAuthClient {
-    init(configuration: GoogleOAuthClientConfiguration, vault: GoogleOAuthKeychainVault) {}
+    init(configuration: GoogleOAuthClientConfiguration, vault: GoogleOAuthKeychainVault) { Probe.installedIDs.append(configuration.clientID) }
     func connect(openBrowser: @Sendable (URL) async throws -> Void) async throws {
         Probe.oauthConnects += 1
         try await openBrowser(URL(string: "https://synthetic.invalid/never-opened")!)

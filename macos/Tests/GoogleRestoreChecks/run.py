@@ -20,7 +20,7 @@ args = parser.parse_args()
 source = (subprocess.check_output(["git", "show", f"{args.revision}:{MODEL}"], cwd=REPO, text=True)
           if args.revision else (REPO / MODEL).read_text())
 print("COORDINATOR_SHA256:", hashlib.sha256(source.encode()).hexdigest(), flush=True)
-text = source.replace("import NativeCore\n", "").replace("NSOpenPanel", "ProbeOpenPanel")
+text = source.replace("Bundle.main", "Probe.bundle").replace("import NativeCore\n", "").replace("NSOpenPanel", "ProbeOpenPanel")
 # Keep every coordinator method, including retry classification/state, unchanged.
 # Replace only browser/panel and I/O dependencies, following the existing lifecycle fixture.
 start = text.index("    private static func openAuthorization(")
@@ -38,10 +38,12 @@ if "func restoreIfNeeded() async" in text:
 policy = "import Foundation\nenum AutomaticRecordingPolicy {" + (REPO / "macos/Sources/VoiceMemoTranscriber/AppModel.swift").read_text().split("enum AutomaticRecordingPolicy {", 1)[1]
 with tempfile.TemporaryDirectory(prefix="vemo-restore-regression-") as scratch:
     out = Path(scratch)
+    config = (REPO / "macos/Sources/NativeCore/GoogleOAuth.swift").read_text().split("public struct GoogleOAuthClientConfiguration", 1)[1].split("public struct GoogleOAuthPKCE", 1)[0]
+    (out / "Configuration.swift").write_text("import Foundation\npublic struct GoogleOAuthClientConfiguration" + config)
     (out / "Generated.swift").write_text(text)
     (out / "Policy.swift").write_text(policy)
     command = ["swiftc", "-swift-version", "6", "-parse-as-library", str(HERE / "Boundaries.swift"),
-               str(out / "Generated.swift"), str(out / "Policy.swift"), str(HERE / "Checks.swift"),
+               str(out / "Configuration.swift"), str(out / "Generated.swift"), str(out / "Policy.swift"), str(HERE / "Checks.swift"),
                "-o", str(out / "checks")]
     compiled = subprocess.run(command, capture_output=True, text=True, timeout=60)
     print(compiled.stdout + compiled.stderr, end="")

@@ -24,14 +24,39 @@ public struct GoogleOAuthClientConfiguration: Sendable {
         self.clientSecret = clientSecret
     }
 
-    /// Endpoint and redirect fields in the downloaded file are intentionally ignored.
+    /// Accept only downloaded desktop client fields; endpoints and metadata never control OAuth.
     public static func loadInstalledJSON(_ data: Data) throws -> Self {
-        struct File: Decodable { let installed: Installed; struct Installed: Decodable { let client_id: String; let client_secret: String? } }
-        guard data.count <= 64 * 1024, let file = try? JSONDecoder().decode(File.self, from: data) else {
+        let allowed: Set<String> = ["client_id", "client_secret", "project_id", "auth_uri", "token_uri",
+                                    "auth_provider_x509_cert_url", "redirect_uris"]
+        guard data.count <= 64 * 1024,
+              let file = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              Set(file.keys) == ["installed"], let installed = file["installed"] as? [String: Any],
+              Set(installed.keys).isSubset(of: allowed), let id = installed["client_id"] as? String,
+              installed["client_secret"] == nil || installed["client_secret"] is String else {
             throw GoogleOAuthError.invalidConfiguration
         }
-        return try Self(clientID: file.installed.client_id, clientSecret: file.installed.client_secret)
+        return try Self(clientID: id, clientSecret: installed["client_secret"] as? String)
     }
+
+    public func normalizedInstalledJSON() throws -> Data {
+        var installed = ["client_id": clientID]
+        if let clientSecret { installed["client_secret"] = clientSecret }
+        return try JSONSerialization.data(withJSONObject: ["installed": installed], options: [.sortedKeys])
+    }
+
+    /// No fallback paths or environment lookup at runtime: packaging explicitly supplies this resource.
+    public static func loadBundled(in bundle: Bundle) throws -> Self? {
+        guard let url = bundle.url(forResource: "GoogleOAuthClient", withExtension: "json") else { return nil }
+        do {
+            guard try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
+                throw GoogleOAuthError.invalidConfiguration
+            }
+            let file = try FileHandle(forReadingFrom: url)
+            defer { try? file.close() }
+            return try loadInstalledJSON(file.read(upToCount: 64 * 1024 + 1) ?? Data())
+        } catch { throw GoogleOAuthError.invalidConfiguration }
+    }
+
 }
 
 public struct GoogleOAuthPKCE: Sendable {
