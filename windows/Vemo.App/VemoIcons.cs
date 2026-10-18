@@ -1,3 +1,4 @@
+using Avalonia.Controls;
 using Avalonia.Controls.Shapes;
 using Avalonia.Media;
 
@@ -5,17 +6,50 @@ namespace Vemo.App;
 
 internal static class VemoIcons
 {
-    // Small outline icons follow the approved design's neutral folder/navigation language.
-    public static Avalonia.Controls.Shapes.Path Outline(string kind) => new()
+    // Preserve the prototype's 24-unit SVG viewport rather than stretching its path bounds.
+    public static Control Outline(string kind, double size = 19)
     {
-        Width = 18, Height = 18, Stretch = Stretch.Uniform, Stroke = NativeWhite.Secondary,
-        StrokeThickness = 1.6, IsHitTestVisible = false,
-        Data = Geometry.Parse(kind switch
+        var canvas = new Canvas { Width = 24, Height = 24 };
+        var path = new Avalonia.Controls.Shapes.Path
         {
-            "all" => "M5,4 L19,4 L19,22 L5,22 Z M8,1 L16,1 M2,7 L2,19",
-            "trash" => "M3,6 L21,6 M8,3 L16,3 M6,6 L7,22 L17,22 L18,6 M10,10 L10,18 M14,10 L14,18",
-            "unfiled" => "M3,4 L21,4 L21,20 L3,20 Z M3,12 L8,12 L10,15 L14,15 L16,12 L21,12",
-            _ => "M2,5 L9,5 L12,8 L22,8 L22,21 L2,21 Z"
-        })
-    };
+            StrokeThickness = 1.6,
+            StrokeLineCap = PenLineCap.Round, StrokeJoin = PenLineJoin.Round,
+            Data = Geometry.Parse(kind switch
+            {
+                "all" => "M6 5h12v16H6z M8 2h8 M4 8h2 M18 8h2",
+                "trash" => "M3 6h18 M9 6V3h6v3 M6 6l1 15h10l1-15 M10 10v7 M14 10v7",
+                "unfiled" => "M3 5h18v15H3z M3 13h5l2 3h4l2-3h5",
+                "settings" => "M9 3h6l1 4 4 2v6l-4 2-1 4H9l-1-4-4-2V9l4-2z M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0",
+                "search" => "M20 20l-5-5 M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0",
+                "more" => "M5 12h.01 M12 12h.01 M19 12h.01",
+                "chevron" => "M9 5l7 7-7 7",
+                "down" => "M5 9l7 7 7-7",
+                "plus" => "M12 4v16 M4 12h16",
+                "import" => "M12 3v12 M7 10l5 5 5-5 M4 15v6h16v-6",
+                "text" => "M4 5h16 M4 10h16 M4 15h10 M4 20h13",
+                "note" => "M5 3h10l4 4v14H5z M15 3v5h4 M8 12h8 M8 16h6",
+                "copy" => "M8 8h12v13H8z M16 8V3H3v13h5",
+                "export" => "M12 3v12 M7 8l5-5 5 5 M4 14v7h16v-7",
+                _ => "M3 6h6l2 2h10v12H3z M3 6V4h6l2 2"
+            })
+        };
+        path.Classes.Add("vemo-icon"); canvas.Children.Add(path);
+        return new Viewbox { Width = size, Height = size, Child = canvas, IsHitTestVisible = false,
+            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center };
+    }
+
+    public static void Decorate(Button button, string kind, bool iconOnly = false, double size = 19)
+    {
+        var label = button.Content as string ?? "";
+        NativeWhite.Label(button, label);
+        button.ContentTemplate = new Avalonia.Controls.Templates.FuncDataTemplate<string>((text, _) =>
+        {
+            if (iconOnly) return Outline(kind, size);
+            var content = new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 7 };
+            content.Children.Add(Outline(kind, size));
+            content.Children.Add(new TextBlock { Text = text, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center });
+            return content;
+        });
+        if (iconOnly) { button.Classes.Add("icon-action"); ToolTip.SetTip(button, label); }
+    }
 }

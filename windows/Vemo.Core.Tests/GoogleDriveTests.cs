@@ -98,7 +98,13 @@ public sealed class GoogleDriveTests
     [Fact] public void DefaultServiceWithoutStoredCredentialsIsHeadlessSafe()
     {
         var path = Path.Combine((OperatingSystem.IsMacOS() ? "/private" + Path.GetTempPath() : Path.GetTempPath()), "vemo-no-google-" + Guid.NewGuid());
-        try { using var store = new LibraryStore(path); var service = GoogleConnectionService.Shared(store); Assert.Same(service, GoogleConnectionService.Shared(store)); Assert.False(service.Status.Configured); Assert.False(service.Status.Connected); Assert.Null(service.Status.LastError); service.Dispose(); }
+        try
+        {
+            using var store = new LibraryStore(path);
+            var shared = GoogleConnectionService.Shared(store); Assert.Same(shared, GoogleConnectionService.Shared(store)); shared.Dispose();
+            using var service = new GoogleConnectionService(store, new GoogleMemoryVault(), new GoogleFixtureTransport((_, _) => throw new InvalidOperationException("No network expected.")), () => null);
+            Assert.False(service.Status.Configured); Assert.False(service.Status.Connected); Assert.Null(service.Status.LastError);
+        }
         finally { Directory.Delete(path, true); }
     }
     [Fact] public async Task CreateBindsAndHydratesWithoutChangingMobileDirectory()

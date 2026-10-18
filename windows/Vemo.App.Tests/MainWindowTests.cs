@@ -176,7 +176,9 @@ public sealed class MainWindowTests
         Click(ui.Window, Button(ui.Window, "설정"));
         var dialog = ui.Window;
         var pane = SettingsTestInput.AssertOpen(ui);
-        SettingsTestInput.Edit(ui, Named<TextBox>(dialog, "모바일 v1 로컬 동기화 폴더"), foreign);
+        var legacy = Assert.Single(dialog.GetVisualDescendants().OfType<Expander>(), x => Equals(x.Header, "고급 · 모바일 폴더"));
+        Assert.False(legacy.IsExpanded); legacy.IsExpanded = true; Pump();
+        SettingsTestInput.Edit(ui, Named<TextBox>(dialog, "모바일 동기화 폴더"), foreign);
         Click(dialog, Button(dialog, "설정 저장"));
         Assert.Same(pane, SettingsTestInput.AssertOpen(ui));
         Assert.Equal(before, ui.Store.Settings);

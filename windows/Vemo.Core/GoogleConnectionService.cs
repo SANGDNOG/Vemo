@@ -14,9 +14,10 @@ public sealed partial class GoogleConnectionService : IDisposable
     readonly LibraryStore store;
     readonly IGoogleCredentialVault vault;
     readonly IGoogleHttpTransport transport;
+    readonly Func<string?> bundledClientJson;
     public GoogleConnectionService(LibraryStore store) : this(store, new GoogleWindowsCredentialVault(Path.Combine(store.Root, "google", "credentials")), new GoogleHttpTransport()) { }
-    public GoogleConnectionService(LibraryStore store, IGoogleCredentialVault vault, IGoogleHttpTransport transport)
-    { this.store = store; this.vault = vault; this.transport = transport; Hydrate(); }
+    public GoogleConnectionService(LibraryStore store, IGoogleCredentialVault vault, IGoogleHttpTransport transport, Func<string?>? bundledClientJson = null)
+    { this.store = store; this.vault = vault; this.transport = transport; this.bundledClientJson = bundledClientJson ?? GoogleBundledClientConfiguration.ReadFromApplication; Hydrate(); }
     void Changed() => StatusChanged?.Invoke(this, EventArgs.Empty);
     public Task ImportClientConfigurationAsync(string installedJson, CancellationToken ct = default) => ImportCoreAsync(installedJson, ct);
     public Task ConnectAsync(CancellationToken ct = default) => ConnectCoreAsync(ct);

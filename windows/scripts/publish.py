@@ -44,7 +44,11 @@ def main():
     parser.add_argument('--dotnet', type=pathlib.Path, default=repo / 'build/toolchains/dotnet/dotnet')
     parser.add_argument('--output', type=pathlib.Path, required=True, help='New or empty directory; existing publications are preserved.')
     parser.add_argument('--rids', nargs='+', choices=['win-x64', 'win-arm64'], default=['win-x64', 'win-arm64'])
+    parser.add_argument('--google-client-json', type=pathlib.Path, help='Release-owned installed desktop client configuration outside the checkout; no user tokens.')
     args = parser.parse_args()
+    google_client = args.google_client_json.expanduser().resolve(strict=True) if args.google_client_json else None
+    if google_client and google_client.is_relative_to(repo):
+        parser.error('--google-client-json must be outside the checkout')
     sdk = args.dotnet.expanduser().resolve(strict=True)
     output = args.output.expanduser().resolve()
     # Keep generated publications out of source/config paths and reject symlink destinations.
@@ -70,7 +74,8 @@ def main():
     for rid in dict.fromkeys(args.rids):
         for project, name in [('Vemo.App', rid), ('Vemo.Validation', 'validation-' + rid), ('Vemo.Provision', 'provision-' + rid)]:
             dest = output / name
-            run('publish-' + name, ['publish', 'windows/' + project, '-c', 'Release', '-r', rid, '--self-contained', 'true', '-o', str(dest), '--nologo'])
+            build_options = ['-p:GoogleInstalledClientJsonPath=' + str(google_client)] if google_client and project == 'Vemo.App' else []
+            run('publish-' + name, ['publish', 'windows/' + project, '-c', 'Release', '-r', rid, '--self-contained', 'true', '-o', str(dest), '--nologo', *build_options])
             exe = dest / (project + '.exe')
             pe = pe_metadata(exe)
             expected = '0x8664' if rid == 'win-x64' else '0xaa64'

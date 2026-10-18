@@ -13,7 +13,7 @@ x64(일반 Intel/AMD PC) 또는 ARM64 빌드의 전체 폴더를 풀고 `Vemo.Ap
 3. 완료된 녹음을 가져옵니다. 원본은 복사하며, 녹음일을 모르면 `date-unknown`으로 표시합니다. 알고 있는 경우 시간대가 포함된 ISO 날짜를 직접 입력합니다. 전사·노트가 끝나면 폴더 구조에 맞춰 녹음별 ZIP이 만들어집니다. ZIP에는 녹음·전사·노트 3개만 들어갑니다.
 4. Ctrl/Shift 다중 선택, 폴더·하위 폴더 이동, 휴지통·복원·Vemo 소유 사본 영구 삭제를 지원합니다. 제목은 상세 화면에서 편집합니다. 원본과 이미 내보낸 ZIP은 유지합니다.
 
-현재 Windows는 **로컬 동기화 폴더 방식**을 지원합니다. Android 직접 Google OAuth와 Windows를 연결하는 API 어댑터는 아직 없습니다. 자동 제목 생성, 14,000자 초과 전사문의 노트 생성, 폰 자체 AI, NVIDIA 실제 실행과 Windows GUI 수동 검증도 완료되지 않았습니다. macOS와 기능이 모두 같다고 보지 마세요.
+Windows는 **Google Drive 직접 OAuth 연결**과 로컬 동기화 폴더 방식을 지원합니다. 배포 앱에서 설정 → Google Drive 연결로 로그인합니다. 사용자가 OAuth JSON을 준비할 필요는 없습니다. 실제 계정/폰 왕복 검증 상태는 [연결 가이드](../docs/WINDOWS_GOOGLE_SETUP.md)를 참고하세요. 자동 제목 생성, 14,000자 초과 전사문의 노트 생성, 폰 자체 AI, NVIDIA 실제 실행과 Windows GUI 수동 검증도 완료되지 않았습니다. macOS와 기능이 모두 같다고 보지 마세요.
 
 ## Build and test
 
@@ -91,7 +91,7 @@ recordings/<lowercase-UUID>/<sha256>/audio.m4a
 results/<lowercase-UUID>/<sha256>/result.json
 ```
 
-Only completed `desktop` requests for this processor are imported. `record_only` and incomplete requests are skipped. Schema/duplicate keys, path identity, dates, original hash/size and processor are validated independently; malformed siblings do not prevent valid requests. Completed local jobs publish the eight-field v1 result after rechecking the request identity. Existing different results are preserved with an explicit conflict. A locally published result is **not** a cloud-upload receipt. The app does not provide Google OAuth; the root-owned Google adapter is subsequent work.
+Only completed `desktop` requests for this processor are imported. `record_only` and incomplete requests are skipped. Schema/duplicate keys, path identity, dates, original hash/size and processor are validated independently; malformed siblings do not prevent valid requests. Completed local jobs publish the eight-field v1 result after rechecking the request identity. Existing different results are preserved with an explicit conflict. A locally published result is **not** a cloud-upload receipt. Direct Google OAuth is now available through the separate Google adapter; see docs/WINDOWS_GOOGLE_SETUP.md.
 
 ## Core interfaces and validation boundaries
 

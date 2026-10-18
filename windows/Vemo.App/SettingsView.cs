@@ -26,7 +26,14 @@ public sealed partial class SettingsView : UserControl
         KeyDown += (_, e) => { if (e.Key == Key.Escape) { RequestClose(); e.Handled = true; } };
         var s = store.Settings; var m = s.Models;
         var outer = new Grid { RowDefinitions = new("Auto,*,Auto") }; Content = outer;
-        var header = new StackPanel { Margin = new Thickness(32, 24, 32, 24), Spacing = 18 }; var topline = new Grid { ColumnDefinitions = new("*,Auto") }; topline.Children.Add(NativeWhite.Text("Vemo 환경 설정", "caption")); var dismiss = NativeWhite.Action("닫기", RequestClose, "quiet"); initialFocus = dismiss; NativeWhite.Label(dismiss, "설정 닫기"); Grid.SetColumn(dismiss, 1); topline.Children.Add(dismiss); header.Children.Add(topline); header.Children.Add(NativeWhite.Text("설정", "heading")); outer.Children.Add(header);
+        var header = new StackPanel { Margin = new Thickness(32, 0, 32, 22), Spacing = 0 };
+        var topline = new Grid { ColumnDefinitions = new("*,Auto"), Height = 58 };
+        var context = NativeWhite.Text("Vemo 환경 설정", "caption"); context.FontSize = 10; context.VerticalAlignment = VerticalAlignment.Center; topline.Children.Add(context);
+        var dismiss = NativeWhite.Action("", RequestClose, "quiet");
+        dismiss.Content = new Avalonia.Controls.Shapes.Path { Data = Avalonia.Media.Geometry.Parse("M6,6 L18,18 M18,6 L6,18"), Width = 19, Height = 19, Stretch = Avalonia.Media.Stretch.Uniform, Stroke = NativeWhite.Secondary, StrokeThickness = 1.6, IsHitTestVisible = false };
+        dismiss.Width = 36; dismiss.Height = 36; dismiss.Padding = new Thickness(9); dismiss.VerticalAlignment = VerticalAlignment.Center;
+        initialFocus = dismiss; NativeWhite.Label(dismiss, "설정 닫기"); ToolTip.SetTip(dismiss, "설정 닫기"); Grid.SetColumn(dismiss, 1); topline.Children.Add(dismiss);
+        header.Children.Add(topline); var heading = NativeWhite.Text("설정", "heading"); heading.FontSize = 25; header.Children.Add(heading); outer.Children.Add(header);
         var content = new StackPanel { Margin = new Thickness(32, 0, 32, 24), Spacing = 24 }; var scroll = new ScrollViewer { Content = content }; Grid.SetRow(scroll, 1); outer.Children.Add(scroll);
         var footer = new StackPanel { Margin = new Thickness(32, 16, 32, 20), Spacing = 12 }; var message = NativeWhite.Text("", "secondary"); NativeWhite.Label(message, "설정 저장 상태"); footer.Children.Add(new ScrollViewer { Content = message, MaxHeight = 100 });
         var footerButtons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right }; footerButtons.Children.Add(NativeWhite.Action("취소", RequestClose, "quiet")); var save = new Button { Content = "설정 저장" }; BusyChanged += () => save.IsEnabled = !busy; save.Classes.Add("primary"); footerButtons.Children.Add(save); footer.Children.Add(footerButtons);
@@ -34,7 +41,7 @@ public sealed partial class SettingsView : UserControl
         StackPanel group = new();
         void Section(string name, string help)
         {
-            var section = new StackPanel { Spacing = 10 }; section.Children.Add(NativeWhite.Text(name, "secondary"));
+            var section = new StackPanel { Spacing = 10 }; var label = NativeWhite.Text(name, "secondary"); label.FontSize = 11; label.FontWeight = Avalonia.Media.FontWeight.Medium; section.Children.Add(label);
             group = new StackPanel();
             var card = new Border { Child = group }; card.Classes.Add("settings-group"); section.Children.Add(card);
             if (help.Length > 0) { var note = NativeWhite.Text(help, "caption"); note.Margin = new Thickness(4, 0); section.Children.Add(note); }
@@ -42,7 +49,7 @@ public sealed partial class SettingsView : UserControl
         }
         void Row(string label, Control editor, string? help = null)
         {
-            var row = new Grid { ColumnDefinitions = new("*,Auto"), MinHeight = 62 };
+            var row = new Grid { ColumnDefinitions = new("*,Auto"), MinHeight = 59 };
             row.Classes.Add("settings-row");
             var text = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) };
             text.Children.Add(NativeWhite.Text(label)); if (help != null) text.Children.Add(NativeWhite.Text(help, "caption")); row.Children.Add(text);
@@ -57,7 +64,7 @@ public sealed partial class SettingsView : UserControl
             if (picker || folder)
             {
                 box.Classes.Add("settings-path");
-                var browse = new Button { Content = "변경", Margin = new Thickness(8, 0, 0, 0) }; browse.Classes.Add("quiet"); NativeWhite.Label(browse, label + " 찾아보기"); Grid.SetColumn(browse, 1);
+                var browse = new Button { Content = "변경", Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center }; browse.Classes.Add("quiet"); NativeWhite.Label(browse, label + " 찾아보기"); Grid.SetColumn(browse, 1);
                 BusyChanged += () => browse.IsEnabled = !busy;
                 browse.Click += async (_, _) => await RunOperation(async token =>
                 {
@@ -67,7 +74,16 @@ public sealed partial class SettingsView : UserControl
                 }, message);
                 row.Children.Add(browse);
             }
-            field.Children.Add(row); field.Children.Add(box);
+            if (folder)
+            {
+                field.Margin = new Thickness(14, 8); field.MinHeight = 42; field.Spacing = 0;
+                row.Children.Remove(caption);
+                var labels = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
+                labels.Children.Add(caption); labels.Children.Add(box); row.Children.Add(labels);
+                box.MinHeight = 20; box.Padding = new Thickness(0); box.PlaceholderText = "폴더를 선택하세요";
+                row.MinHeight = 42;
+            }
+            field.Children.Add(row); if (!folder) field.Children.Add(box);
             var error = NativeWhite.Text("", "error"); error.IsVisible = false; field.Children.Add(error); fieldErrors.Add(box, error);
             box.TextChanged += (_, _) => { error.IsVisible = false; }; return box;
         }
@@ -76,9 +92,10 @@ public sealed partial class SettingsView : UserControl
             var box = new ComboBox { ItemsSource = options.Contains(selected) ? options : options.Append(selected).ToArray(), SelectedItem = selected, MinWidth = 125, MaxWidth = 220, HorizontalAlignment = HorizontalAlignment.Right }; NativeWhite.Label(box, label); Row(label, box); return box;
         }
         content.Children.Add(BuildGoogleSettings(google ?? GoogleConnectionService.Shared(store), message));
-        Section("입력 · 출력 폴더", "모바일 v1 폴더는 PC의 동기화 앱이 관리하는 로컬 폴더입니다.");
+        Section("입력 폴더", "");
         var input = Field("오디오 입력 폴더", s.InputDirectory, true);
-        var sync = Field("모바일 v1 로컬 동기화 폴더", s.MobileDirectory, true);
+        var legacyFields = new StackPanel(); group = legacyFields;
+        var sync = Field("모바일 동기화 폴더", s.MobileDirectory, true);
         var scanLocal = new Button { Content = "다시 확인" }; scanLocal.Classes.Add("quiet"); Row("로컬 동기화 상태", scanLocal);
         BusyChanged += () => scanLocal.IsEnabled = !busy;
         scanLocal.Click += async (_, _) => await RunOperation(async token =>
@@ -88,44 +105,46 @@ public sealed partial class SettingsView : UserControl
             var result = await Task.Run(() => mobile.ScanAsync(token), token);
             if (!closed) { message.Foreground = result.Issues.Count > 0 ? NativeWhite.Danger : NativeWhite.Secondary; message.Text = $"{result.Imported}개 가져옴 · {result.Skipped}개 건너뜀. " + string.Join("; ", result.Issues.Select(i => i.Message).Take(3)); }
         }, message);
-        Section("ZIP 아카이브", "완료된 녹음은 원본 오디오 · 전사 TXT · 노트 MD와 논리 폴더 구조를 포함합니다.");
-        var autoExport = new ToggleSwitch { IsChecked = s.AutoExport }; NativeWhite.Label(autoExport, "완료된 녹음 자동 ZIP 저장"); Row("완료된 녹음 자동 ZIP 저장", autoExport);
+        Section("ZIP 아카이브", "");
+        var archiveSection = content.Children[^1];
+        var autoExport = new ToggleSwitch { OnContent = null, OffContent = null, IsChecked = s.AutoExport }; NativeWhite.Label(autoExport, "완료된 녹음 자동 ZIP 저장"); Row("완료된 녹음 자동 ZIP 저장", autoExport);
         var output = Field("자동 ZIP 저장 폴더", s.OutputDirectory, true);
-        var archiveInfo = NativeWhite.Text(s.OutputDirectory.Length == 0 ? "저장 폴더를 선택하면 완료된 녹음의 ZIP을 저장합니다." : "완료된 녹음의 ZIP을 지정한 폴더에 저장합니다.", "caption");
-        archiveInfo.Margin = new Thickness(16, 12); group.Children.Add(archiveInfo);
-        Section("모델", "새 설정은 기존 작업에 저장된 모델 선택을 바꾸지 않습니다.");
+        Section("모델", "");
         var whisperProfile = Choice("전사 모델", ["small", "large-v3-turbo"], m.WhisperProfile);
         var notesProfile = Choice("노트 모델", ["Qwen3.5 9B GGUF", "Qwen3.5 27B GGUF"], m.NotesProfile);
-        var import = new Button { Content = "프리셋 설정 가져오기…" }; import.Classes.Add("quiet"); Row("설치한 모델 설정", import);
+        var import = new Button { Content = "프리셋 설정 가져오기…" }; import.Classes.Add("quiet");
         var availability = NativeWhite.Text("", "caption"); availability.Margin = new Thickness(16, 12); group.Children.Add(availability);
         var modelGroup = group;
         var advancedFields = new StackPanel(); group = advancedFields;
+        Row("설치한 모델 설정", import);
         var whisperExe = Field("whisper.cpp · whisper-cli.exe", m.WhisperExecutable, picker: true); var whisperModel = Field("Whisper ggml 모델 파일", m.WhisperModel, picker: true);
         var llamaExe = Field("llama.cpp · llama-cli.exe", m.LlamaExecutable, picker: true); var llamaModel = Field("Qwen GGUF 모델 파일", m.LlamaModel, picker: true);
         var ffmpeg = Field("FFmpeg 네이티브 실행 파일", m.FfmpegExecutable, picker: true);
         var advanced = new Expander { Header = "고급 · 실행 파일과 모델 경로", Content = advancedFields, IsExpanded = false, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch }; advanced.Classes.Add("settings-advanced"); modelGroup.Children.Add(advanced);
-        Section("처리", "CPU가 기본입니다. CUDA는 호환 실행 파일과 NVIDIA 장치 지원을 확인한 경우에 선택하세요.");
-        var automatic = new ToggleSwitch { IsChecked = !s.QueuePaused }; NativeWhite.Label(automatic, "새 작업 자동 처리"); Row("새 작업 자동 처리", automatic, "진행 중인 작업과 기존 결과는 유지합니다.");
-        var externalPower = new ToggleSwitch { IsChecked = s.RequireExternalPower }; NativeWhite.Label(externalPower, "전원 연결 시에만 처리"); Row("전원 연결 시에만 처리", externalPower, "배터리 사용 중에는 새 작업을 기다립니다.");
+        Section("처리", "");
+        var automatic = new ToggleSwitch { OnContent = null, OffContent = null, IsChecked = !s.QueuePaused }; NativeWhite.Label(automatic, "새 작업 자동 처리"); Row("새 작업 자동 처리", automatic, "진행 중인 작업과 기존 결과는 유지합니다.");
+        var externalPower = new ToggleSwitch { OnContent = null, OffContent = null, IsChecked = s.RequireExternalPower }; NativeWhite.Label(externalPower, "전원 연결 시에만 처리"); Row("전원 연결 시에만 처리", externalPower, "배터리 사용 중에는 새 작업을 기다립니다.");
         var processingGroup = group; group = advancedFields;
         var compute = Choice("처리 장치", ["CPU", "CUDA"], m.Compute);
         var cuda = new CheckBox { Content = NativeWhite.Text("CUDA 실행 파일과 NVIDIA 장치 지원을 확인했습니다.", "secondary"), IsChecked = m.CudaConfirmed, Margin = new Thickness(16, 12) }; group.Children.Add(cuda);
         var layers = Field("GPU 레이어 수 · 부분 오프로딩", m.GpuLayers.ToString()); var timeout = Field("프로세스별 시간 제한 · 분", m.TimeoutMinutes.ToString());
         group = processingGroup;
-        Section("시작 · 창 닫기", "로그인 시 실행과 트레이 설정은 ‘설정 저장’ 후 적용됩니다.");
+        content.Children.Remove(archiveSection); content.Children.Add(archiveSection);
+        Section("시작 · 창 닫기", "");
         var startupInitial = OperatingSystem.IsWindows() && WindowsStartup.IsEnabled;
-        var startup = new ToggleSwitch { IsChecked = startupInitial, IsVisible = OperatingSystem.IsWindows() };
+        var startup = new ToggleSwitch { OnContent = null, OffContent = null, IsChecked = startupInitial, IsVisible = OperatingSystem.IsWindows() };
         NativeWhite.Label(startup, "Windows 로그인 시 실행");
         if (OperatingSystem.IsWindows()) Row("Windows 로그인 시 실행", startup);
-        var closeToTray = new ToggleSwitch { IsChecked = s.CloseToTray, IsEnabled = traySupported };
+        var closeToTray = new ToggleSwitch { OnContent = null, OffContent = null, IsChecked = s.CloseToTray, IsEnabled = traySupported };
         NativeWhite.Label(closeToTray, "창을 닫아도 트레이에 유지");
         Row("창을 닫아도 트레이에 유지", closeToTray, traySupported ? "트레이 메뉴의 ‘종료’로 앱을 끝낼 수 있습니다." : "이 환경에서는 Windows 트레이를 사용할 수 없습니다.");
-        content.Children.Add(NativeWhite.Text("변경 내용은 ‘설정 저장’ 후 적용됩니다. Google 연결 작업은 별도로 즉시 적용됩니다.", "caption"));
+        var legacy = new Expander { Header = "고급 · 모바일 폴더", Content = legacyFields, IsExpanded = false, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+        legacy.Classes.Add("settings-advanced"); content.Children.Add(legacy);
 
         void UpdateAvailability()
         {
             var paths = new[] { whisperExe.Text, whisperModel.Text, llamaExe.Text, llamaModel.Text, ffmpeg.Text }; var missing = paths.Count(p => string.IsNullOrWhiteSpace(p) || !File.Exists(p));
-            availability.Text = missing > 0 ? $"필수 파일 {missing}개를 선택하거나 경로를 확인하세요." : "선택한 파일이 존재합니다. 실행 호환성과 결과 품질은 실제 처리 시 확인하세요.";
+            availability.Text = missing > 0 ? $"필수 파일 {missing}개를 선택하거나 경로를 확인하세요." : "모델 파일을 확인했습니다.";
             availability.Foreground = missing > 0 ? NativeWhite.Danger : NativeWhite.Secondary;
             var gpu = compute.SelectedItem?.ToString() == "CUDA"; cuda.IsEnabled = gpu; layers.IsEnabled = gpu;
         }
@@ -142,7 +161,7 @@ public sealed partial class SettingsView : UserControl
                 llamaExe.Text = selection.LlamaExecutable; llamaModel.Text = selection.LlamaModel; ffmpeg.Text = selection.FfmpegExecutable;
                 compute.SelectedItem = "CPU"; cuda.IsChecked = false; layers.Text = selection.GpuLayers.ToString(); timeout.Text = selection.TimeoutMinutes.ToString();
                 if (!string.IsNullOrWhiteSpace(preset.OutputDirectory)) output.Text = preset.OutputDirectory;
-                message.Foreground = NativeWhite.Secondary; message.Text = "프리셋을 불러왔습니다. 경로와 저장 폴더를 확인한 뒤 저장하세요. 실행 파일을 시작하거나 모바일 연결을 가져오지 않았습니다."; UpdateAvailability();
+                message.Foreground = NativeWhite.Secondary; message.Text = "프리셋을 불러왔습니다. 경로를 확인하고 저장하세요."; UpdateAvailability();
         }, message);
         save.Click += (_, _) =>
         {

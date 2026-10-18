@@ -45,23 +45,24 @@ public sealed partial class MainWindow : Window
         {
             // Avalonia clears Content to null when recycling an item container.
             if (f == null) return null;
-            var row = new Grid { ColumnDefinitions = new("20,24,*,Auto,24"), Margin = new Thickness(f.Depth * 12, 0, 0, 0) };
+            var row = new Grid { ColumnDefinitions = new(f.Id != null ? "12,10,19,10,*,Auto,8,32" : "19,10,*,Auto"), Margin = new Thickness(f.Depth * 19, 0, 0, 0) };
             if (f.Id != null && store.Folders.Any(x => x.ParentId == f.Id))
             {
-                var disclosure = NativeWhite.Action(collapsedFolders.Contains(f.Id) ? "›" : "⌄", () => { if (!collapsedFolders.Add(f.Id)) collapsedFolders.Remove(f.Id); RequestRefresh(); }, "quiet");
-                disclosure.Padding = new Thickness(0); disclosure.MinHeight = 28; disclosure.FontSize = 16;
+                var disclosure = NativeWhite.Action("", () => { if (!collapsedFolders.Add(f.Id)) collapsedFolders.Remove(f.Id); RequestRefresh(); }, "quiet");
+                disclosure.Content = VemoIcons.Outline(collapsedFolders.Contains(f.Id) ? "chevron" : "down", 12);
+                disclosure.Padding = new Thickness(0); disclosure.MinHeight = 28; disclosure.Width = 12;
                 NativeWhite.Label(disclosure, f.Label + " 하위 폴더 " + (collapsedFolders.Contains(f.Id) ? "펼치기" : "접기")); row.Children.Add(disclosure);
             }
-            var icon = VemoIcons.Outline(f.View); Grid.SetColumn(icon, 1); row.Children.Add(icon);
-            var label = new TextBlock { Text = f.Label, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center }; ToolTip.SetTip(label, f.Label); Grid.SetColumn(label, 2); row.Children.Add(label);
-            var count = NativeWhite.Text(f.Count.ToString(), "caption"); count.VerticalAlignment = VerticalAlignment.Center; Grid.SetColumn(count, 3); row.Children.Add(count);
+            var icon = VemoIcons.Outline(f.View); Grid.SetColumn(icon, f.Id != null ? 2 : 0); row.Children.Add(icon);
+            var label = new TextBlock { Text = f.Label, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center }; ToolTip.SetTip(label, f.Label); Grid.SetColumn(label, f.Id != null ? 4 : 2); row.Children.Add(label);
+            var count = NativeWhite.Text(f.Count.ToString(), "caption"); count.FontSize = 11; count.VerticalAlignment = VerticalAlignment.Center; count.HorizontalAlignment = HorizontalAlignment.Right; Grid.SetColumn(count, f.Id != null ? 5 : 3); row.Children.Add(count);
             if (f.Id != null)
             {
-                var manage = new Button { Content = "⋯", Padding = new Thickness(0), MinHeight = 28 }; manage.Classes.Add("quiet"); NativeWhite.Label(manage, f.Label + " 폴더 관리");
+                var manage = new Button { Content = VemoIcons.Outline("more"), Padding = new Thickness(0), MinHeight = 32, Height = 32, CornerRadius = new CornerRadius(8), Width = 32, HorizontalAlignment = HorizontalAlignment.Right }; manage.Classes.Add("quiet"); NativeWhite.Label(manage, f.Label + " 폴더 관리");
                 manage.Click += (_, _) => { selectedFolder = f.Id; view = "folder"; folders.SelectedItem = f; UpdateActions(); folders.ContextMenu?.Open(folders); };
                 manage.AddHandler(PointerPressedEvent, (_, _) => { selectedFolder = f.Id; view = "folder"; folders.SelectedItem = f; UpdateActions(); }, RoutingStrategies.Tunnel);
                 manage.GotFocus += (_, _) => { selectedFolder = f.Id; view = "folder"; folders.SelectedItem = f; UpdateActions(); };
-                Grid.SetColumn(manage, 4); row.Children.Add(manage);
+                Grid.SetColumn(manage, 7); row.Children.Add(manage);
             }
             return row;
         });
@@ -71,37 +72,46 @@ public sealed partial class MainWindow : Window
         {
             if (choice == null) return null;
             var j = choice.Job; var row = new StackPanel { Spacing = 7 };
-            row.Children.Add(new TextBlock { Text = j.Title, FontWeight = FontWeight.SemiBold, TextWrapping = TextWrapping.NoWrap, MaxLines = 1, TextTrimming = TextTrimming.CharacterEllipsis });
-            var recorded = NativeWhite.Text(DisplayDate(j.RecordedAt), "caption"); ToolTip.SetTip(recorded, j.RecordedAt ?? "녹음 날짜 미확인"); row.Children.Add(recorded);
-            row.Children.Add(NativeWhite.Text(StateLabel(j.State) + (j.ExportError != null ? " · ZIP 저장 실패" : ""), j.State == JobState.Failed || j.ExportError != null ? "error" : "caption"));
+            row.Children.Add(new TextBlock { Text = j.Title, FontSize = 13, FontWeight = FontWeight.SemiBold, TextWrapping = TextWrapping.NoWrap, MaxLines = 1, TextTrimming = TextTrimming.CharacterEllipsis });
+            var recorded = NativeWhite.Text(DisplayDate(j.RecordedAt), "caption"); recorded.FontSize = 10; ToolTip.SetTip(recorded, j.RecordedAt ?? "녹음 날짜 미확인"); row.Children.Add(recorded);
+            var rowState = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 }; rowState.Children.Add(new Avalonia.Controls.Shapes.Ellipse { Width = 4, Height = 4, Fill = Brush.Parse("#B9ACD9"), VerticalAlignment = VerticalAlignment.Center });
+            var stateText = NativeWhite.Text(StateLabel(j.State) + (j.ExportError != null ? " · ZIP 저장 실패" : ""), j.State == JobState.Failed || j.ExportError != null ? "error" : "caption"); stateText.FontSize = 10; rowState.Children.Add(stateText); row.Children.Add(rowState);
             ToolTip.SetTip(row, j.Title + "\n" + (j.Error ?? j.ExportError ?? StateLabel(j.State)));
             var selectedRow = new Grid { ColumnDefinitions = new("*,20") }; selectedRow.Children.Add(row); var mark = NativeWhite.SelectionMark(); Grid.SetColumn(mark, 1); selectedRow.Children.Add(mark); return selectedRow;
         });
         var outer = new Grid { RowDefinitions = new("*,Auto") };
         var columns = new Grid { ColumnDefinitions = new("220,310,*") }; outer.Children.Add(columns);
         var sidebar = new Grid { RowDefinitions = new("Auto,Auto,Auto,Auto,*,Auto"), Background = NativeWhite.Sidebar };
-        var brand = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, Margin = new Thickness(22, 26, 20, 28) };
-        brand.Children.Add(new Image { Width = 28, Height = 28, Source = new Bitmap(Avalonia.Platform.AssetLoader.Open(new Uri("avares://Vemo.App/Assets/vemo-icon.png"))) }); brand.Children.Add(new TextBlock { Text = "Vemo", FontSize = 23, FontWeight = FontWeight.SemiBold }); sidebar.Children.Add(brand);
-        var libraryHeading = NativeWhite.Text("라이브러리", "caption"); libraryHeading.Margin = new Thickness(22, 0, 12, 8); Grid.SetRow(libraryHeading, 1); sidebar.Children.Add(libraryHeading);
+        var brand = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(22, 21, 20, 28) };
+        brand.Children.Add(new Image { Width = 27, Height = 27, Source = new Bitmap(Avalonia.Platform.AssetLoader.Open(new Uri("avares://Vemo.App/Assets/vemo-icon.png"))) }); brand.Children.Add(new TextBlock { Text = "Vemo", FontSize = 18, FontWeight = FontWeight.SemiBold, VerticalAlignment = VerticalAlignment.Center }); sidebar.Children.Add(brand);
+        var libraryHeading = NativeWhite.Text("라이브러리", "caption"); libraryHeading.FontSize = 10; libraryHeading.Margin = new Thickness(22, 0, 12, 11); Grid.SetRow(libraryHeading, 1); sidebar.Children.Add(libraryHeading);
         Grid.SetRow(navigation, 2); sidebar.Children.Add(navigation);
-        var folderHeading = new Grid { ColumnDefinitions = new("*,Auto"), Margin = new Thickness(20, 20, 12, 10) }; folderHeading.Children.Add(NativeWhite.Text("폴더", "caption"));
-        var create = Button("+ 폴더", CreateFolder, "soft"); Grid.SetColumn(create, 1); folderHeading.Children.Add(create); Grid.SetRow(folderHeading, 3); sidebar.Children.Add(folderHeading);
+        var folderHeading = new Grid { ColumnDefinitions = new("*,Auto"), Margin = new Thickness(22, 16, 16, 2) }; var folderLabel = NativeWhite.Text("폴더", "caption"); folderLabel.FontSize = 11; folderLabel.VerticalAlignment = VerticalAlignment.Center; folderHeading.Children.Add(folderLabel);
+        var create = Button("+ 폴더", CreateFolder, "soft"); create.FontSize = 11; create.MinHeight = 30; create.Padding = new Thickness(10, 8); create.Margin = new Thickness(0); Grid.SetColumn(create, 1); folderHeading.Children.Add(create); Grid.SetRow(folderHeading, 3); sidebar.Children.Add(folderHeading);
         Grid.SetRow(folders, 4); sidebar.Children.Add(folders);
-        var sidebarBottom = new StackPanel { Margin = new Thickness(12), Spacing = 6 };
-        sidebarBottom.Children.Add(Button("설정", OpenSettings, "quiet")); Grid.SetRow(sidebarBottom, 5); sidebar.Children.Add(sidebarBottom);
+        var sidebarBottom = new StackPanel { Margin = new Thickness(10, 12, 10, 12) };
+        var settings = Button("설정", OpenSettings, "quiet"); settings.HorizontalAlignment = HorizontalAlignment.Stretch; settings.HorizontalContentAlignment = HorizontalAlignment.Left; settings.Height = 40; settings.FontSize = 11; settings.Padding = new Thickness(12, 0); settings.Margin = new Thickness(0);
+        NativeWhite.Label(settings, "설정");
+        settings.ContentTemplate = new FuncDataTemplate<string>((text, _) => { var content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 }; content.Children.Add(VemoIcons.Outline("settings")); content.Children.Add(new TextBlock { Text = text, VerticalAlignment = VerticalAlignment.Center }); return content; });
+        sidebarBottom.Children.Add(settings); Grid.SetRow(sidebarBottom, 5); sidebar.Children.Add(sidebarBottom);
         columns.Children.Add(NativeWhite.Panel(sidebar, true));
         var listPane = new Grid { RowDefinitions = new("Auto,Auto,*,Auto") };
-        var listHeader = new StackPanel { Margin = new Thickness(20, 24, 20, 12), Spacing = 18 };
-        var heading = new Grid { ColumnDefinitions = new("*,Auto") }; listTitle.FontSize = 18; listTitle.FontWeight = FontWeight.SemiBold; heading.Children.Add(listTitle); Grid.SetColumn(listCount, 1); heading.Children.Add(listCount); listHeader.Children.Add(heading); listHeader.Children.Add(search); listPane.Children.Add(listHeader);
-        var selection = new Grid { ColumnDefinitions = new("*,Auto"), Margin = new Thickness(20, 0, 12, 8) }; selection.Children.Add(selectionInfo);
-        var menuButton = new Button { Content = "선택 작업 ⋯", Flyout = new MenuFlyout { ItemsSource = SelectionMenu() } }; menuButton.Classes.Add("quiet"); Grid.SetColumn(menuButton, 1); selection.Children.Add(menuButton); Grid.SetRow(selection, 1); listPane.Children.Add(selection);
+        var listHeader = new StackPanel { Margin = new Thickness(19, 22, 19, 17), Spacing = 15 };
+        var heading = new Grid { ColumnDefinitions = new("*,Auto") }; listTitle.FontSize = 16; listTitle.FontWeight = FontWeight.SemiBold; heading.Children.Add(listTitle); listCount.FontSize = 11; listCount.VerticalAlignment = VerticalAlignment.Center; Grid.SetColumn(listCount, 1); heading.Children.Add(listCount); listHeader.Children.Add(heading);
+        var searchBox = new Grid(); searchBox.Children.Add(search); search.FontSize = 12; search.Padding = new Thickness(40, 10, 12, 10); var searchIcon = VemoIcons.Outline("search"); searchIcon.HorizontalAlignment = HorizontalAlignment.Left; searchIcon.Margin = new Thickness(12, 0, 0, 0); searchBox.Children.Add(searchIcon); listHeader.Children.Add(searchBox); listPane.Children.Add(listHeader);
+        var selection = new Grid { ColumnDefinitions = new("*,Auto"), Margin = new Thickness(19, 0, 19, 9) }; selectionInfo.FontSize = 10; selectionInfo.VerticalAlignment = VerticalAlignment.Center; selection.Children.Add(selectionInfo);
+        var menuButton = new Button { Content = "선택", FontSize = 10, Padding = new Thickness(6), MinHeight = 26, Flyout = new MenuFlyout { ItemsSource = SelectionMenu() } }; menuButton.Classes.Add("quiet"); NativeWhite.Label(menuButton, "선택 작업 ⋯"); Grid.SetColumn(menuButton, 1); selection.Children.Add(menuButton); Grid.SetRow(selection, 1); listPane.Children.Add(selection);
         var listArea = new Grid(); listArea.Children.Add(jobs); emptyList.Margin = new Thickness(24); emptyList.VerticalAlignment = VerticalAlignment.Center; emptyList.TextAlignment = TextAlignment.Center; listArea.Children.Add(emptyList); Grid.SetRow(listArea, 2); listPane.Children.Add(listArea);
         jobs.ContextMenu = new ContextMenu { ItemsSource = SelectionMenu() };
-        var importRow = new Grid { ColumnDefinitions = new("*,Auto"), Margin = new Thickness(20, 12) }; var importLabel = NativeWhite.Text("오디오 파일 가져오기", "secondary"); importLabel.VerticalAlignment = VerticalAlignment.Center; importRow.Children.Add(importLabel); var import = Button("+", Import, "quiet", () => !importing); NativeWhite.Label(import, "오디오 파일 가져오기", "Ctrl+O"); import.Width = 36; import.Height = 36; import.Padding = new Thickness(0); import.FontSize = 24; ToolTip.SetTip(import, "Ctrl+O · 녹음이 끝난 파일을 선택하세요"); Grid.SetColumn(import, 1); importRow.Children.Add(import); Grid.SetRow(importRow, 3); listPane.Children.Add(importRow);
+        var importRow = new Grid { ColumnDefinitions = new("*,Auto") }; var importLabel = NativeWhite.Text("오디오 파일 가져오기", "secondary"); importLabel.FontSize = 10; importLabel.VerticalAlignment = VerticalAlignment.Center; importRow.Children.Add(importLabel); var import = Button("+", Import, "quiet", () => !importing); NativeWhite.Label(import, "오디오 파일 가져오기", "Ctrl+O"); import.Classes.Add("icon-action"); import.Margin = new Thickness(0); import.ContentTemplate = new FuncDataTemplate<string>((_, _) => VemoIcons.Outline("plus", 24)); ToolTip.SetTip(import, "Ctrl+O · 녹음이 끝난 파일을 선택하세요"); Grid.SetColumn(import, 1); importRow.Children.Add(import); var importBorder = new Border { Child = importRow, Padding = new Thickness(18, 14), BorderBrush = NativeWhite.Divider, BorderThickness = new Thickness(0, 1, 0, 0) }; Grid.SetRow(importBorder, 3); listPane.Children.Add(importBorder);
         var listBorder = NativeWhite.Panel(listPane, true); Grid.SetColumn(listBorder, 1); columns.Children.Add(listBorder);
         var detail = new Grid { RowDefinitions = new("Auto,*"), Margin = new Thickness(32, 18, 32, 20) }; recordingDetail = detail; detailHost.Children.Add(detail); Grid.SetColumn(detailHost, 2); columns.Children.Add(detailHost);
         var top = new Grid { ColumnDefinitions = new("*,Auto") }; queueInfo.VerticalAlignment = VerticalAlignment.Center; top.Children.Add(queueInfo);
-        var queueMenu = new Button { Content = "처리 ⋯", Flyout = new MenuFlyout { ItemsSource = new Control[] { Menu("새 작업 일시중지 / 재개", ToggleQueue), Menu("모바일 폴더 지금 확인", Scan), Menu("설정", OpenSettings) } } }; queueMenu.Classes.Add("quiet"); Grid.SetColumn(queueMenu, 1); top.Children.Add(queueMenu); detail.Children.Add(top);
+        var queueMenu = new Button { Content = "처리 ⋯", Flyout = new MenuFlyout { ItemsSource = new Control[] { Menu("새 작업 일시중지 / 재개", ToggleQueue), Menu("모바일 폴더 지금 확인", Scan), Menu("설정", OpenSettings) } } }; queueMenu.Classes.Add("quiet"); VemoIcons.Decorate(queueMenu, "more", iconOnly: true); var topActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 3 };
+        var topImport = Button("파일 가져오기", Import, "quiet", () => !importing); VemoIcons.Decorate(topImport, "import", iconOnly: true);
+        var topSettings = Button("환경 설정", OpenSettings, "quiet"); VemoIcons.Decorate(topSettings, "settings", iconOnly: true);
+        topActions.Children.Add(topImport); topActions.Children.Add(topSettings); topActions.Children.Add(queueMenu);
+        Grid.SetColumn(topActions, 1); top.Children.Add(topActions); detail.Children.Add(top);
         var detailArea = new Grid(); Grid.SetRow(detailArea, 1); detail.Children.Add(detailArea);
         emptyDetail.Spacing = 12; emptyDetail.VerticalAlignment = VerticalAlignment.Center; emptyDetail.HorizontalAlignment = HorizontalAlignment.Center; emptyDetail.MaxWidth = 350;
         emptyDetail.Children.Add(NativeWhite.Text("기록을 선택하세요", "heading")); emptyDetail.Children.Add(NativeWhite.Text("전사와 노트를 한곳에서 읽고 정리하세요.\n완료된 오디오를 가져오면 설정한 로컬 처리기로 작업합니다.", "secondary")); emptyImport = Button("오디오 가져오기", Import, "primary", () => !importing); emptyDetail.Children.Add(emptyImport); detailArea.Children.Add(emptyDetail);
@@ -111,12 +121,18 @@ public sealed partial class MainWindow : Window
         detailScroll.SizeChanged += (_, e) => detailBody.Height = Math.Max(600, e.NewSize.Height);
         detailArea.Children.Add(detailScroll);
         var titleRow = new Grid { ColumnDefinitions = new("*,Auto"), Margin = new Thickness(0, 24, 0, 4) }; titleRow.Children.Add(title);
-        var more = new Button { Content = "⋯", Flyout = new MenuFlyout { ItemsSource = SelectionMenu() } }; NativeWhite.Label(more, "녹음 작업 메뉴"); more.Classes.Add("quiet"); Grid.SetColumn(more, 1); titleRow.Children.Add(more); detailBody.Children.Add(titleRow);
+        var more = new Button { Content = "⋯", Flyout = new MenuFlyout { ItemsSource = SelectionMenu() } }; NativeWhite.Label(more, "녹음 작업 메뉴"); more.Classes.Add("quiet"); VemoIcons.Decorate(more, "more", iconOnly: true); NativeWhite.Label(more, "녹음 작업 메뉴"); Grid.SetColumn(more, 1); titleRow.Children.Add(more); detailBody.Children.Add(titleRow);
         var metadata = new StackPanel { Spacing = 8 }; metadata.Children.Add(detailPath); var edit = new Grid { ColumnDefinitions = new("*,Auto") }; edit.Children.Add(date); var save = Button("저장", SaveTitle, "soft"); Grid.SetColumn(save, 1); edit.Children.Add(save); metadata.Children.Add(edit); metadata.Children.Add(detailState); Grid.SetRow(metadata, 1); detailBody.Children.Add(metadata);
         jobInfo.Margin = new Thickness(0, 10, 0, 12); var infoScroll = new ScrollViewer { Content = jobInfo, MaxHeight = 105 }; Grid.SetRow(infoScroll, 2); detailBody.Children.Add(infoScroll);
         tabs.SelectionChanged += (_, _) => UpdateActions();
-        tabs.ItemsSource = new[] { new TabItem { Header = "전사", Content = transcript }, new TabItem { Header = "노트", Content = new ScrollViewer { Content = renderedNotes } } }; Grid.SetRow(player, 3); detailBody.Children.Add(player); Grid.SetRow(tabs, 4); detailBody.Children.Add(tabs);
-        var footer = new WrapPanel { Margin = new Thickness(0, 16, 0, 0) }; footer.Children.Add(Button("복사", CopyResult, "soft", HasResult)); footer.Children.Add(Button("내보내기", SaveResult, "soft", HasResult)); footer.Children.Add(Button("결과 폴더", OpenResultDirectory, "soft", () => Current()?.ExportPath != null)); footer.Children.Add(Button("ZIP 내보내기", Export, null, () => HasSelection() && SelectedJobs().All(j => j.State == JobState.Completed))); footer.Children.Add(Button("선택 이동…", Move, null, HasSelection)); Grid.SetRow(footer, 5); detailBody.Children.Add(footer);
+        TabItem ResultTab(string name, string icon, Control body)
+        {
+            var item = new TabItem { Header = name, Content = body };
+            item.HeaderTemplate = new FuncDataTemplate<string>((text, _) => { var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 7 }; row.Children.Add(VemoIcons.Outline(icon, 15)); row.Children.Add(new TextBlock { Text = text }); return row; });
+            return item;
+        }
+        tabs.ItemsSource = new[] { ResultTab("전사", "text", transcript), ResultTab("노트", "note", new ScrollViewer { Content = renderedNotes }) }; Grid.SetRow(player, 3); detailBody.Children.Add(player); Grid.SetRow(tabs, 4); detailBody.Children.Add(tabs);
+        var footer = new WrapPanel { Margin = new Thickness(0, 16, 0, 0) }; var copyResult = Button("복사", CopyResult, "soft", HasResult); VemoIcons.Decorate(copyResult, "copy"); footer.Children.Add(copyResult); var exportResult = Button("내보내기", SaveResult, "soft", HasResult); VemoIcons.Decorate(exportResult, "export"); footer.Children.Add(exportResult); var resultFolder = Button("결과 폴더", OpenResultDirectory, "soft", () => Current()?.ExportPath != null); VemoIcons.Decorate(resultFolder, "folder"); footer.Children.Add(resultFolder); footer.Children.Add(Button("ZIP 내보내기", Export, null, () => HasSelection() && SelectedJobs().All(j => j.State == JobState.Completed))); footer.Children.Add(Button("선택 이동…", Move, null, HasSelection)); Grid.SetRow(footer, 5); detailBody.Children.Add(footer);
         status.Margin = new Thickness(16, 8); var statusBar = new Border { Child = new ScrollViewer { Content = status, MaxHeight = 70 }, Background = NativeWhite.Sidebar, BorderBrush = NativeWhite.Divider, BorderThickness = new Thickness(0, 1, 0, 0) }; Grid.SetRow(statusBar, 1); outer.Children.Add(statusBar); Content = outer;
         WireDragDrop(listArea);
         navigation.SelectionChanged += (_, _) => { if (refreshing || closing) return; if (navigation.SelectedItem is FolderChoice f) { CloseSettings(); selectedFolder = null; view = f.View; RequestRefresh(); } };
@@ -308,7 +324,7 @@ public sealed partial class MainWindow : Window
     void Detail()
     {
         if (refreshing || closing) return;
-        var j = Current(); var count = Selected().Count(); selectionInfo.Text = count > 0 ? $"{count}개 선택 · Ctrl/Shift" : "Ctrl/Shift 다중 선택";
+        var j = Current(); var count = Selected().Count(); selectionInfo.Text = count > 0 ? $"{count}개 선택 · Ctrl/Shift" : "최근 녹음순";
         detailBody.IsVisible = j != null; emptyDetail.IsVisible = j == null; UpdateActions();
         if (j == null) { player.SetSource(null); detailId = null; editing = false; return; }
         player.SetSource(j.Trashed ? null : store.AudioPath(j.Id));

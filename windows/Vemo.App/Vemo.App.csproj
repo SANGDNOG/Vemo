@@ -1,1 +1,45 @@
-<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>WinExe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><ApplicationManifest>app.manifest</ApplicationManifest><ApplicationIcon>Assets/vemo-icon.ico</ApplicationIcon></PropertyGroup><ItemGroup><PackageReference Include="NAudio.Wasapi" Version="2.3.0"/><PackageReference Include="Avalonia" Version="12.1.4"/><PackageReference Include="Avalonia.Desktop" Version="12.1.4"/><PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.4"/><ProjectReference Include="../Vemo.Core/Vemo.Core.csproj"/><AvaloniaResource Include="Assets/**"/></ItemGroup></Project>
+<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>WinExe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><ApplicationManifest>app.manifest</ApplicationManifest><ApplicationIcon>Assets/vemo-icon.ico</ApplicationIcon></PropertyGroup><ItemGroup><PackageReference Include="NAudio.Wasapi" Version="2.3.0"/><PackageReference Include="Avalonia" Version="12.1.4"/><PackageReference Include="Avalonia.Desktop" Version="12.1.4"/><PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.4"/><ProjectReference Include="../Vemo.Core/Vemo.Core.csproj"/><AvaloniaResource Include="Assets/**"/></ItemGroup>
+  <!-- Release owners provide an absolute file outside the checkout. Never copy that raw file into output. -->
+  <PropertyGroup>
+    <_GoogleClientResourcePath>$(BaseIntermediateOutputPath)google-client/$(Configuration)/$(TargetFramework)/$(RuntimeIdentifier)/installed-client.json</_GoogleClientResourcePath>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(GoogleInstalledClientJsonPath)' != ''">
+    <EmbeddedResource Include="$(_GoogleClientResourcePath)" LogicalName="Vemo.Google.InstalledClient.json" />
+  </ItemGroup>
+  <UsingTask TaskName="VemoNormalizeGoogleInstalledClient" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <InputPath ParameterType="System.String" Required="true" />
+      <RepositoryPath ParameterType="System.String" Required="true" />
+      <CoreAssemblyPath ParameterType="System.String" Required="true" />
+      <OutputPath ParameterType="System.String" Required="true" />
+    </ParameterGroup>
+    <Task>
+      <Using Namespace="System" />
+      <Using Namespace="System.IO" />
+      <Using Namespace="System.Reflection" />
+      <Code Type="Fragment" Language="cs"><![CDATA[
+        try
+        {
+            if (!Path.IsPathRooted(InputPath) || !Path.GetFullPath(InputPath).Equals(InputPath, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException();
+            var input = Path.GetFullPath(InputPath);
+            var repository = Path.GetFullPath(RepositoryPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (input.Equals(repository, StringComparison.OrdinalIgnoreCase) || input.StartsWith(repository + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException();
+            if (!File.Exists(input) || new FileInfo(input).Length > 65536) throw new InvalidOperationException();
+            var core = Assembly.LoadFrom(CoreAssemblyPath);
+            var normalizer = core.GetType("Vemo.Core.GoogleBundledClientConfiguration", true).GetMethod("NormalizeInstalledJson", BindingFlags.Public | BindingFlags.Static);
+            var normalized = (string)normalizer.Invoke(null, new object[] { File.ReadAllText(input) });
+            Directory.CreateDirectory(Path.GetDirectoryName(OutputPath));
+            File.WriteAllText(OutputPath, normalized, new System.Text.UTF8Encoding(false));
+        }
+        catch
+        {
+            Log.LogError("Google bundled desktop client configuration is invalid or unavailable. Supply GoogleInstalledClientJsonPath as an absolute installed-client JSON path outside the checkout. Input values are not logged.");
+            return false;
+        }
+      ]]></Code>
+    </Task>
+  </UsingTask>
+  <Target Name="PrepareGoogleInstalledClient" BeforeTargets="PrepareResourceNames" DependsOnTargets="ResolveReferences" Condition="'$(GoogleInstalledClientJsonPath)' != ''">
+    <VemoNormalizeGoogleInstalledClient InputPath="$(GoogleInstalledClientJsonPath)" RepositoryPath="$(MSBuildProjectDirectory)/../.." CoreAssemblyPath="@(ReferenceCopyLocalPaths->WithMetadataValue('Filename', 'Vemo.Core')->WithMetadataValue('Extension', '.dll'))" OutputPath="$(_GoogleClientResourcePath)" />
+  </Target>
+</Project>

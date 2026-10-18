@@ -1,5 +1,6 @@
 using Avalonia.Controls;
 using Avalonia.Headless.XUnit;
+using Avalonia.VisualTree;
 using Vemo.Core;
 using Xunit;
 using static Vemo.App.Tests.UiFixture;
@@ -21,7 +22,7 @@ public sealed class SettingsConnectionStateTests
         if (configured) vault.Save("configuration", Configuration);
         if (connected) vault.Save("refresh", "synthetic-test-refresh");
         var transport = new ControlledTransport();
-        using var service = new GoogleConnectionService(ui.Store, vault, transport);
+        using var service = new GoogleConnectionService(ui.Store, vault, transport, () => null);
         var pane = new SettingsView(ui.Store, new MobileFolderAdapter(ui.Store), google: service);
         var host = new Window { Content = pane, Width = 900, Height = 800 };
         host.Show(); Pump();
@@ -34,8 +35,12 @@ public sealed class SettingsConnectionStateTests
             Assert.Equal(connected, Named<Button>(host, "Google 연결 해제").IsEnabled);
             Assert.False(Named<Button>(host, "지금 동기화").IsEnabled);
             Assert.False(Named<Button>(host, "Google 작업 취소").IsVisible);
-            Assert.Equal(connected ? "Google 연결됨" : configured ? "로그인이 필요합니다." : "Google OAuth 데스크톱 클라이언트 설정을 가져오세요.", Named<TextBlock>(host, "Google 연결 상태").Text);
+            Assert.Equal(connected ? "Google 연결됨" : configured ? "연결되지 않음" : "이 빌드에서는 Google 연결을 사용할 수 없습니다.", Named<TextBlock>(host, "Google 연결 상태").Text);
             Assert.Equal("선택한 Drive 폴더 없음", Named<TextBlock>(host, "Google 선택한 폴더").Text);
+            Assert.Equal(!connected, Named<Button>(host, "Google 로그인").IsVisible);
+            Assert.Equal(connected, Named<Button>(host, "Google 연결 해제").IsVisible);
+            Assert.DoesNotContain(host.GetVisualDescendants().OfType<Button>(), b => b.Content?.ToString()?.Contains("OAuth") == true);
+            Assert.DoesNotContain(host.GetVisualDescendants().OfType<TextBlock>(), b => b.Text?.Contains("Google Cloud") == true);
             Assert.Equal(0, transport.Requests);
         }
         finally { await pane.StopAsync(); host.Close(); Pump(); }
@@ -50,7 +55,7 @@ public sealed class SettingsConnectionStateTests
         var vault = new MemoryVault();
         vault.Save("configuration", Configuration); vault.Save("refresh", "synthetic-test-refresh");
         var transport = new ControlledTransport();
-        using var service = new GoogleConnectionService(ui.Store, vault, transport);
+        using var service = new GoogleConnectionService(ui.Store, vault, transport, () => null);
         var pane = new SettingsView(ui.Store, new MobileFolderAdapter(ui.Store), google: service);
         var host = new Window { Content = pane, Width = 900, Height = 800 };
         host.Show(); Pump();

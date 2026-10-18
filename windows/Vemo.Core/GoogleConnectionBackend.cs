@@ -40,6 +40,11 @@ public sealed partial class GoogleConnectionService
             }
             var config = vault.Load("configuration");
             if (config != null) SetConfiguration(GoogleOAuthConfiguration.ParseInstalledJson(config));
+            else
+            {
+                var bundled = bundledClientJson();
+                if (bundled != null) SetConfiguration(GoogleOAuthConfiguration.ParseInstalledJson(GoogleBundledClientConfiguration.NormalizeInstalledJson(bundled)));
+            }
             UpdateStatus();
         }
         catch (Exception e) when (e is not OutOfMemoryException) { Status = Status with { LastError = e is GoogleConnectionException g ? g.Code : "local_state_unavailable" }; }

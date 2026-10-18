@@ -89,3 +89,13 @@ NAS 별도 기록은 작성하지 않았다. 작업자용 근거는 이 문서�
 Final frozen Windows UI run: 77/77 passed, zero failed/skipped, 91.027 seconds. Root parsed native-final-plan.trx Counters. This supersedes the pending final-run statement above. Native Core: 119 passed / 1 platform skip, including native DPAPI success.
 
 Installed 0.1.5-google-native-white side-by-side; Desktop Vemo.lnk target and icon read back. App/Core hashes match final tested binaries. Running 0.1.4-icon and real library preserved; quit old app and reopen desktop shortcut. Real account OAuth / phone roundtrip remains unverified. OAuth publishes result.json, not ZIP. Other parity gaps remain as listed.
+
+## 후속: 원클릭 Google 연결 / 시안 세부 대조
+
+일반 사용자에게 OAuth JSON 발급을 요구하던 흐름을 제거했다. 개발자가 Desktop 클라이언트를 배포 빌드에 제공하고, 새 설치에서는 Google Drive 연결 → 브라우저 로그인/동의 → 폴더 선택 순서로 진행한다. 개인 계정 토큰은 포함하지 않는다. Google 프로젝트의 공개 게시/테스트 사용자 설정은 개발자의 책임이며 실제 승인은 별도다.
+
+승인 A Native White와 대조해 Segoe UI/Malgun Gothic, 기본/행 글꼴 크기,18px 브랜드,19px 벡터 아이콘과24단위 viewport,1.6 선 두께, 폴더 count/메뉴 간격과32px 메뉴 영역, 하단 설정 톱니/정렬, 상단 가져오기/설정, 탭 아이콘, 검색 아이콘, 재생 아이콘/트랙을 수정했다. 설정은58px 상단/25px 제목/32px 본문 여백, 간결한 연결 카드와 접힌 고급 옵션을 사용한다. 실제 지원하지 않는 시안 기능을 가짜로 활성화하지 않는다. 제목 한 줄은 이전 사용자 지시를 우선했다.
+
+원본 시안은 디자인 토큰과 화면 구조의 기준이다. OS 제목 표시줄, 데이터별 오류/상태, 실제 기능의 추가 컨트롤까지 픽셀 단위로 동일하다고 주장하지 않는다.
+
+후속 검증: 로컬 App80통과/1실제추론옵트인제외, Core135통과/1DPAPI제외, Startup17통과, Playback2통과/1Windows제외, Provision12통과. Windows 배포 구성의 첫 실행 검증에서 신규 연결 버튼 활성화/계정 미연결/토큰 미저장을 통과했다. 최초 네이티브 실행81건 중80통과/1실패: 실패는 미설정 테스트가 배포 리소스를 자동 발견한 테스트 격리 문제였다. 이 실행의 실제 M4A 전사·노트·중첩 ZIP 검사는 통과했다. 미설정 테스트에 명시적 null provider를 주입하고, 동일 제품DLL로 최종 Windows80통과/1실제추론옵트인제외(22.533초)를 확인했다. Windows Skia 화면8장을1280×820/980×540으로 저장했으며 한글 U+AC00 fallback은 Malgun Gothic으로 확인했다. 실제 계정 승인/클라우드 왕복 및 물리 DPI 확인은 미완료다.

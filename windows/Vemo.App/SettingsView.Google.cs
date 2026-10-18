@@ -1,7 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
-using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using Vemo.Core;
 namespace Vemo.App;
@@ -11,7 +10,7 @@ public sealed partial class SettingsView
     Control BuildGoogleSettings(GoogleConnectionService google, TextBlock message)
     {
         var section = new StackPanel { Spacing = 10 };
-        section.Children.Add(NativeWhite.Text("Google Drive", "secondary"));
+        var label = NativeWhite.Text("Google Drive", "secondary"); label.FontSize = 11; label.FontWeight = Avalonia.Media.FontWeight.Medium; section.Children.Add(label);
         var body = new StackPanel { Spacing = 12, Margin = new Thickness(16) };
         var card = new Border { Child = body }; card.Classes.Add("settings-group"); section.Children.Add(card);
         var status = NativeWhite.Text("", "secondary"); NativeWhite.Label(status, "Google 연결 상태"); body.Children.Add(status);
@@ -23,19 +22,15 @@ public sealed partial class SettingsView
             var button = new Button { Content = label, Margin = new Thickness(0, 0, 8, 8) };
             button.Classes.Add("compact"); NativeWhite.Label(button, label); actions.Children.Add(button); return button;
         }
-        var configure = Action("OAuth 설정 가져오기…");
-        var connect = Action("Google 로그인"); connect.Classes.Add("primary");
-        var list = Action("Drive 폴더 선택…");
-        var sync = Action("지금 동기화");
-        var disconnect = Action("Google 연결 해제");
+        var connect = Action("Google Drive 연결"); connect.Classes.Add("primary");
+        var list = Action("폴더 선택");
+        var sync = Action("동기화");
+        var disconnect = Action("연결 해제");
         var cancelOperation = Action("Google 작업 취소");
-        actions.Children.Remove(configure); actions.Children.Remove(list); actions.Children.Remove(sync);
+        NativeWhite.Label(connect, "Google 로그인"); NativeWhite.Label(list, "Drive 폴더 선택…");
+        NativeWhite.Label(sync, "지금 동기화"); NativeWhite.Label(disconnect, "Google 연결 해제");
+        actions.Children.Remove(list); actions.Children.Remove(sync);
         var syncActions = new WrapPanel(); syncActions.Children.Add(list); syncActions.Children.Add(sync); body.Children.Add(syncActions);
-        var configuration = new StackPanel { Spacing = 8 };
-        configuration.Children.Add(NativeWhite.Text("Google Cloud에서 발급한 데스크톱 앱용 OAuth 클라이언트 JSON을 선택하세요.", "caption"));
-        configuration.Children.Add(configure);
-        var advanced = new Expander { Header = "Google 연결 설정", Content = configuration, IsExpanded = false, HorizontalAlignment = HorizontalAlignment.Stretch };
-        advanced.Classes.Add("settings-advanced"); body.Children.Add(advanced);
         var foldersPanel = new StackPanel { Spacing = 10, IsVisible = false }; body.Children.Add(foldersPanel);
         foldersPanel.Children.Add(NativeWhite.Text("Vemo에서 접근 가능한 폴더", "secondary"));
         var folders = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch, PlaceholderText = "폴더를 선택하세요" };
@@ -47,19 +42,22 @@ public sealed partial class SettingsView
         var select = new Button { Content = "이 폴더 사용", Margin = new Thickness(0, 0, 8, 8) }; select.Classes.Add("primary");
         var cancelFolder = new Button { Content = "폴더 선택 취소", Margin = new Thickness(0, 0, 8, 8) };
         foreach (var button in new[] { create, select, cancelFolder }) { NativeWhite.Label(button, button.Content!.ToString()!); folderActions.Children.Add(button); }
-        section.Children.Add(NativeWhite.Text("Google 로그인과 폴더 선택은 즉시 적용됩니다. 모바일 로컬 동기화 폴더와 별도로 연결합니다.", "caption"));
 
         void Refresh()
         {
             if (closed) return;
             var state = google.Status; var idle = !busy && !state.Busy;
-            status.Text = state.Busy ? "Google 작업 중…" : state.Connected ? "Google 연결됨" : state.Configured ? "로그인이 필요합니다." : "Google OAuth 데스크톱 클라이언트 설정을 가져오세요.";
+            status.Text = state.Busy ? "Google 작업 중…" : state.Connected ? "Google 연결됨" : state.Configured ? "연결되지 않음" : "이 빌드에서는 Google 연결을 사용할 수 없습니다.";
             if (!string.IsNullOrEmpty(state.LastError)) status.Text += " · 연결 오류: " + state.LastError;
             folderStatus.Text = state.FolderId == null ? "선택한 Drive 폴더 없음" : "Drive 폴더 · " + (state.FolderName ?? state.FolderId);
             if (state.LastSync != null) folderStatus.Text += " · 마지막 동기화 " + state.LastSync.Value.ToLocalTime().ToString("g");
-            configure.IsEnabled = idle; connect.IsEnabled = idle && state.Configured && !state.Connected;
+            connect.IsVisible = !state.Connected; connect.IsEnabled = idle && state.Configured && !state.Connected;
+            folderStatus.IsVisible = state.Connected;
+            syncActions.IsVisible = state.Connected;
+            list.Content = state.FolderId == null ? "폴더 선택" : "폴더 변경";
             list.IsEnabled = idle && state.Connected; sync.IsEnabled = idle && state.Connected && state.FolderId != null;
-            disconnect.IsEnabled = idle && state.Connected;
+            disconnect.IsVisible = state.Connected; disconnect.IsEnabled = idle && state.Connected;
+            if (!state.Connected) foldersPanel.IsVisible = false;
             cancelOperation.IsVisible = busy && googleOperation; cancelOperation.IsEnabled = busy && googleOperation;
             folders.IsEnabled = idle; folderName.IsEnabled = idle;
             create.IsEnabled = idle && state.Connected && !string.IsNullOrWhiteSpace(folderName.Text);
@@ -88,25 +86,15 @@ public sealed partial class SettingsView
             try { await RunOperation(action, message); }
             finally { googleOperation = false; if (!closed) Refresh(); }
         }
-        if (!google.Status.Configured) advanced.IsExpanded = true;
-        configure.Click += async (_, _) => await Run(async token =>
-        {
-            var provider = TopLevel.GetTopLevel(this)?.StorageProvider ?? throw new InvalidOperationException("설정 창을 연 뒤 다시 시도하세요.");
-            var files = await provider.OpenFilePickerAsync(new() { Title = "Google OAuth 데스크톱 클라이언트 JSON 선택", AllowMultiple = false });
-            if (closed || token.IsCancellationRequested || files.Count == 0) return;
-            var path = files[0].TryGetLocalPath() ?? throw new IOException("이 PC의 JSON 파일을 선택하세요.");
-            SafeFiles.NoLinks(path);
-            if (new FileInfo(path).Length > 65536) throw new InvalidDataException("OAuth 설정 파일은 64 KiB 이하여야 합니다.");
-            var json = await File.ReadAllTextAsync(path, token);
-            token.ThrowIfCancellationRequested();
-            await google.ImportClientConfigurationAsync(json, token);
-            if (!closed) { message.Foreground = NativeWhite.Secondary; message.Text = "Google OAuth 설정을 가져왔습니다. Google 로그인을 진행하세요."; }
-        });
         connect.Click += async (_, _) => await Run(async token =>
         {
             message.Foreground = NativeWhite.Secondary; message.Text = "브라우저에서 Google 로그인을 완료하세요.";
             await google.ConnectAsync(token);
-            if (!closed) { message.Text = "Google에 연결했습니다. Drive 폴더를 선택하세요."; }
+            token.ThrowIfCancellationRequested();
+            if (closed) return;
+            if (google.Status.Connected && google.Status.FolderId == null)
+                ShowFolders(await google.ListFoldersAsync(token));
+            else if (google.Status.Connected) message.Text = "Google에 연결했습니다.";
         });
         list.Click += async (_, _) => await Run(async token => ShowFolders(await google.ListFoldersAsync(token)));
         create.Click += async (_, _) => await Run(async token =>
