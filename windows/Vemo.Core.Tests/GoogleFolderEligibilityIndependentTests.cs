@@ -111,6 +111,7 @@ public sealed class GoogleFolderEligibilityIndependentTests
             public Dictionary<string, string> Properties = properties;
             public byte[] Bytes = content ?? [];
             public object Metadata() => new { id = Id, name = Name, mimeType = Mime, parents = Parent == null ? Array.Empty<string>() : [Parent], properties = Properties, trashed = false, size = Bytes.Length.ToString() };
+            public object MetadataV2() => new { id = Id, title = Name, mimeType = Mime, parents = Parent == null ? [] : new[] { new { id = Parent } }, properties = Properties.Select(x => new { key = x.Key, value = x.Value, visibility = "PUBLIC" }).ToArray(), labels = new { trashed = false }, fileSize = Bytes.Length.ToString() };
             public string Snapshot() => JsonSerializer.Serialize(Metadata()) + Convert.ToBase64String(Bytes);
         }
         public Dictionary<string, Entry> Entries { get; } = [];
@@ -154,9 +155,9 @@ public sealed class GoogleFolderEligibilityIndependentTests
                 if (!Entries.TryGetValue(id, out var entry)) { status = 404; result = new { error = "missing" }; }
                 else if (request.Method == HttpMethod.Patch) { Patches++; Writes++; entry.Bytes = await request.Content!.ReadAsByteArrayAsync(ct); result = entry.Metadata(); }
                 else if (query.GetValueOrDefault("alt") == "media") { result = new { }; raw = entry.Bytes; }
-                else result = entry.Metadata();
+                else result = uri.AbsolutePath == "/drive/v2/files/" + id ? entry.MetadataV2() : entry.Metadata();
             }
-            // Intentionally never supplies a response ETag, matching the reported Drive response.
+            // Intentionally supplies neither a response ETag nor a v2 body ETag.
             raw ??= JsonSerializer.SerializeToUtf8Bytes(result); Assert.True(raw.Length <= maximumBytes);
             await receive(raw, ct); return status;
         }

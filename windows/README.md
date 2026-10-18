@@ -29,6 +29,12 @@ RTX 5070 Ti 16GB / RAM 64GB에서 Qwen3.5-9B-Q4_K_M와 Whisper large-v3-turbo를
 
 노트 출력 문법은 현재 고정 llama.cpp b11714와 Qwen3.5의 대화 접두사를 기준으로 검증됐습니다. 다른 대화 템플릿의 임의 GGUF 모델은 호환을 보장하지 않습니다. 조건·예시 인용은 원문과 대조하지만, 요약 문장의 의미 정확성이나 전사 오류까지 자동 검증하는 것은 아닙니다. CUDA 설치 검증은 캐시된 공식 아카이브의 해시 확인·추출·장치 탐지까지 포함하며, 이 실험에서 신규 네트워크 다운로드를 재검증한 것은 아닙니다.
 
+## 반복 전사 복구
+
+긴 녹음에서 같은 문장이 연속으로 생성되는 문제를 줄이기 위해 Whisper의 이전 창 텍스트 문맥 재사용을 끕니다(`-mc 0`). 33분 녹음의 반복 구간에서 전체 원음 재전사로 확인했으며, 이것이 모든 음성 인식 오류를 제거한다는 뜻은 아닙니다.
+
+완료된 결과에도 녹음 메뉴 → **원음부터 다시 전사**를 사용할 수 있습니다. 기존 원음·수동 제목·녹음일·확정 결과·내보낸 ZIP은 보존하고 새 결과 영역에서 전사와 노트를 다시 만듭니다. 새 처리가 모두 끝난 뒤 결과를 교체합니다. 일반 **재시도**는 노트 실패 복구를 위해 기존 전사문을 재사용하므로, 전사문 자체에 오류가 있으면 원음부터 다시 전사를 선택하세요.
+
 ## Build and test
 
 From the repository root (the locally provisioned SDK is shown):
@@ -154,3 +160,5 @@ The final real Mac CPU CLI pipeline with turbo ASR + 9B notes completed in 55.95
 ### Separate grouped-notes whitespace fix
 
 The earlier failed response and regression evidence are retained locally. Root's later grouped-notes run failed after 50.98 seconds because the model wrote `100 개` / `20 개` where the source had `100개` / `20개`. The source-backed condition/example validator now ignores whitespace only during matching and persists the exact matching source span, including the source's original spacing. It does not normalize numbers, negation, punctuation, or wording, and does not guess corrections. A captured actual-response regression fixture verifies this mapping and canonical JSON persistence without rerunning models. The prompt additionally asks to retain explicit unresolved decisions/dates (the prior four-topic output omitted the undecided launch date); the final real-model run retained that unresolved date. No new refs schema or repair re-ask loop was introduced.
+
+Google Drive의 기존 결과 갱신은 단일 v2 메타데이터 스냅샷의 ETag를 사용한 조건부 v2 PUT으로 처리합니다. 갱신 사이에 파일이 바뀌면 충돌로 중단하며, ETag 없는 파일을 강제로 덮어쓰지 않습니다. 새 파일 생성은 기존 v3 경로를 유지합니다.

@@ -249,6 +249,18 @@ public sealed class LibraryStore : IDisposable
             }
         }
     }
+    public void Retranscribe(IEnumerable<string> ids)
+    {
+        lock (gate)
+        {
+            foreach (var id in ids.ToArray())
+            {
+                var j = Get(id); if (j.Trashed || j.State is not (JobState.Completed or JobState.Failed or JobState.Cancelled)) continue;
+                // Never seed or resume cached ASR, including a previous unfinished replacement.
+                Replace(j with { State = JobState.Queued, Error = null, PendingArtifactRevision = Guid.NewGuid().ToString() });
+            }
+        }
+    }
     public bool TryStart(string id) { lock (gate) { var j = Get(id); if (data.Settings.QueuePaused || j.Trashed || j.State != JobState.Queued) return false; Replace(j with { State = JobState.Transcribing, Error = null }); return true; } }
     public void SaveTranscript(string id, string text, IReadOnlyList<TranscriptSegment>? segments = null)
     {

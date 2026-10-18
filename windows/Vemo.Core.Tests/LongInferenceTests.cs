@@ -29,6 +29,9 @@ public sealed class LongInferenceTests : IDisposable
         var actual = await new LocalCliInferenceEngine().TranscribeAsync(new(job, "unused", root), CancellationToken.None);
         Assert.Equal(text, actual);
         Assert.Contains("-oj", File.ReadAllLines(Path.Combine(root, "args.txt")));
+        var args = File.ReadAllLines(Path.Combine(root, "args.txt"));
+        Assert.Equal("0", args[Array.IndexOf(args, "-mc") + 1]);
+        Assert.DoesNotContain("--no-context", args);
         Assert.DoesNotContain("-ojf", File.ReadAllLines(Path.Combine(root, "args.txt")));
     }
 

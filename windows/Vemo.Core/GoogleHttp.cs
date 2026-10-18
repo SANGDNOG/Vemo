@@ -11,12 +11,20 @@ public interface IGoogleHttpTransport
 public sealed class GoogleHttpTransport : IGoogleHttpTransport, IDisposable
 {
     readonly HttpClient client = new(new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false, AutomaticDecompression = DecompressionMethods.None, ConnectTimeout = TimeSpan.FromSeconds(20) }) { Timeout = Timeout.InfiniteTimeSpan };
+    static bool V2Endpoint(HttpRequestMessage request, Uri uri)
+    {
+        var prefix = request.Method == HttpMethod.Get ? "/drive/v2/files/" : request.Method == HttpMethod.Put ? "/upload/drive/v2/files/" : null;
+        if (prefix == null || !uri.AbsolutePath.StartsWith(prefix, StringComparison.Ordinal)) return false;
+        var id = uri.AbsolutePath[prefix.Length..];
+        if (id.Length is < 1 or > 256 || !id.All(c => c is >= 'A' and <= 'Z' or >= 'a' and <= 'z' or >= '0' and <= '9' or '_' or '-')) return false;
+        return uri.Query == (request.Method == HttpMethod.Get ? "?fields=" + Uri.EscapeDataString(GoogleWire.DriveMetadataFieldsV2) : "?uploadType=media");
+    }
     public async Task<int> SendAsync(HttpRequestMessage request, long maximumBytes, Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> receive, CancellationToken ct)
     {
         var u = request.RequestUri ?? throw new GoogleConnectionException("invalid_endpoint");
         if (maximumBytes is <= 0 or > 2147483648 || u.Scheme != "https" || u.Port != 443 || u.UserInfo != "" || u.Fragment != "" ||
             !(u.Host == "oauth2.googleapis.com" && u.AbsolutePath == "/token" && u.Query == "" && request.Method == HttpMethod.Post ||
-              u.Host == "www.googleapis.com" && (u.AbsolutePath.StartsWith("/drive/v3/", StringComparison.Ordinal) && request.Method is var m && (m == HttpMethod.Get || m == HttpMethod.Post) || (u.AbsolutePath.StartsWith("/upload/drive/v3/files/", StringComparison.Ordinal) && request.Method == HttpMethod.Patch || u.AbsolutePath == "/upload/drive/v3/files" && request.Method == HttpMethod.Post))))
+              u.Host == "www.googleapis.com" && (V2Endpoint(request, u) || u.AbsolutePath.StartsWith("/drive/v3/", StringComparison.Ordinal) && request.Method is var m && (m == HttpMethod.Get || m == HttpMethod.Post) || u.AbsolutePath == "/upload/drive/v3/files" && request.Method == HttpMethod.Post)))
             throw new GoogleConnectionException("invalid_endpoint");
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct); timeout.CancelAfter(maximumBytes > GoogleWire.JsonLimit ? TimeSpan.FromHours(1) : TimeSpan.FromSeconds(60));
         try
@@ -24,7 +32,6 @@ public sealed class GoogleHttpTransport : IGoogleHttpTransport, IDisposable
             request.Headers.AcceptEncoding.ParseAdd("identity");
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
             if ((int)response.StatusCode is >= 300 and < 400 || response.Headers.Location != null || response.Content.Headers.ContentLocation != null || response.Content.Headers.ContentEncoding.Count != 0) throw new GoogleConnectionException("redirect_or_encoding_rejected");
-            if (request.Options.TryGetValue(GoogleWire.ResponseETag, out var observeETag)) observeETag(response.Headers.ETag?.ToString());
             if (response.Content.Headers.ContentLength > maximumBytes) throw new GoogleConnectionException("response_limit");
             using var body = await response.Content.ReadAsStreamAsync(timeout.Token); var buffer = new byte[65536]; long count = 0;
             while (true) { var n = await body.ReadAsync(buffer, timeout.Token); if (n == 0) break; count += n; if (count > maximumBytes) throw new GoogleConnectionException("response_limit"); await receive(buffer.AsMemory(0, n), timeout.Token); }
@@ -36,7 +43,7 @@ public sealed class GoogleHttpTransport : IGoogleHttpTransport, IDisposable
 }
 internal static class GoogleWire
 {
-    internal static readonly HttpRequestOptionsKey<Action<string?>> ResponseETag = new("Vemo.Google.ResponseETag");
+    internal const string DriveMetadataFieldsV2 = "id,etag,title,mimeType,parents(id),properties(key,value,visibility),labels(trashed),fileSize";
     internal static bool StrongETag(string? value) => value is { Length: >= 2 and <= 512 } && value[0] == '"' && value[^1] == '"' && value.AsSpan(1, value.Length - 2).ToArray().All(c => c is >= '!' and <= '~' && c != '"');
     internal const int JsonLimit = 8 * 1024 * 1024;
     internal static string Query(IEnumerable<KeyValuePair<string, string>> fields) => string.Join("&", fields.Select(p => Uri.EscapeDataString(p.Key) + "=" + Uri.EscapeDataString(p.Value)));

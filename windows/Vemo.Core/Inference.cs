@@ -190,7 +190,7 @@ public sealed class LocalCliInferenceEngine : IInferenceEngine
         await ProcessRunner.RunAsync(m.FfmpegExecutable, ["-nostdin", "-y", "-i", context.AudioPath, "-vn", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", input], context.WorkDirectory, m.TimeoutMinutes, ct);
         var output = Path.Combine(context.WorkDirectory, "asr");
         foreach (var path in new[] { output + ".txt", output + ".json", Path.Combine(context.WorkDirectory, TranscriptTimingFile.FileName) }) { SafeFiles.NoLinks(path); File.Delete(path); }
-        var args = new List<string> { "-m", m.WhisperModel, "-f", input, "-l", "ko", "-otxt", "-oj", "-pp", "-of", output }; if (m.Compute == "CPU") args.Add("-ng");
+        var args = new List<string> { "-m", m.WhisperModel, "-f", input, "-l", "ko", "-mc", "0", "-otxt", "-oj", "-pp", "-of", output }; if (m.Compute == "CPU") args.Add("-ng");
         await ProcessRunner.RunAsync(m.WhisperExecutable, args, context.WorkDirectory, m.TimeoutMinutes, ct, line =>
         {
             if (WhisperProgress.TryPercent(line, out var percent)) context.Progress?.Report(new(context.Job.Id, "transcribing", percent, TimeSpan.Zero));
