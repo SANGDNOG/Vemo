@@ -14,6 +14,19 @@ Vemo는 Apple Silicon Mac에서 한국어 중심의 음성을 전사하는 로�
 
 Mac은 iPhone 음성 메모와 파일 가져오기를, Windows는 파일 가져오기와 Android의 클라우드 녹음을 처리합니다. Android는 녹음과 데스크톱 결과 확인을 지원하며 폰 자체 전사·노트 생성은 아직 지원하지 않습니다. 기존 화면 예시와 상세 Mac 사용법은 아래에 있습니다.
 
+## Project overview
+
+**Vemo** is a local-first macOS application for turning recordings into readable transcripts and structured study notes. It combines a native Swift-based interface with locally running speech and language models on Apple Silicon.
+
+**Engineering highlights**
+- **Local processing:** transcript, title, and note generation without a hosted transcription API.
+- **End-to-end workflow:** import or read recordings, process them, and export transcripts and notes.
+- **Reproducibility:** test suites, build instructions, explicit release requirements, and documented validation limits.
+
+**Quick links:** [App preview](#화면-예시) · [Installation](#설치와-첫-실행) · [Releases](https://github.com/SANGDNOG/Vemo/releases) · [Validation notes](docs/VALIDATION.md)
+
+> This is an integration and application-engineering project using existing AI models, not a claim to have trained a new speech recognition model.
+
 ## 화면 예시
 
 아래는 Vemo의 실제 UI에 가상의 녹음과 전사문을 넣은 예시입니다. 처리 진행률도 설명용 샘플이며 실제 녹음이나 측정 결과가 아닙니다.
