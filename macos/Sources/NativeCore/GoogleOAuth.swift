@@ -153,23 +153,30 @@ public actor GoogleOAuthClient {
     private var busy = false
     private var generation: UInt64 = 0
     private var loopback: GoogleOAuthLoopback?
+    private var browserWait: GoogleOAuthBrowserWait?
     private var activeRequest: Task<GoogleOAuthHTTPResponse, any Error>?
 
     public init(configuration: GoogleOAuthClientConfiguration, vault: any GoogleOAuthTokenVault,
                 http: any GoogleOAuthHTTPTransport = GoogleOAuthURLSessionTransport()) {
         self.configuration = configuration; self.vault = vault; self.http = http
     }
-    public func connect(timeout: TimeInterval = 180, openBrowser: @Sendable (URL) async throws -> Void) async throws {
+    public func connect(timeout: TimeInterval = 180, openBrowser: @escaping @Sendable (URL) async throws -> Void) async throws {
         guard !busy else { throw GoogleOAuthError.busy }
-        busy = true; defer { busy = false; loopback = nil }
+        busy = true; defer { busy = false; loopback = nil; browserWait = nil }
         let epoch = generation
         let pkce = try GoogleOAuthPKCE()
         let receiver = GoogleOAuthLoopback(pkce: pkce)
         loopback = receiver
         do {
             let redirect = try await receiver.start(timeout: timeout)
-            try await openBrowser(pkce.authorizationURL(configuration: configuration, redirectURI: redirect))
+            try ensureActive(epoch)
+            let pendingBrowser = GoogleOAuthBrowserWait()
+            browserWait = pendingBrowser
+            let authorization = pkce.authorizationURL(configuration: configuration, redirectURI: redirect)
+            try await pendingBrowser.wait(timeout: min(10, timeout)) { try await openBrowser(authorization) }
+            try ensureActive(epoch)
             let code = try await receiver.waitForCode()
+            try ensureActive(epoch)
             let result = try await exchange(["grant_type": "authorization_code", "code": code,
                 "redirect_uri": redirect.absoluteString, "code_verifier": pkce.verifier])
             try ensureActive(epoch)
@@ -207,12 +214,14 @@ public actor GoogleOAuthClient {
     public func cancel() async {
         generation &+= 1
         activeRequest?.cancel()
+        browserWait?.cancel()
         await loopback?.cancel()
     }
     /// Local disconnect; intentionally does not revoke the account's remote grant.
     public func disconnect() throws {
         generation &+= 1; token = nil; expiration = .distantPast
         activeRequest?.cancel()
+        browserWait?.cancel()
         if let receiver = loopback { Task { await receiver.cancel() } }
         do { try vault.deleteRefreshToken() } catch { throw GoogleOAuthError.storage }
     }

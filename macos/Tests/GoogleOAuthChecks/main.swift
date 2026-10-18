@@ -49,6 +49,62 @@ private struct FailingVault: GoogleOAuthTokenVault {
     func deleteRefreshToken() throws { throw CheckFailure.failed("sensitive vault error") }
 }
 
+// Deliberately ignores task cancellation, like a system completion handler that never fires.
+private actor BrowserCompletionGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var released = false
+    private(set) var entered = false
+    private(set) var finished = false
+    func wait() async {
+        entered = true
+        guard !released else { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+    func release() { released = true; continuation?.resume(); continuation = nil }
+    func markFinished() { finished = true }
+}
+
+private func browserCompletionRegression(_ configuration: GoogleOAuthClientConfiguration) async throws {
+    var failures: [String] = []
+    for mode in ["receiver timeout", "client cancel", "caller cancellation"] {
+        let gate = BrowserCompletionGate(), vault = MemoryVault("preserved-synthetic-refresh"), http = MockHTTP()
+        let client = GoogleOAuthClient(configuration: configuration, vault: vault, http: http)
+        let connecting = Task { () -> GoogleOAuthError? in
+            let outcome: GoogleOAuthError?
+            do {
+                try await client.connect(timeout: mode == "receiver timeout" ? 0.05 : 2) { _ in await gate.wait() }
+                outcome = nil
+            } catch { outcome = error as? GoogleOAuthError ?? .transport }
+            await gate.markFinished()
+            return outcome
+        }
+        let entryDeadline = ContinuousClock.now + .seconds(1)
+        while !(await gate.entered), !(await gate.finished), ContinuousClock.now < entryDeadline {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        let entered = await gate.entered
+        if mode == "client cancel" { await client.cancel() }
+        if mode == "caller cancellation" { connecting.cancel() }
+        let completionDeadline = ContinuousClock.now + .milliseconds(500)
+        while !(await gate.finished), ContinuousClock.now < completionDeadline {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        let completedBeforeRelease = await gate.finished
+        // Always release the synthetic callback before asserting, including the failing implementation.
+        await gate.release()
+        let outcome = await connecting.value
+        await client.cancel()
+        let requests = await http.captured()
+        let expected: GoogleOAuthError = mode == "receiver timeout" ? .expired : .cancelled
+        let preserved = try vault.loadRefreshToken() == "preserved-synthetic-refresh"
+        print("BROWSER REGRESSION: \(mode); entered=\(entered); completedBeforeRelease=\(completedBeforeRelease); outcome=\(outcome?.rawValue ?? "success"); requests=\(requests.count); tokenPreserved=\(preserved)")
+        if !entered || !completedBeforeRelease || outcome != expected || !requests.isEmpty || !preserved {
+            failures.append(mode)
+        }
+    }
+    try check(failures.isEmpty, "noncooperating browser callback settles on timeout/cancel: " + failures.joined(separator: ", "))
+}
+
 @main struct GoogleOAuthChecks {
     static func main() async {
         do { try await run(); print("All Google OAuth checks passed") }
@@ -184,5 +240,6 @@ private struct FailingVault: GoogleOAuthTokenVault {
         try await rejects(.cancelled) { _ = try await refreshing.value }
         try check(try cancelledVault.loadRefreshToken() == "keep-refresh", "cancel preserves stored credential")
         try check(!GoogleOAuthError.transport.localizedDescription.contains("SECRET"), "diagnostics contain stable codes only")
+        try await browserCompletionRegression(config)
     }
 }

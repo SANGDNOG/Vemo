@@ -135,6 +135,103 @@ final class GoogleDriveTests: XCTestCase, @unchecked Sendable {
         let requests = await retry.captured()
         XCTAssertEqual(requests.map(\.httpMethod), ["GET", "GET"])
     }
+    func testForeignNameCollisionJournalsDistinctRootAndResumesLostCreate() async throws {
+        let directory = try temporary(), name = "Vemo 테스트", chosen = "Vemo 테스트 (11111111)"
+        var foreign = root("foreign", name: name)
+        foreign["properties"] = ["vemoProtocol": "1", "vemoKind": "root",
+                                 "vemoProcessor": "22222222-2222-4222-8222-222222222222"]
+        let fixture = DriveFixture([
+            try .init(["user": ["permissionId": "account1"]]), try .init(["files": [foreign]]),
+            try .init(["ids": ["reserved"]]), try .init(404, ["error": "missing"]),
+            try .init(503, ["error": "lost acknowledgement"])
+        ])
+        let mirror = GoogleDriveMirror(stateDirectory: directory, client: client(fixture))
+        do { _ = try await mirror.createRoot(displayName: name, processorID: processor); XCTFail("lost ACK") }
+        catch { XCTAssertEqual(error as? GoogleDriveError, .http(503)) }
+        let journal = try JSONSerialization.jsonObject(with: Data(contentsOf: directory.appendingPathComponent("drive.json"))) as! [String: Any]
+        let intent = journal["rootIntent"] as! [String: Any]
+        XCTAssertEqual(intent["name"] as? String, chosen)
+        XCTAssertEqual(intent["id"] as? String, "reserved")
+        let sent = await fixture.captured()
+        XCTAssertEqual(sent.map(\.httpMethod), ["GET", "GET", "GET", "GET", "POST"])
+        let body = try JSONSerialization.jsonObject(with: sent.last!.httpBody!) as! [String: Any]
+        XCTAssertEqual(body["name"] as? String, chosen)
+        XCTAssertEqual(body["id"] as? String, "reserved")
+        XCTAssertFalse(sent.contains { $0.url?.path.hasSuffix("/foreign") == true })
+        // A retry after a genuinely absent create must send the identical ID/name.
+        let retry = DriveFixture([try .init(["user": ["permissionId": "account1"]]),
+            try .init(404, ["error": "missing"]), try .init(root("reserved", name: chosen))])
+        let resumed = GoogleDriveMirror(stateDirectory: directory, client: client(retry))
+        let binding = try await resumed.createRoot(displayName: name, processorID: processor)
+        XCTAssertEqual(binding.rootID, "reserved")
+        let retried = await retry.captured()
+        let retryBody = try JSONSerialization.jsonObject(with: retried.last!.httpBody!) as! [String: Any]
+        XCTAssertEqual(retryBody["name"] as? String, chosen)
+        XCTAssertEqual(retryBody["id"] as? String, "reserved")
+        // Once bound, a requested name must never rename or replace the root.
+        await retry.add([try .init(["user": ["permissionId": "account1"]]), try .init(root("reserved", name: chosen))])
+        let unchanged = try await resumed.createRoot(displayName: "Other", processorID: processor)
+        XCTAssertEqual(unchanged, binding)
+        await retry.add([try .init(["user": ["permissionId": "account1"]]), try .init(root("reserved", name: "Renamed on Drive"))])
+        let remoteName = try await resumed.boundRootDisplayName()
+        XCTAssertEqual(remoteName, "Renamed on Drive")
+        let persisted = try await resumed.restore(); XCTAssertEqual(persisted, binding)
+    }
+
+    func testRootIntentRejectsWrongIdentityAndUnrelatedName() async throws {
+        let directory = try temporary()
+        let intent: [String: Any] = ["accountID": "account1", "processorID": processor,
+            "name": "Vemo (11111111)", "id": "reserved"]
+        let bytes = try JSONSerialization.data(withJSONObject: ["version": 1, "rootIntent": intent, "ids": [:]])
+        try bytes.write(to: directory.appendingPathComponent("drive.json"))
+        for (account, requestedProcessor, name) in [
+            ("different", processor, "Vemo"),
+            ("account1", "22222222-2222-4222-8222-222222222222", "Vemo"),
+            ("account1", processor, "Unrelated")
+        ] {
+            let fixture = DriveFixture([try .init(["user": ["permissionId": account]])])
+            let mirror = GoogleDriveMirror(stateDirectory: directory, client: client(fixture))
+            do { _ = try await mirror.createRoot(displayName: name, processorID: requestedProcessor); XCTFail("intent mismatch") }
+            catch { XCTAssertEqual(error as? GoogleDriveError, .conflict) }
+            let requests = await fixture.captured()
+            XCTAssertEqual(requests.count, 1)
+            XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("drive.json")), bytes)
+        }
+        let retry = DriveFixture([try .init(["user": ["permissionId": "account1"]]),
+                                  try .init(root("reserved", name: "Vemo (11111111)"))])
+        let mirror = GoogleDriveMirror(stateDirectory: directory, client: client(retry))
+        let binding = try await mirror.createRoot(displayName: "Vemo", processorID: processor)
+        XCTAssertEqual(binding.rootID, "reserved")
+    }
+
+    func testExistingProcessorRootFailsBeforeAllocationEvenWithDifferentName() async throws {
+        let directory = try temporary()
+        let fixture = DriveFixture([try .init(["user": ["permissionId": "account1"]]),
+                                   try .init(["files": [root("existing", name: "Other")]])])
+        let mirror = GoogleDriveMirror(stateDirectory: directory, client: client(fixture))
+        do { _ = try await mirror.createRoot(displayName: "Vemo", processorID: processor); XCTFail("duplicate processor") }
+        catch { XCTAssertEqual(error as? GoogleDriveError, .conflict) }
+        let requests = await fixture.captured(); XCTAssertEqual(requests.count, 2)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("drive.json").path))
+    }
+
+    func testFallbackNameCollisionFailsBeforeAllocatingOrWriting() async throws {
+        let directory = try temporary()
+        var foreign = root("foreign")
+        foreign["properties"] = ["vemoProtocol": "1", "vemoKind": "root",
+                                 "vemoProcessor": "22222222-2222-4222-8222-222222222222"]
+        var collision = root("collision", name: "Vemo (11111111)")
+        collision["properties"] = ["vemoProtocol": "1", "vemoKind": "root",
+                                   "vemoProcessor": "33333333-3333-4333-8333-333333333333"]
+        let fixture = DriveFixture([try .init(["user": ["permissionId": "account1"]]),
+                                   try .init(["files": [foreign, collision]])])
+        let mirror = GoogleDriveMirror(stateDirectory: directory, client: client(fixture))
+        do { _ = try await mirror.createRoot(displayName: "Vemo", processorID: processor); XCTFail("collision") }
+        catch { XCTAssertEqual(error as? GoogleDriveError, .conflict) }
+        let requests = await fixture.captured(); XCTAssertEqual(requests.count, 2)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("drive.json").path))
+    }
+
     func testPullCommitsAudioBeforeMarkerAndRejectsBadHash() async throws {
         for corrupt in [false, true] {
             let audio = Data([1, 2, 3]), hash = MobileSyncValidation.digest(audio)

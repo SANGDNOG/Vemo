@@ -116,6 +116,7 @@ struct BrokerFailure: Error { let code: String }
 @MainActor struct Binding { var processorID: String { Probe.wrongProcessor ? "wrong-processor" : "synthetic-processor" } }
 @MainActor final class GoogleDriveMirror {
     init(stateDirectory: URL, client: GoogleDriveClient) {}
+    func boundRootDisplayName() async throws -> String { "Synthetic remote folder (12345678)" }
     func restore() async throws -> Binding? { Probe.restores += 1; return Probe.journal ? Binding() : nil }
     func createRoot(displayName: String, processorID: String) async throws -> Binding {
         Probe.roots += 1; Probe.journal = true; return Binding()

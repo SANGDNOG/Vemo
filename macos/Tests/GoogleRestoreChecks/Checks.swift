@@ -66,6 +66,62 @@ import Foundation
         check(Probe.installedIDs == ["bundled.apps.googleusercontent.com"] && Probe.saves == 1,
               "subsequent launch preserves pinned client despite bundle rotation")
         await updated.shutdown()
+        // Persisted authorization with no binding must finish without another consent.
+        for failure in ["none", "notConnected", "invalidGrant", "accountMismatch"] {
+            Probe.reset(); Probe.hasConfig = true; Probe.hasToken = true
+            let m = GoogleConnectionModel(root: URL(fileURLWithPath: "/synthetic-unused-state"))
+            await m.restoreIfNeeded(now: time(0))
+            check(!m.isConnected && Probe.roots == 0 && m.canCompleteFolderConnection && m.boundRootDisplayName == nil,
+                  failure + ": launch exposes explicit completion with unknown folder name")
+            if failure == "notConnected" { Probe.tokenError = GoogleOAuthError.notConnected }
+            if failure == "invalidGrant" { Probe.tokenError = GoogleOAuthError.reauthorizationRequired }
+            if failure == "accountMismatch" { Probe.prepareError = GoogleDriveError.accountMismatch }
+            m.connect()
+            for _ in 0..<1000 { if !m.isBusy { break }; await Task.yield() }
+            check(Probe.tokens == 1 && Probe.oauthConnects == 0 && Probe.browserOpens == 0,
+                  failure + ": explicit completion uses existing accessToken without silent reauth")
+            check(Probe.disconnects == 0 && Probe.hasToken && Probe.saves == 0,
+                  failure + ": completion never resets authorization/configuration")
+            check(m.isConnected == (failure == "none"), failure + ": completion outcome")
+            if failure == "none" {
+                check(m.boundRootDisplayName == "Synthetic remote folder (12345678)", "exact remote folder surfaced")
+            }
+            check(m.canCompleteFolderConnection == (failure == "invalidGrant" || failure == "accountMismatch"),
+                  failure + ": only notConnected guides a subsequent explicit consent")
+            check(Probe.roots == ((failure == "none" || failure == "accountMismatch") ? 1 : 0),
+                  failure + ": token failures stop before root mutation")
+            await m.shutdown()
+        }
+        // Reapproval is a separate deliberate action; repeated completion retains failures.
+        for error: any Error in [GoogleDriveError.http(401), GoogleDriveError.http(403), GoogleDriveError.accountMismatch] {
+            let m = model()
+            Probe.journal = false
+            await m.restoreIfNeeded(now: time(0))
+            Probe.prepareError = error
+            m.connect()
+            for _ in 0..<1000 { if !m.isBusy { break }; await Task.yield() }
+            let diagnostic = GoogleConnectionModel.safeDiagnosticCode(error)
+            check(!m.isConnected && m.canCompleteFolderConnection && m.hasBinding && m.status.contains(diagnostic),
+                  diagnostic + ": failed completion retains binding and explicit recovery")
+            m.connect()
+            for _ in 0..<1000 { if !m.isBusy { break }; await Task.yield() }
+            check(Probe.tokens == 2 && Probe.oauthConnects == 0 && Probe.browserOpens == 0 && m.status.contains(diagnostic),
+                  diagnostic + ": second ordinary completion preserves failure without consent")
+            m.connect(forceReauthorization: true)
+            for _ in 0..<1000 { if !m.isBusy { break }; await Task.yield() }
+            check(Probe.tokens == 2 && Probe.oauthConnects == 1 && Probe.browserOpens == 1,
+                  diagnostic + ": only deliberate reauthorization requests browser consent")
+            check(!m.isConnected && m.hasBinding && Probe.journal && m.status.contains(diagnostic),
+                  diagnostic + ": reapproval cannot bypass account/authorization checks")
+            Probe.prepareError = nil
+            m.connect(forceReauthorization: true)
+            for _ in 0..<1000 { if !m.isBusy { break }; await Task.yield() }
+            check(m.isConnected && m.hasBinding && Probe.journal && Probe.oauthConnects == 2,
+                  diagnostic + ": deliberate original-account reapproval can finish")
+            check(Probe.disconnects == 0 && Probe.hasToken && Probe.saves == 0,
+                  diagnostic + ": reapproval never disconnects or resets saved configuration")
+            await m.shutdown()
+        }
         // Error injected at the actual await boundary, never into the retry classifier.
         let transient: [(String, any Error, Bool)] = [
             ("HTTP429", GoogleDriveError.http(429), false),

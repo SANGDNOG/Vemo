@@ -61,6 +61,17 @@ public actor GoogleDriveMirror {
         let lock = try begin(); defer { end(lock) }
         return try load().binding
     }
+    /// Read the current name only after validating the immutable account/root binding.
+    public func boundRootDisplayName() async throws -> String {
+        let lock = try begin(); defer { end(lock) }
+        guard let binding = try load().binding else { throw GoogleDriveError.notConnected }
+        try validate(binding)
+        guard try await client.accountID() == binding.accountID else { throw GoogleDriveError.accountMismatch }
+        let root = try await client.file(binding.rootID)
+        guard root.id == binding.rootID else { throw GoogleDriveError.invalidMetadata }
+        try GoogleDriveClient.validateRoot(root, processorID: binding.processorID)
+        return root.name
+    }
     public func cacheURL() throws -> URL {
         let lock = try begin(); defer { end(lock) }
         guard let binding = try load().binding else { throw GoogleDriveError.notConnected }
@@ -92,13 +103,18 @@ public actor GoogleDriveMirror {
         }
         let account = try await client.accountID()
         if journal.rootIntent == nil {
-            guard try await client.listRoots().allSatisfy({ $0.name != displayName }) else { throw GoogleDriveError.conflict }
+            let roots = try await client.listRoots()
+            guard !roots.contains(where: { $0.properties?["vemoProcessor"] == processorID }) else { throw GoogleDriveError.conflict }
+            let name = roots.contains(where: { $0.name == displayName })
+                ? Self.distinctRootName(displayName, processorID: processorID) : displayName
+            guard name.utf8.count <= 1024, !roots.contains(where: { $0.name == name }) else { throw GoogleDriveError.conflict }
             let id = try await client.allocateID()
-            journal.rootIntent = RootIntent(accountID: account, processorID: processorID, name: displayName, id: id)
+            journal.rootIntent = RootIntent(accountID: account, processorID: processorID, name: name, id: id)
             try save(journal) // Commit identity before the first remotely mutating request.
         }
         guard let intent = journal.rootIntent, intent.accountID == account,
-              intent.processorID == processorID, intent.name == displayName else { throw GoogleDriveError.conflict }
+              intent.processorID == processorID,
+              (intent.name == displayName || intent.name == Self.distinctRootName(displayName, processorID: processorID)) else { throw GoogleDriveError.conflict }
         let root: GoogleDriveFile
         do { root = try await client.file(intent.id) }
         catch GoogleDriveError.http(404) {
@@ -110,6 +126,9 @@ public actor GoogleDriveMirror {
         let binding = GoogleDriveBinding(accountID: account, rootID: root.id, processorID: processorID)
         journal.binding = binding; try save(journal)
         return binding
+    }
+    private static func distinctRootName(_ base: String, processorID: String) -> String {
+        base + " (" + processorID.prefix(8) + ")"
     }
     private func child(parent: String, path: String, mime: String) async throws -> GoogleDriveFile? {
         let name = String(path.split(separator: "/").last!)
