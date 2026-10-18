@@ -1216,11 +1216,29 @@ class MainActivity : Activity() {
     }
     private fun playbackPanel(): LinearLayout = column().apply {
         background = surface(subtle, true)
-        setPadding(dp(12), dp(8), dp(12), dp(8))
+        setPadding(dp(8), dp(8), dp(8), dp(8))
         playbackSeek = SeekBar(this@MainActivity).apply {
             minimumHeight = dp(48); max = player?.duration ?: 0
+            fun track(color: Int) = GradientDrawable().apply {
+                setColor(color); cornerRadius = dp(2).toFloat(); setSize(dp(4), dp(4))
+            }
+            progressDrawable = android.graphics.drawable.LayerDrawable(arrayOf(
+                track(selection),
+                android.graphics.drawable.ClipDrawable(track(purple), Gravity.START, android.graphics.drawable.ClipDrawable.HORIZONTAL)
+            )).apply {
+                setId(0, android.R.id.background); setId(1, android.R.id.progress)
+                for (layer in 0..1) {
+                    setLayerHeight(layer, dp(4)); setLayerGravity(layer, Gravity.CENTER_VERTICAL)
+                }
+            }
+            progressBackgroundTintList = android.content.res.ColorStateList.valueOf(selection)
             progressTintList = android.content.res.ColorStateList.valueOf(purple)
+            thumb = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL; setColor(purple); setSize(dp(12), dp(12))
+            }
             thumbTintList = android.content.res.ColorStateList.valueOf(purple)
+            thumbOffset = dp(6); splitTrack = false
+            setPadding(dp(6), 0, dp(6), 0)
             contentDescription = "재생 위치"
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onStartTrackingTouch(seekBar: SeekBar) { playbackDragging = true }
@@ -1250,12 +1268,19 @@ class MainActivity : Activity() {
         addView(playbackSeek, LinearLayout.LayoutParams(-1, -2))
         playbackTime = text("", 13f, muted).apply { gravity = Gravity.CENTER }
         addView(playbackTime)
+        fun transport(icon: Int, description: String, iconSize: Int = 18, action: () -> Unit) =
+            headerAction(icon, description, action).apply {
+                val inset = dp((48 - iconSize) / 2)
+                setPadding(inset, inset, inset, inset)
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                background = android.graphics.drawable.RippleDrawable(ripple, null, surface(Color.WHITE))
+            }
         addView(row().apply {
             gravity = Gravity.CENTER
-            addView(headerAction(R.drawable.ic_replay_10, "10초 뒤로") { skipPlayback(-10_000) })
-            playbackToggle = headerAction(R.drawable.ic_pause, "일시정지") { togglePlayback() }
+            addView(transport(R.drawable.ic_replay_10, "10초 뒤로") { skipPlayback(-10_000) })
+            playbackToggle = transport(R.drawable.ic_pause, "일시정지", 20) { togglePlayback() }
             addView(playbackToggle)
-            addView(headerAction(R.drawable.ic_forward_10, "10초 앞으로") { skipPlayback(10_000) })
+            addView(transport(R.drawable.ic_forward_10, "10초 앞으로") { skipPlayback(10_000) })
         })
         updatePlaybackControls()
         this@MainActivity.handler.post(playbackTick)
