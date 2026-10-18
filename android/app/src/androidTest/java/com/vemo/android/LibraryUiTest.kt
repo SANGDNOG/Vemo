@@ -179,7 +179,7 @@ class LibraryUiTest : InstrumentationTestCase() {
         screenshot("detail-notes")
         back(); assertLibrary(); assertText(design.title)
         click("설정"); assertText("기본 녹음 모드"); back(); assertLibrary()
-        click("＋ 새 녹음"); assertText("녹음 시작"); back(); assertLibrary()
+        click("새 녹음"); assertText("녹음 시작"); back(); assertLibrary()
         captureDisplayVariants()
     }
 
@@ -193,7 +193,7 @@ class LibraryUiTest : InstrumentationTestCase() {
             val folder = app.library.createFolder("검증 녹음").also { ownedFolders += it.id }
             launch(); selectFolder(folder.name)
             val existingIds = app.store.list().map { it.id }.toSet()
-            click("＋ 새 녹음"); click("녹음 시작")
+            click("새 녹음"); click("녹음 시작")
             await("No new capture") {
                 app.store.list().firstOrNull { it.id !in existingIds }?.let {
                     captureId = it.id; ownedRecordings += it.id; true

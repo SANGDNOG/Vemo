@@ -22,11 +22,15 @@ import java.time.format.DateTimeFormatter
 
 /** Small native Android UI. No mobile inference controls until that runtime exists. */
 class MainActivity : Activity() {
-    private val purple = Color.rgb(98, 88, 238)
-    private val deleteRed = Color.rgb(201, 60, 72)
-    private val ink = Color.rgb(34, 35, 44)
-    private val muted = Color.rgb(110, 110, 122)
-    private val background = Color.WHITE
+    private val purple by lazy { getColor(R.color.vemo_design_accent) }
+    private val deleteRed by lazy { getColor(R.color.vemo_design_destructive) }
+    private val ink by lazy { getColor(R.color.vemo_design_text) }
+    private val muted by lazy { getColor(R.color.vemo_design_secondary) }
+    private val background by lazy { getColor(R.color.vemo_design_surface) }
+    private val subtle by lazy { getColor(R.color.vemo_design_sidebar) }
+    private val selection by lazy { getColor(R.color.vemo_design_selection) }
+    private val line by lazy { getColor(R.color.vemo_design_divider) }
+    private val ripple by lazy { android.content.res.ColorStateList.valueOf(getColor(R.color.vemo_design_ripple)) }
     private lateinit var container: LinearLayout
     private lateinit var content: LinearLayout
     private var tab = "list"
@@ -125,8 +129,8 @@ class MainActivity : Activity() {
     private fun column(): LinearLayout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
     private fun row(): LinearLayout = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
     private fun surface(color: Int, border: Boolean = false) = GradientDrawable().apply {
-        setColor(color); cornerRadius = dp(16).toFloat()
-        if (border) setStroke(dp(1), Color.rgb(235, 235, 240))
+        setColor(color); cornerRadius = resources.getDimension(R.dimen.vemo_design_button_radius)
+        if (border) setStroke(dp(1), line)
     }
     private fun button(label: String, primary: Boolean = false, action: () -> Unit): Button = Button(this).apply {
         text = label; isAllCaps = false; textSize = 15f; minHeight = dp(52)
@@ -136,19 +140,19 @@ class MainActivity : Activity() {
         setTextColor(if (primary) Color.WHITE else purple)
         backgroundTintList = null
         background = android.graphics.drawable.RippleDrawable(
-            android.content.res.ColorStateList.valueOf(0x226258EE),
-            surface(if (primary) purple else Color.rgb(245, 245, 248)), null)
+            ripple,
+            surface(if (primary) purple else subtle), null)
         layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4); bottomMargin = dp(4) }
         setOnClickListener { action() }
     }
     private fun gap(height: Int = 12) { content.addView(Space(this), LinearLayout.LayoutParams(1, dp(height))) }
-    private fun label(value: String) { content.addView(text(value, 26f, ink, true)) }
+    private fun label(value: String, size: Float = 28f) { content.addView(text(value, size, ink, true)) }
     private fun card(): LinearLayout = column().apply {
         setPadding(dp(18), dp(20), dp(18), dp(20))
-        background = surface(Color.rgb(248, 248, 250))
+        background = surface(subtle)
     }
     private fun divider(target: LinearLayout) {
-        target.addView(View(this).apply { setBackgroundColor(Color.rgb(239, 239, 243)) }, LinearLayout.LayoutParams(-1, dp(1)))
+        target.addView(View(this).apply { setBackgroundColor(line) }, LinearLayout.LayoutParams(-1, dp(1)))
     }
     private fun home() { stopPlayer(); detailId = null; tab = "list"; render() }
     // API 33+ gestures use the native OnBackInvokedDispatcher registered in onCreate.
@@ -186,10 +190,10 @@ class MainActivity : Activity() {
     private fun updateRecordingAction() {
         val active = activeRecording()
         recordingAction?.text = when (active?.state) {
-            CaptureState.RECORDING -> "● 녹음 중 · ${duration(vemo().elapsedMs)} · 열기"
+            CaptureState.RECORDING -> "녹음 중 · ${duration(vemo().elapsedMs)} · 열기"
             CaptureState.PAUSED -> "Ⅱ 일시정지 · ${duration(vemo().elapsedMs)} · 열기"
             CaptureState.FINALIZING -> "녹음 저장 중 · 열기"
-            else -> "＋ 새 녹음"
+            else -> "새 녹음"
         }
     }
     private fun updateSyncAction() {
@@ -221,14 +225,18 @@ class MainActivity : Activity() {
             if (tab != "list" || detailId != null) addView(ImageButton(this@MainActivity).apply {
                 setImageResource(R.drawable.ic_back); imageTintList = android.content.res.ColorStateList.valueOf(ink)
                 contentDescription = "라이브러리로 돌아가기"
-                background = android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x226258EE), surface(Color.WHITE), null)
+                background = android.graphics.drawable.RippleDrawable(ripple, surface(Color.WHITE), null)
                 setPadding(dp(12), dp(12), dp(12), dp(12)); stateListAnimator = null; elevation = 0f
                 setOnClickListener { home() }
             }, LinearLayout.LayoutParams(dp(48), dp(48)))
+            val libraryHome = tab == "list" && detailId == null
+            addView(text(if (libraryHome) folderTitle() else "Vemo", if (libraryHome) 28f else 23f, ink, true).apply {
+                maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+                contentDescription = text
+            }, LinearLayout.LayoutParams(0, -2, 1f))
             addView(ImageView(this@MainActivity).apply {
                 setImageResource(R.drawable.vemo_icon); importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-            }, LinearLayout.LayoutParams(dp(32), dp(32)).apply { marginEnd = dp(10) })
-            addView(text("Vemo", 23f, ink, true), LinearLayout.LayoutParams(0, -2, 1f))
+            }, LinearLayout.LayoutParams(dp(32), dp(32)).apply { marginStart = dp(8); marginEnd = dp(4) })
             addView(ImageButton(this@MainActivity).apply {
                 setImageResource(R.drawable.ic_settings); imageTintList = android.content.res.ColorStateList.valueOf(muted)
                 contentDescription = "설정"; background = surface(Color.WHITE)
@@ -236,7 +244,6 @@ class MainActivity : Activity() {
                 setOnClickListener { stopPlayer(); tab = "settings"; detailId = null; render() }
             }, LinearLayout.LayoutParams(dp(48), dp(48)))
         })
-        divider(container)
         val scroll = LibraryDragScroll(this) { finishInteraction() }.apply { isFillViewport = true }
         mainScroll = scroll
         content = column().apply { val padding = if (tab == "list" && detailId == null && compactLibrary()) 4 else 16; setPadding(0, dp(padding), 0, dp(padding)) }
@@ -244,8 +251,15 @@ class MainActivity : Activity() {
         container.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
         divider(container)
         if (tab != "record") {
-            recordingAction = button("＋ 새 녹음", true) { stopPlayer(); detailId = null; tab = "record"; render() }
-            container.addView(recordingAction)
+            recordingAction = button("새 녹음") { stopPlayer(); detailId = null; tab = "record"; render() }.apply {
+                setTextColor(ink)
+                background = android.graphics.drawable.RippleDrawable(ripple, surface(Color.WHITE), null)
+                setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.ic_record_action, 0, 0, 0)
+                compoundDrawablePadding = dp(10)
+                gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                setPadding(0, dp(8), dp(12), dp(8))
+            }
+            container.addView(recordingAction, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(8); bottomMargin = dp(4) })
             updateRecordingAction()
         }
         setContentView(container)
@@ -259,14 +273,14 @@ class MainActivity : Activity() {
         content.addView(text(if (active == null) "저장 위치 · ${if (selectedFolder == null) "미분류" else folderTitle()}" else active.title, 14f, muted))
         gap()
         content.addView(card().apply {
-            addView(text("●", 64f, purple).apply { gravity = Gravity.CENTER })
+            addView(text("●", 64f, deleteRed).apply { gravity = Gravity.CENTER })
             timer = text(if (active == null) "00:00" else duration(vemo().elapsedMs), 48f, ink, true).apply { gravity = Gravity.CENTER }
             addView(timer)
             addView(text(if (active == null) "준비되면 녹음을 시작하세요." else if (active.state == CaptureState.PAUSED) "일시정지됨" else if (active.state == CaptureState.FINALIZING) "녹음 저장 중" else "녹음 중", 14f, muted).apply { gravity = Gravity.CENTER })
         })
         gap(20)
         if (active == null) {
-            content.addView(button("녹음 시작", true) { startRecording() }.apply { isEnabled = !vemo().gate.busy() })
+            content.addView(button("녹음 시작", true) { startRecording() }.apply { setTextColor(Color.WHITE); backgroundTintList = android.content.res.ColorStateList.valueOf(deleteRed); isEnabled = !vemo().gate.busy() })
             content.addView(text("화면을 나가도 녹음은 계속됩니다.", 13f, muted))
         } else {
             if (active.state != CaptureState.FINALIZING) {
@@ -276,7 +290,7 @@ class MainActivity : Activity() {
         }
         gap()
         content.addView(button("녹음 목록 보기") { tab = "list"; detailId = null; render() })
-        if (vemo().store.unreadableCount() > 0) content.addView(text("읽을 수 없는 로컬 메타데이터가 있습니다. 앱을 삭제하지 마세요. 원본 폴더는 보존했습니다.", 13f, Color.RED))
+        if (vemo().store.unreadableCount() > 0) content.addView(text("읽을 수 없는 로컬 메타데이터가 있습니다. 앱을 삭제하지 마세요. 원본 폴더는 보존했습니다.", 13f, deleteRed))
     }
     private fun startRecording() {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) { requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 41); return }
@@ -295,15 +309,15 @@ class MainActivity : Activity() {
         else vemo().notify("녹음하려면 설정에서 마이크 권한을 허용하세요.")
     }
     private fun command(action: String) { startService(Intent(this, RecordingService::class.java).setAction("com.vemo.$action")) }
-    private fun compactLibrary() = resources.configuration.screenHeightDp <= 480 && resources.configuration.screenWidthDp >= 600
+    private fun wideLibrary() = resources.configuration.screenWidthDp >= 600 && resources.configuration.fontScale < 1.5f
+    private fun compactLibrary() = resources.configuration.screenHeightDp <= 480 && wideLibrary()
     private fun recordings() {
         val compact = compactLibrary()
-        if (!compact) label(folderTitle())
         search = EditText(this).apply {
-            hint = "녹음 검색"; contentDescription = "녹음 검색"; textSize = 15f
+            hint = "녹음 제목 검색"; contentDescription = "녹음 검색"; textSize = 15f
             inputType = InputType.TYPE_CLASS_TEXT; setSingleLine(true)
-            minHeight = dp(52); setPadding(dp(16), dp(12), dp(16), dp(12))
-            background = surface(Color.rgb(245, 245, 248)); setTextColor(ink); setHintTextColor(muted)
+            minHeight = dp(52); setPadding(dp(12), dp(12), dp(12), dp(12))
+            background = surface(subtle); setTextColor(ink); setHintTextColor(muted)
             setText(query)
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
@@ -314,7 +328,7 @@ class MainActivity : Activity() {
             })
         }
         val searchBar = row().apply {
-            background = surface(Color.rgb(245, 245, 248))
+            background = surface(subtle).apply { cornerRadius = dp(12).toFloat() }
             setPadding(dp(14), 0, dp(4), 0)
             addView(ImageView(this@MainActivity).apply {
                 setImageResource(R.drawable.ic_search); imageTintList = android.content.res.ColorStateList.valueOf(muted)
@@ -323,39 +337,20 @@ class MainActivity : Activity() {
             search?.background = null
             addView(search, LinearLayout.LayoutParams(0, -2, 1f))
         }
-        if (compact) {
-            content.addView(row().apply {
-                addView(text(folderTitle(), 20f, ink, true).apply {
-                    maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
-                }, LinearLayout.LayoutParams(dp(220), -2).apply { marginEnd = dp(16) })
-                addView(searchBar, LinearLayout.LayoutParams(0, -2, 1f))
-            }, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(4) })
-        } else content.addView(searchBar, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10); bottomMargin = dp(18) })
-        libraryError?.let { content.addView(text(it, 14f, Color.rgb(160, 60, 45))) }
+        content.addView(searchBar, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(if (compact) 8 else 18) })
+        libraryError?.let { content.addView(text(it, 14f, deleteRed)) }
         if (vemo().store.unreadableCount() > 0) content.addView(text("읽을 수 없는 녹음 메타데이터가 있습니다. 원본은 보존했습니다. 앱을 삭제하지 마세요.", 14f, muted))
-        val body = if (resources.configuration.screenWidthDp >= 600) row().apply { gravity = Gravity.TOP } else column()
+        val body = if (wideLibrary()) row().apply { gravity = Gravity.TOP } else column()
         val navigation = column()
-        navigation.addView(row().apply {
-            addView(text("라이브러리", 13f, muted, true), LinearLayout.LayoutParams(0, -2, 1f))
-            addView(button("＋ 폴더") { folderEditor(null, selectedFolder) }.apply {
-                minHeight = dp(48)
-                background = android.graphics.drawable.InsetDrawable(
-                    android.graphics.drawable.RippleDrawable(
-                        android.content.res.ColorStateList.valueOf(0x226258EE),
-                        surface(Color.rgb(238, 236, 255)), null),
-                    0, dp(6), 0, dp(6))
-                setPadding(dp(16), dp(8), dp(16), dp(8))
-            }, LinearLayout.LayoutParams(-2, -2))
-        })
         val snapshot = library()
         fun filter(name: String, id: String?, onlyUnfiled: Boolean, count: Int, depth: Int = 0) {
             val selected = selectedFolder == id && unfiled == onlyUnfiled
-            val color = if (selected) Color.rgb(85, 75, 214) else ink
+            val color = if (selected) purple else ink
             val control = row().apply {
                 minimumHeight = dp(48)
                 isSelected = selected; isClickable = true; isFocusable = true
-                val fill = if (selected) Color.rgb(240, 239, 255) else Color.WHITE
-                background = android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x226258EE), surface(fill), null)
+                val fill = if (selected) selection else Color.WHITE
+                background = android.graphics.drawable.RippleDrawable(ripple, surface(fill), null)
                 setPadding(dp(12 + depth.coerceAtMost(4) * 14), dp(8), dp(10), dp(8))
                 setOnClickListener { selectedFolder = id; unfiled = onlyUnfiled; render() }
             }
@@ -364,7 +359,10 @@ class MainActivity : Activity() {
                 setImageResource(icon); imageTintList = android.content.res.ColorStateList.valueOf(color)
                 importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             }, LinearLayout.LayoutParams(dp(20), dp(20)).apply { marginEnd = dp(12) })
-            val nameView = text(name, 15f, color, selected).apply { importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO }
+            val nameView = text(name, 15f, color, selected).apply {
+                maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            }
             control.addView(nameView, LinearLayout.LayoutParams(0, -2, 1f))
             val countView = text(java.text.NumberFormat.getIntegerInstance().format(count), 12f, muted).apply { importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO }
             control.addView(countView, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8); marginEnd = dp(8) })
@@ -386,10 +384,21 @@ class MainActivity : Activity() {
             filter("전체 녹음", null, false, items.size)
             filter("미분류", null, true, items.count { snapshot?.recordingFolders?.get(it.id) == null })
         }
-        if (!compact) {
-            standardFilters()
-            navigation.addView(text("폴더", 13f, muted, true))
-        }
+        standardFilters()
+        navigation.addView(row().apply {
+            addView(text("폴더", 13f, muted, true), LinearLayout.LayoutParams(0, -2, 1f))
+            addView(button("＋ 폴더") { folderEditor(null, selectedFolder) }.apply {
+                minHeight = resources.getDimensionPixelSize(R.dimen.vemo_design_touch_min)
+                val pillInset = (resources.getDimensionPixelSize(R.dimen.vemo_design_touch_min) - resources.getDimensionPixelSize(R.dimen.vemo_design_folder_pill)) / 2
+                background = android.graphics.drawable.InsetDrawable(
+                    android.graphics.drawable.RippleDrawable(
+                        ripple,
+                        surface(selection), null),
+                    0, pillInset, 0, pillInset)
+                setPadding(dp(12), dp(8), dp(12), dp(8))
+                textSize = 13f
+            }, LinearLayout.LayoutParams(-2, -2))
+        })
         val children = snapshot?.folders.orEmpty().groupBy { it.parentId }
         val pending = java.util.ArrayDeque<Pair<LibraryFolder, Int>>()
         children[null].orEmpty().sortedByDescending { it.name }.forEach { pending.addLast(it to 0) }
@@ -401,7 +410,6 @@ class MainActivity : Activity() {
             filter(folder.name, folder.id, false, items.count { snapshot?.recordingFolders?.get(it.id) == folder.id }, depth)
             children[folder.id].orEmpty().sortedByDescending { it.name }.forEach { pending.addLast(it to depth + 1) }
         }
-        if (compact) standardFilters()
         if (snapshot != null && snapshot.folders.isEmpty()) navigation.addView(text("폴더를 만들어 녹음을 정리하세요.", 14f, muted))
         val list = column()
         list.addView(text(if (selectedFolder == null && !unfiled) "최근 녹음" else "폴더의 녹음", 14f, muted, true))
@@ -411,7 +419,7 @@ class MainActivity : Activity() {
             list.addView(syncAction)
             updateSyncAction()
         }
-        if (resources.configuration.screenWidthDp >= 600) {
+        if (wideLibrary()) {
             body.addView(navigation, LinearLayout.LayoutParams(dp(240), -2).apply { marginEnd = dp(24) })
             body.addView(list, LinearLayout.LayoutParams(0, -2, 1f))
         } else { body.addView(navigation); body.addView(list) }
@@ -456,27 +464,44 @@ class MainActivity : Activity() {
             val title = result?.title ?: item.title
             if (query.isNotBlank() && !title.contains(query.trim(), ignoreCase = true)) continue
             shown++
-            target.addView(row().apply {
+            // Only known successful terminal messages may disappear from the compact row.
+            val completedMessages = setOf("", "기기에 저장됨", "서버 저장 완료 · 녹음만", "PC 전사·노트 수신 완료", "선택한 폴더에 복사 완료 · 기기 원본 보존")
+            val pending = if (item.state == CaptureState.COMPLETE && item.mode == Mode.DESKTOP && result == null)
+                if (item.uploaded) "PC 결과 대기 중" else "업로드 대기 · 기기 원본 저장됨" else null
+            val visibleStatus = listOfNotNull(
+                state(item).takeIf { item.state != CaptureState.COMPLETE },
+                pending,
+                item.status.takeIf { it !in completedMessages }
+            ).distinct().joinToString(" · ")
+            target.addView(column().apply {
+                setPadding(0, dp(6), 0, dp(6)); minimumHeight = resources.getDimensionPixelSize(R.dimen.vemo_design_row)
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(12), dp(10), dp(12), dp(10)); minimumHeight = dp(60)
-                addView(text(title, 17f, ink, true).apply {
-                    maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
-                }, LinearLayout.LayoutParams(0, -2, 1f))
-                val recordedDate = try {
-                    OffsetDateTime.parse(item.recordedAt).format(DateTimeFormatter.ofPattern("yyyy.MM.dd"))
-                } catch (_: Exception) { item.recordedAt.substringBefore('T') }
-                addView(text(recordedDate, 12f, muted).apply {
-                    setSingleLine(true); gravity = Gravity.END
-                }, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(12) })
+                addView(row().apply {
+                    addView(text(title, 16f, ink).apply {
+                        maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+                    }, LinearLayout.LayoutParams(0, -2, 1f))
+                    val recordedDate = try {
+                        OffsetDateTime.parse(item.recordedAt).format(DateTimeFormatter.ofPattern("MM.dd"))
+                    } catch (_: Exception) { item.recordedAt.substringBefore('T') }
+                    addView(text(recordedDate, 12f, muted).apply {
+                        setSingleLine(true); gravity = Gravity.END
+                    }, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(12) })
+                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+                }, LinearLayout.LayoutParams(-1, -2))
+                if (visibleStatus.isNotBlank()) addView(text(visibleStatus, 12f,
+                    if (item.state in setOf(CaptureState.FAILED, CaptureState.INTERRUPTED)) deleteRed else muted).apply {
+                    setPadding(0, 0, 0, dp(4))
+                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                })
                 isClickable = true; isFocusable = true
                 background = android.graphics.drawable.RippleDrawable(
-                    android.content.res.ColorStateList.valueOf(0x226258EE),
-                    surface(Color.rgb(250, 250, 252), true), null)
-                contentDescription = "$title, $recordedDate, ${duration(item.durationMs)}, ${state(item)}, 열기"
+                    ripple,
+                    surface(this@MainActivity.background).apply { cornerRadius = 0f }, null)
+                contentDescription = "$title, ${date(item.recordedAt)}, ${duration(item.durationMs)}, ${state(item)}, $visibleStatus, 열기"
                 setOnClickListener { openRecording(item.id) }
-                for (index in 0 until childCount) getChildAt(index).importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
                 holds.add(LibraryHold(this, LibraryDrag(item.id, false), ::freezeInteraction) { recordingActions(item.id) })
-            }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6); bottomMargin = dp(2) })
+            }, LinearLayout.LayoutParams(-1, -2))
+            divider(target)
         }
         if (shown == 0) target.addView(text(if (query.isNotBlank()) "검색 결과가 없습니다." else "아직 녹음이 없습니다. 새 녹음을 시작하세요.", 16f, muted).apply {
             setPadding(0, dp(28), 0, dp(28))
@@ -548,7 +573,7 @@ class MainActivity : Activity() {
                     accepted
                 }
                 DragEvent.ACTION_DRAG_ENTERED -> {
-                    if (accepted) view.background = surface(Color.rgb(232, 229, 255), true)
+                    if (accepted) view.background = surface(selection, true)
                     accepted
                 }
                 DragEvent.ACTION_DRAG_LOCATION -> accepted
@@ -577,7 +602,7 @@ class MainActivity : Activity() {
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
         val body = column().apply { setPadding(dp(24), dp(20), dp(24), dp(20)) }
         body.addView(text(title, 22f, ink, true))
-        val error = text("", 14f, Color.rgb(166, 45, 45)).apply {
+        val error = text("", 14f, deleteRed).apply {
             visibility = View.GONE; accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         }
         body.addView(error)
@@ -594,7 +619,7 @@ class MainActivity : Activity() {
         dialog.setContentView(scroll)
         dialog.setCanceledOnTouchOutside(true)
         dialog.window?.apply {
-            setBackgroundDrawable(GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(24).toFloat() })
+            setBackgroundDrawable(GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = resources.getDimension(R.dimen.vemo_design_sheet_radius) })
             decorView.clipToOutline = true
             addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
             setDimAmount(0.28f)
@@ -603,7 +628,7 @@ class MainActivity : Activity() {
         dialog.setOnDismissListener { if (managementDialog === dialog) managementDialog = null }
         managementDialog = dialog
         dialog.show()
-        dialog.window?.setLayout(minOf(dp(480), dp(resources.configuration.screenWidthDp) - dp(32)), WindowManager.LayoutParams.WRAP_CONTENT)
+        dialog.window?.setLayout(minOf(dp(480), dp(resources.configuration.screenWidthDp) - dp(40)), WindowManager.LayoutParams.WRAP_CONTENT)
     }
     private fun libraryAction(errorView: TextView? = null, action: () -> Unit): Boolean = try {
         action(); true
@@ -624,9 +649,10 @@ class MainActivity : Activity() {
                 hint = "폴더 이름"; contentDescription = "폴더 이름"; setSingleLine(true)
                 setText(folder?.name.orEmpty()); setSelectAllOnFocus(true); minHeight = dp(52)
                 setTextColor(ink); setHintTextColor(muted); textSize = 16f
-                setPadding(dp(16), dp(12), dp(16), dp(12)); background = surface(Color.rgb(245, 245, 248))
+                setPadding(dp(16), dp(12), dp(16), dp(12)); background = surface(subtle)
             }
             body.addView(edit, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12); bottomMargin = dp(12) })
+            body.removeView(error); body.addView(error)
             body.addView(button("저장", true) {
                 if (libraryAction(error) {
                     if (id == null) vemo().library.createFolder(edit.text.toString().trim(), parent)
@@ -731,9 +757,9 @@ class MainActivity : Activity() {
             for ((key, title) in listOf("transcript" to "전사", "notes" to "노트")) {
                 addView(button(title) { detailTab = key; render() }.apply {
                     isSelected = detailTab == key
-                    val fill = if (isSelected) Color.rgb(240, 239, 255) else Color.rgb(245, 245, 248)
-                    background = android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x226258EE), surface(fill), null)
-                    setTextColor(if (isSelected) Color.rgb(85, 75, 214) else muted)
+                    val fill = if (isSelected) selection else subtle
+                    background = android.graphics.drawable.RippleDrawable(ripple, surface(fill), null)
+                    setTextColor(if (isSelected) purple else muted)
                     contentDescription = title + if (isSelected) ", 선택됨" else ""
                 }, LinearLayout.LayoutParams(0, -2, 1f).apply { if (key == "transcript") marginEnd = dp(8) })
             }
@@ -741,7 +767,7 @@ class MainActivity : Activity() {
         gap()
         if (result != null) {
             content.addView(text(if (detailTab == "notes") result.notes else result.transcript, 16f).apply {
-                setTextIsSelectable(true); setLineSpacing(dp(6).toFloat(), 1.15f)
+                setTextIsSelectable(true); setLineSpacing(dp(6).toFloat(), 1.3f)
             })
         } else {
             content.addView(text(if (item.mode == Mode.DESKTOP && item.uploadable)
@@ -758,7 +784,7 @@ class MainActivity : Activity() {
         statusView = text(vemo().message, 13f, muted)
         content.addView(statusView)
         gap()
-        label("기본 녹음 모드")
+        label("기본 녹음 모드", 20f)
         val group = RadioGroup(this)
         val local = RadioButton(this).apply { id = View.generateViewId(); text = "녹음만 · 폴더 저장/공유"; minHeight = dp(52); setTextColor(ink) }
         val desktop = RadioButton(this).apply { id = View.generateViewId(); text = "PC 자동 처리 · 클라우드 연결 시"; minHeight = dp(52); setTextColor(ink) }
@@ -766,12 +792,12 @@ class MainActivity : Activity() {
         group.setOnCheckedChangeListener { _, selected -> vemo().preferences.edit().putString("mode", if (selected == desktop.id) "desktop" else "record_only").apply() }
         content.addView(group)
         gap(20)
-        label("저장 및 연결")
+        label("저장 및 연결", 20f)
         content.addView(text("자동 동기화: " + if (vemo().preferences.getString("provider", "nextcloud") == "google") "Google Drive" else "Nextcloud", 14f, muted))
         if (vemo().syncing && vemo().preferences.getString("provider", "nextcloud") == "google") content.addView(button("Drive 동기화 취소") { vemo().google.cancel(); vemo().notify("Drive 동기화 취소 요청 · 다시 시도할 수 있습니다.") })
         content.addView(text("기기 원본은 앱 내부에 보관합니다. 앱 삭제/데이터 초기화 전에는 폴더 복사 또는 공유로 내보내세요.", 14f, muted))
         gap()
-        label("시스템 저장 폴더")
+        label("시스템 저장 폴더", 20f)
         content.addView(text(if (vemo().preferences.getString("folder", null) == null) "선택한 폴더 없음" else "시스템 폴더 선택됨 · 녹음 완료 후 자동 복사", 14f, muted))
         content.addView(button("저장 폴더 선택") {
             try { startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION), 51) }
@@ -785,7 +811,7 @@ class MainActivity : Activity() {
         gap(20)
         googleSettings()
         gap(20)
-        label("Nextcloud · 선택 사항")
+        label("Nextcloud · 선택 사항", 20f)
         content.addView(text("HTTPS WebDAV 폴더로 완료한 녹음과 PC 결과를 교환합니다. 데스크톱에서 같은 폴더를 등록하세요.", 14f, muted))
         val old = try { vemo().vault.load() } catch (_: Exception) { null }
         fun field(caption: String, initial: String = "", secret: Boolean = false): EditText {
@@ -793,9 +819,11 @@ class MainActivity : Activity() {
             val edit = EditText(this).apply {
                 setText(initial); setSingleLine(true); textSize = 15f; minHeight = dp(48)
                 isSaveEnabled = false; importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+                setTextColor(ink); setHintTextColor(muted)
+                setPadding(dp(16), dp(12), dp(16), dp(12)); background = surface(subtle)
                 inputType = if (secret) InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD else InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
             }
-            content.addView(edit)
+            content.addView(edit, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(12) })
             return edit
         }
         val endpoint = field("WebDAV URL (https://cloud.example/remote.php/dav/files/사용자)", old?.endpoint ?: "")
@@ -830,7 +858,7 @@ class MainActivity : Activity() {
         content.addView(text("비밀번호는 Android Keystore로 암호화합니다. TLS 인증서 검증과 콘텐츠 충돌 보호를 사용합니다.", 13f, muted))
     }
     private fun googleSettings() {
-        label("Google Drive · 선택 사항")
+        label("Google Drive · 선택 사항", 20f)
         val binding = try { vemo().google.binding() } catch (_: Exception) { null }
         content.addView(text(if (binding == null) "Mac에서 먼저 Google Drive 처리기를 등록한 뒤 연결하세요." else "Google 계정 ID: ${binding.accountId}\n연결된 Drive root: ${binding.rootId}\n처리기: ${binding.processorId}", 14f, muted))
         content.addView(text("Vemo 앱 파일 권한만 요청합니다. Google 프로젝트 vemo-511910의 Android OAuth 등록이 필요합니다.", 13f, muted))

@@ -111,7 +111,9 @@ class LibraryInteractionTest : InstrumentationTestCase() {
         val before = File(app.filesDir, "library.json").readBytes()
         launch()
         val point = bounds(folderView(source.id))
-        val outside = bounds(findView { it is TextView && it.text.toString() == "Vemo" }, false)
+        val outside = bounds(findView {
+            it is TextView && !it.isClickable && it.contentDescription?.toString() == "전체 녹음"
+        }, false)
         val down = SystemClock.uptimeMillis()
         inject(MotionEvent.ACTION_DOWN, point.exactCenterX(), point.exactCenterY(), down)
         SystemClock.sleep(ViewConfiguration.getLongPressTimeout().toLong() + 200)

@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "scope": "standalone-design-only",
+  "color": {
+    "canvas": "#F6F5F8",
+    "surface": "#FFFFFF",
+    "sidebar": "#F7F7FA",
+    "divider": "#E8E8ED",
+    "text": "#202126",
+    "secondary": "#6B6D78",
+    "accent": "#6D5BB5",
+    "selection": "#F0ECFA",
+    "destructive": "#B5444D",
+    "destructiveSurface": "#FBEFF0"
+  },
+  "spacing": [
+    4,
+    8,
+    12,
+    16,
+    20,
+    24,
+    32,
+    40,
+    48
+  ],
+  "radius": {
+    "desktopButton": 12,
+    "mobileButton": 16,
+    "sheet": 24,
+    "search": 12
+  },
+  "size": {
+    "androidTouchTargetMin": 48,
+    "folderPillVisibleHeight": 32,
+    "androidRecordingRow": 54,
+    "windowsSidebarIdeal": 220,
+    "windowsListIdeal": 310,
+    "windowsMinWidth": 980,
+    "windowsMinHeight": 540
+  },
+  "font": {
+    "android": "Roboto, Noto Sans KR, sans-serif",
+    "windows": "Segoe UI, Malgun Gothic, sans-serif",
+    "mobileTitle": 28,
+    "mobileRow": 16,
+    "body": 15,
+    "metadata": 13
+  },
+  "motion": {
+    "shortMs": 150,
+    "standardMs": 220,
+    "reduceMotion": true
+  }
+}
