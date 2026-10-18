@@ -2,7 +2,7 @@ using System.IO.Compression;
 using System.Text.Json;
 namespace Vemo.Core;
 
-public sealed class LibraryStore : IDisposable
+public sealed partial class LibraryStore : IDisposable
 {
     readonly object gate = new(); readonly string root; readonly FileStream ownership; LibraryData data;
     public string Root => root;

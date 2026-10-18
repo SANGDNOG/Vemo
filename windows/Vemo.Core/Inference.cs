@@ -94,7 +94,7 @@ public sealed record NotesDocument(IReadOnlyList<NoteTopic> Topics)
         return b.ToString();
     }
 }
-public sealed class JobRunner(LibraryStore store, IInferenceEngine engine, IRuntimePreparation? runtimePreparation = null)
+public sealed partial class JobRunner(LibraryStore store, IInferenceEngine engine, IRuntimePreparation? runtimePreparation = null)
 {
     readonly SemaphoreSlim gate = new(1, 1); readonly object cancelGate = new(); CancellationTokenSource? current;
     string? activeJobId; ProcessingProgress? progress; Stopwatch? elapsed;

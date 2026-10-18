@@ -356,4 +356,20 @@ public sealed class GoogleDriveTests
         var pending = f.Service.ListFoldersAsync(); await entered.Task; await f.Service.StopAsync(); await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending); Assert.False(f.Service.Status.Busy);
         f.Cloud.Before = null; Assert.Empty(await f.Service.ListFoldersAsync());
     }
+    [Fact] public async Task OptionalSpeakerRenameUsesConditionalUpdateAndKeepsV1ResultExact()
+    {
+        using var f = new Fixture(); var root = f.Cloud.Root(); f.Cloud.Recording(root);
+        await f.Service.SelectFolderAsync(root); await f.Service.SyncAsync();
+        var job = Assert.Single(f.Store.Jobs); f.Store.TryStart(job.Id); f.Store.SaveTranscript(job.Id, "original", [new(0, 2, "original")]); f.Store.Complete(job.Id, "notes");
+        await f.Service.SyncAsync(); var result = Assert.Single(f.Cloud.Files.Values, x => x.Name == "result.json"); var original = result.Bytes.ToArray();
+        var document = SpeakerDocument.Create(job.AudioSha256, f.Store.ReadTranscriptDocument(job.Id), [new(0, 2, "raw")]); f.Store.SaveSpeakerDocument(job.Id, document);
+        await f.Service.SyncAsync(); var sidecar = Assert.Single(f.Cloud.Files.Values, x => x.Name == "speakers.json");
+        f.Store.RenameSpeaker(job.Id, document.Generation, "speaker_1", "진행자");
+        var updates = f.Cloud.MediaUpdates; await f.Service.SyncAsync(); Assert.Equal(updates + 1, f.Cloud.MediaUpdates);
+        Assert.Equal(original, result.Bytes); Assert.Equal("진행자", SpeakerDocument.Parse(Encoding.UTF8.GetString(sidecar.Bytes), job.AudioSha256, "original").Speakers[0].Name);
+        f.Store.RenameSpeaker(job.Id, document.Generation, "speaker_1", "changed again"); var saved = sidecar.Bytes.ToArray();
+        f.Cloud.Before = (request, _) => { if (request.Method == HttpMethod.Put && request.RequestUri!.AbsolutePath.EndsWith("/" + sidecar.Id)) sidecar.Properties["race"] = "changed"; return Task.CompletedTask; };
+        Assert.Equal("remote_conflict", (await Assert.ThrowsAsync<GoogleConnectionException>(() => f.Service.SyncAsync())).Code);
+        Assert.Equal(saved, sidecar.Bytes); Assert.Equal(original, result.Bytes);
+    }
 }

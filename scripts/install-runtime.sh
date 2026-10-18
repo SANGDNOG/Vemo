@@ -12,6 +12,7 @@ if [[ ! -x "$runtime_dir/bin/python3" ]]; then
   "$python_path" -m venv "$runtime_dir"
 fi
 "$runtime_dir/bin/python3" -m pip install -r "$project_dir/requirements.lock"
+"$runtime_dir/bin/python3" -m pip install -r "$project_dir/requirements-diarization.lock"
 "$runtime_dir/bin/python3" -m pip install --no-deps --force-reinstall "$project_dir"
 "$runtime_dir/bin/python3" -c 'import mlx.core, mlx_qwen3_asr, mlx_lm, voice_memo_transcriber'
 printf '%s\n' "Runtime ready: $runtime_dir/bin/python3"

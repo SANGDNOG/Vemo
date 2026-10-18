@@ -1,4 +1,5 @@
 <Solution>
+  <Project Path="Vemo.Diarization/Vemo.Diarization.csproj" />
   <Project Path="Vemo.App.Tests/Vemo.App.Tests.csproj" />
   <Project Path="Vemo.App/Vemo.App.csproj" />
   <Project Path="Vemo.Core.Tests/Vemo.Core.Tests.csproj" />

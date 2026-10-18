@@ -288,6 +288,23 @@ public actor MobileSyncBroker {
             }
             try output.atomic(bytes, name: name, replace: true)
         }
+        // Optional metadata never makes a valid v1 result fail. The owned result
+        // above establishes recording/processor authority for this directory.
+        if let speakers = try? SpeakerDocument.load(job: job, root: root, transcript: transcript),
+           let bytes = try? BrokerFiles.json(speakers) {
+            do {
+                try current(config); try owner(cloud, config: config); try Task.checkCancellation()
+                guard try MobileSyncRecording.decode(requestFolder.read("recording.json")) == entry.recording else {
+                    throw BrokerFailure("mobile_identity_conflict", "모바일 녹음 정보가 변경되었습니다.")
+                }
+                if try output.exists(SpeakerDocument.filename) {
+                    let previous = try output.read(SpeakerDocument.filename)
+                    _ = try SpeakerDocument.decode(previous, audioHash: result.audio_sha256, transcript: transcript)
+                }
+                try output.atomic(bytes, name: SpeakerDocument.filename, replace: true)
+            } catch is CancellationError { throw CancellationError() }
+            catch { /* Preserve ordinary result and any existing optional sidecar. */ }
+        }
         return output.url.appendingPathComponent("result.json")
     }
 }

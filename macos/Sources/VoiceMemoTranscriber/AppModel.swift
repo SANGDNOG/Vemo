@@ -71,6 +71,11 @@ struct RecordingBulkConfirmation {
     @Published var recommendedNotes: String?
     @Published var paused = false
     @Published var transcript: Transcript?
+    @Published var speakers: SpeakerDocument?
+    @Published var editingSpeaker: String?
+    @Published var speakerDraft = ""
+    @Published var speakerModelState = ""
+    @Published var speakerCount = 0
     @Published var notes: RecordingNotes?
     @Published var notesReadError: String?
     @Published var detailMode = "transcript"
@@ -337,7 +342,7 @@ struct RecordingBulkConfirmation {
         guard !DemoContent.enabled else { return }
         let request = WireCommand(kind,payload)
         if ["snapshot_ready","publish_ack"].contains(kind) { internalBrokerReplies.insert(request.request_id) }
-        if ["trash_recording","purge_recording","retitle","generate_notes","set_recording_date"].contains(kind), let id = payload["job_id"]?.string { pendingRecordingCommands[request.request_id] = id; cancelObsoleteExport() }
+        if ["trash_recording","purge_recording","retitle","generate_notes","set_recording_date","analyze_speakers","cancel_speakers","rename_speaker"].contains(kind), let id = payload["job_id"]?.string { pendingRecordingCommands[request.request_id] = id; cancelObsoleteExport() }
         Task {
             do { try await sendRecordingCommand(request) }
             catch { internalBrokerReplies.remove(request.request_id); pendingRecordingCommands.removeValue(forKey:request.request_id); problem = error.localizedDescription }
@@ -399,7 +404,9 @@ struct RecordingBulkConfirmation {
                 }
             case "engine_status": updateEngine(event.payload["engine_status"]?.object ?? event.payload)
             case "model_progress":
-                if event.payload["model"]?.string == "notes" {
+                if event.payload["model"]?.string == "speakers" {
+                    speakerModelState = event.payload["state"]?.string ?? ""
+                } else if event.payload["model"]?.string == "notes" {
                     notesModelState = event.payload["state"]?.string ?? notesModelState
                     notesModelStatus = ModelProgress.description(event.payload)
                 } else { modelStatus = ModelProgress.description(event.payload) }
@@ -514,10 +521,11 @@ struct RecordingBulkConfirmation {
         guard let job = selected else { transcript = nil; notes = nil; quoteRow = nil; focusedQuote = nil; return }; transcript = DemoContent.transcript(for:job.id); notes = DemoContent.notes(for:job.id); quoteRow = nil; focusedQuote = nil; topic = job.topic ?? ""; dateInput = job.recording_date ?? ""; currentTime = 0; audioDuration = 0
     }
     func loadSelection() async {
-        if DemoContent.enabled { loadDemoSelection(); return }
         let token = UUID(); loadID = token
-        guard let job = selected, job.deleted_at == nil else { player?.stop(); player = nil; loadedAudioKey = nil; loadedSelection = nil; transcript = nil; notes = nil; notesReadError = nil; playing = false; return }
+        if DemoContent.enabled { speakers = nil; editingSpeaker = nil; loadDemoSelection(); return }
+        guard let job = selected, job.deleted_at == nil else { speakers = nil; editingSpeaker = nil; player?.stop(); player = nil; loadedAudioKey = nil; loadedSelection = nil; transcript = nil; notes = nil; notesReadError = nil; playing = false; return }
         if loadedSelection != job.id {
+            speakers = nil; editingSpeaker = nil
             player?.stop(); player = nil; loadedAudioKey = nil; playing = false; currentTime = 0; audioDuration = 0; transcript = nil; notes = nil; notesReadError = nil; quoteRow = nil; focusedQuote = nil
             topic = job.topic ?? ""; dateInput = job.recording_date ?? ""; loadedSelection = job.id
         }
@@ -525,6 +533,13 @@ struct RecordingBulkConfirmation {
             do { let value = try await readTranscript(path); guard loadID == token else { return }; transcript = value }
             catch { guard loadID == token else { return }; transcript = nil; notes = nil; problem = error.localizedDescription }
         } else { transcript = nil; notes = nil; quoteRow = nil; focusedQuote = nil }
+        if let transcript {
+            let root = stateRoot
+            let value = await Task.detached { try? SpeakerDocument.load(job: job, root: root, transcript: transcript) }.value
+            guard loadID == token, selected?.id == job.id else { return }
+            if value == nil || speakers?.generation != value?.generation { editingSpeaker = nil }
+            speakers = value
+        } else { speakers = nil; editingSpeaker = nil }
         if let path = job.notes_path, let transcript {
             do { let value = try await readNotes(path,text:transcript.text); guard loadID == token else { return }; notes = value; notesReadError = nil }
             catch { guard loadID == token else { return }; notes = nil; notesReadError = error.localizedDescription }
@@ -537,6 +552,13 @@ struct RecordingBulkConfirmation {
         }
     }
     func togglePlayback() { guard let player else { return }; if player.isPlaying { player.pause() } else { player.play() }; playing = player.isPlaying }
+    func analyzeSpeakers(_ job: Job) {
+        processingCommand("analyze_speakers", ["job_id": .string(job.id), "num_speakers": speakerCount == 0 ? .null : .integer(Int64(speakerCount))])
+    }
+    func cancelSpeakers(_ job: Job) { command("cancel_speakers", ["job_id": .string(job.id)]) }
+    func renameSpeaker(_ job: Job, id: String, name: String, generation: String) {
+        command("rename_speaker", ["job_id": .string(job.id), "speaker_id": .string(id), "name": .string(name), "generation": .string(generation)])
+    }
     func seek(_ value: Double) { player?.currentTime = max(0, min(value, audioDuration)); currentTime = player?.currentTime ?? 0 }
     private func tick() { currentTime = player?.currentTime ?? currentTime; playing = player?.isPlaying ?? false
         ticks += 1
@@ -1068,7 +1090,7 @@ enum AutomaticRecordingPolicy {
     }
     static func notesKey(_ job: Job) -> String { key([job.id,job.artifact_path]) }
     static func zipKey(_ job: Job, destination: String, libraryRevision: Int = 0) -> String {
-        key([destination,job.id,job.title,job.recording_date,job.audio_path,job.artifact_path,job.notes_path,String(libraryRevision),job.status,job.notes_status,job.deleted_at])
+        key([destination,job.id,job.title,job.recording_date,job.audio_path,job.artifact_path,job.notes_path,job.speakers_path,String(libraryRevision),job.status,job.notes_status,job.deleted_at])
     }
     private static func key(_ values: [String?]) -> String {
         String(decoding:(try? JSONEncoder().encode(values)) ?? Data(),as:UTF8.self)

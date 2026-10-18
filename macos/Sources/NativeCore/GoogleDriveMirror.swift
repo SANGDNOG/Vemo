@@ -313,6 +313,34 @@ public actor GoogleDriveMirror {
             guard try await client.json(confirmed) == payload else { throw GoogleDriveError.conflict }
             try await GoogleDriveClient.checkPublication(shouldPublish)
         }
+        // Keep v1 result publication independent of optional speaker failures.
+        // Canonical speakers.json has no processor envelope; authority comes
+        // from the validated directory and the result published above.
+        do {
+            guard try output.exists(SpeakerDocument.filename) else { return }
+            let payload = try output.read(SpeakerDocument.filename)
+            let resultObject = try JSONSerialization.jsonObject(with: bytes) as? [String: Any]
+            guard let text = resultObject?["transcript"] as? String else { return }
+            let transcript = Transcript(text: text, segments: [], alignment_status: "failed")
+            _ = try SpeakerDocument.decode(payload, audioHash: parts[2], transcript: transcript)
+            let filePath = parts.prefix(3).joined(separator: "/") + "/" + SpeakerDocument.filename
+            let remote = try await ensure(parent: parent, path: filePath, mime: GoogleDriveClient.jsonMIME, journal: &journal, shouldPublish: shouldPublish)
+            if let size = remote.size, size != "0" {
+                let previous = try await client.json(remote)
+                _ = try SpeakerDocument.decode(previous, audioHash: parts[2], transcript: transcript)
+                if previous == payload { return }
+            } else if journal.ids[filePath] != remote.id { throw GoogleDriveError.conflict }
+            _ = try await checked(journal)
+            try await owner(binding, local: local)
+            try await GoogleDriveClient.checkPublication(shouldPublish)
+            try await client.upload(id: remote.id, data: payload, shouldPublish: shouldPublish)
+            let confirmed = try await client.file(remote.id)
+            try GoogleDriveClient.validate(confirmed, parent: parent, path: filePath, mime: GoogleDriveClient.jsonMIME)
+            guard try await client.json(confirmed) == payload else { throw GoogleDriveError.conflict }
+            try await GoogleDriveClient.checkPublication(shouldPublish)
+        } catch is CancellationError { throw CancellationError() }
+        catch GoogleDriveError.staleJob { throw GoogleDriveError.staleJob }
+        catch { /* Ordinary result is already complete; preserve old optional data. */ }
     }
 }
 

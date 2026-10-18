@@ -37,6 +37,9 @@ public struct Job: Codable, Sendable, Identifiable {
     public var notes_path: String?; public var notes_status: String?; public var notes_error: JSONValue?
     public var deleted_at: String?
     public var purge_pending: Bool? = nil
+    public var speakers_path: String? = nil
+    public var speakers_status: String? = nil
+    public var speakers_error: JSONValue? = nil
     /// QTA spatial streams are not supported by AVAudioPlayer. Wait for prepared PCM.
     /// The consumer must still validate the chosen path inside its owned state root.
     public var playback_path: String? {

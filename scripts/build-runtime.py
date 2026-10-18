@@ -37,6 +37,7 @@ def main():
     python=destination/'bin/python3';run([python,'-c','import sys,platform; assert sys.version_info[:3]==(3,12,15); assert platform.machine()=="arm64"'],env=environment)
     lock=PROJECT/'requirements-runtime.lock';requirements=lock if lock.exists() else PROJECT/'requirements.lock'
     run([python,'-m','pip','install','--index-url','https://pypi.org/simple','-r',requirements],env=environment)
+    run([python,'-m','pip','install','--index-url','https://pypi.org/simple','-r',PROJECT/'requirements-diarization.lock'],env=environment)
     wheels=PROJECT/'build/wheels';wheels.mkdir(parents=True,exist_ok=True)
     run([python,'-m','pip','wheel','--no-deps','--wheel-dir',wheels,PROJECT],env=environment)
     wheel=wheels/'voice_memo_transcriber-0.2.0-py3-none-any.whl'

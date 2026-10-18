@@ -10,6 +10,10 @@ import java.util.Locale
 object TranscriptSpeakers {
     const val FILE_NAME = "speakers.json"
     private const val MAX_ITEMS = 100000
+    // Explicit compatibility allowance for container/codec duration metadata.
+    // Observed owned AAC fixture: metadata 35.000 s, decoded PCM 35.008 s.
+    // This is a bounded endpoint policy, not an assumed codec frame size.
+    private const val DURATION_METADATA_TOLERANCE_S = 0.050
     private val keys = setOf("schema_version", "audio_sha256", "transcript_sha256", "generation", "speakers", "turns", "segments")
     private data class Interval(val start: Double, val end: Double, val id: String?)
     private data class Segment(val interval: Interval, val text: String)
@@ -59,7 +63,9 @@ object TranscriptSpeakers {
             }
             val start = seconds("start_s")
             val end = seconds("end_s")
-            if (durationMs <= 0 || start < 0 || end < start || end > minOf(3600.0, durationMs / 1000.0))
+            val metadataDuration = durationMs / 1000.0
+            if (durationMs <= 0 || start < 0 || start > metadataDuration || end < start ||
+                end > 3600.0 || end > metadataDuration + DURATION_METADATA_TOLERANCE_S)
                 throw ProtocolException("Speaker time outside recording")
             return Interval(start, end, id)
         }
@@ -147,6 +153,10 @@ object TranscriptSpeakers {
         val starts = IntArray(segments.size)
         var count = 0
         for ((index, segment) in segments.withIndex()) {
+            if (index > 0 && count > 0 && count < normalizedStarts.size &&
+                normalizedStarts[count] == normalizedStarts[count - 1] &&
+                segments[index - 1].interval.id != segment.interval.id)
+                throw ProtocolException("Speaker boundary splits a Unicode character")
             starts[index] = if (index == 0) 0 else normalizedStarts.getOrElse(count) { transcript.length }
             val text = normalized(segment.text)
             count += text.codePointCount(0, text.length)

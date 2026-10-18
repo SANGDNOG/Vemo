@@ -1,0 +1,4 @@
+# Optional CPU runtime only; absence must not block transcription/notes.
+# PyPI 1.13.8 provides CPython 3.12 macOS arm64/universal2 wheels.
+sherpa-onnx==1.13.8
+sherpa-onnx-core==1.13.8

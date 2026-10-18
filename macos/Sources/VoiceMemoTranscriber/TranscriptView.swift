@@ -40,6 +40,7 @@ struct TranscriptView: View {
             if model.detailMode == "notes" { NotesView(model:model,job:job) }
             else {
             if let transcript = model.transcript {
+                speakerControls
                 if transcript.alignment_status != "completed" && transcript.alignment_status != "success" { Text("시간 정렬이 완료되지 않아 정밀 구간 이동과 자막 내보내기가 제한됩니다.").font(.caption).foregroundStyle(.secondary) }
                 if job.status != "completed" { Text("처리 중 결과 · 최종 게시 전").font(.caption).foregroundStyle(.secondary) }
                 ScrollViewReader { proxy in
@@ -50,7 +51,12 @@ struct TranscriptView: View {
                                 if let timing = row.timing {
                                     Button(clock(timing.start_s)) { model.seek(timing.start_s) }.buttonStyle(.plain).font(.caption.monospacedDigit()).foregroundStyle(.tint)
                                 }
-                                Text(row.text).font(.body).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    if let doc = model.speakers, let id = doc.speakerID(for: row), let speaker = doc.speakers.first(where: { $0.id == id }) {
+                                        Text(speaker.name).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                                    }
+                                    Text(row.text).font(.body).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
+                                }
                             }.padding(.vertical,4).padding(.horizontal,6).background(model.quoteRow == index ? VemoTheme.accent.opacity(0.10) : Color.clear,in:RoundedRectangle(cornerRadius:6)).id(index)
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
@@ -79,6 +85,52 @@ struct TranscriptView: View {
                 .background(active ? VemoTheme.accent.opacity(0.10) : .clear, in: RoundedRectangle(cornerRadius: 8))
                 .contentShape(RoundedRectangle(cornerRadius: 8))
         }.buttonStyle(.plain).accessibilityAddTraits(active ? .isSelected : [])
+    }
+    private var speakerControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Button("화자 모델 준비") {
+                    model.command("download_models", ["speakers_only": .bool(true)])
+                }.disabled(!model.canChangeModels || model.speakerModelState == "downloading")
+                if !model.speakerModelState.isEmpty {
+                    Text(model.speakerModelState == "queued" ? "화자 모델 준비 대기 중" : ModelProgress.label(model.speakerModelState)).font(.caption).foregroundStyle(.secondary)
+                }
+                if ["queued", "analyzing"].contains(job.speakers_status ?? "") {
+                    ProgressView().controlSize(.small)
+                    Text(job.speakers_status == "queued" ? "화자 분석 대기 중" : "화자 모델 준비 및 분석 중")
+                    Button("취소") { model.cancelSpeakers(job) }
+                } else {
+                    Picker("화자 수", selection: $model.speakerCount) {
+                        Text("자동").tag(0)
+                        ForEach(1...20, id: \.self) { count in Text("\(count)명").tag(count) }
+                    }.frame(maxWidth: 180)
+                    Button(model.speakers == nil ? "화자 분석" : "화자 다시 분석") { model.analyzeSpeakers(job) }
+                        .disabled(!["completed", "needs_recording_date", "failed"].contains(job.status) || job.pcm_path == nil)
+                    if job.speakers_status == "cancelled" { Text("화자 분석 취소됨").foregroundStyle(.secondary) }
+                }
+            }
+            if let error = job.speakers_error?.object?["message"]?.string { Text(error).font(.caption).foregroundStyle(.secondary) }
+            if let doc = model.speakers {
+                ForEach(doc.speakers) { speaker in
+                    HStack {
+                        if model.editingSpeaker == speaker.id {
+                            TextField("화자 이름", text: $model.speakerDraft).textFieldStyle(.roundedBorder)
+                            Button("저장") {
+                                model.renameSpeaker(job, id: speaker.id, name: model.speakerDraft, generation: doc.generation)
+                                model.editingSpeaker = nil
+                            }
+                            Button("취소") { model.editingSpeaker = nil }
+                        } else {
+                            Text(speaker.name).font(.caption)
+                            Button("이름 편집") { model.speakerDraft = speaker.name; model.editingSpeaker = speaker.id }
+                                .disabled(["queued", "analyzing"].contains(job.speakers_status ?? ""))
+                        }
+                    }
+                }
+            }
+        }
+        .onChange(of: job.id) { _, _ in model.editingSpeaker = nil }
+        .onChange(of: model.speakers?.generation) { _, _ in model.editingSpeaker = nil }
     }
     private var processingNotice: some View {
         HStack(spacing: 12) {

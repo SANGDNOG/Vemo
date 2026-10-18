@@ -4,6 +4,12 @@ using Vemo.Provision;
 
 if(args.Contains("--help")||args.Length==0){Console.WriteLine("Vemo.Provision --destination <new directory> --arch x64|arm64 --whisper small|turbo --notes 9b|27b [--cache <archive/model directory>] [--existing-whisper <exe>] [--existing-llama <exe>] [--existing-asr-model <file>] [--existing-notes-model <file>] [--ffmpeg <exe> | --download-ffmpeg | --wav-only] [--offline]\nDownloads only selected pinned CPU runtimes/models; no weights are redistributed. Existing model files must match the selected pin. --wav-only prepares a direct whisper WAV smoke test, not a complete app pipeline. Existing executables are user-selected and recorded as unpinned.");return args.Length==0?2:0;}
 try {
+    if(args[0]=="--speaker-models") {
+        if(args.Length is < 2 or > 3 || (args.Length==3 && args[2]!="--offline")) throw new ArgumentException("Vemo.Provision --speaker-models <directory> [--offline]");
+        using var speakerHttp=new HttpClient(){Timeout=Timeout.InfiniteTimeSpan};
+        await Vemo.Runtime.SpeakerProvision.PrepareAsync(SafeFiles.Full(args[1]),speakerHttp,args.Length==3);
+        Console.WriteLine("Pinned optional speaker models verified. Windows helper must be published separately; inference has not been tested."); return 0;
+    }
     var options=new Dictionary<string,string>();var flags=new HashSet<string>();
     var allowed=new HashSet<string>{"--destination","--arch","--whisper","--notes","--cache","--existing-whisper","--existing-llama","--existing-asr-model","--existing-notes-model","--ffmpeg"};
     for(int i=0;i<args.Length;i++){if(args[i] is "--offline" or "--wav-only" or "--download-ffmpeg"){flags.Add(args[i]);continue;}if(!allowed.Contains(args[i])||i+1==args.Length||args[i+1].StartsWith("--"))throw new ArgumentException("Unknown or incomplete option: "+args[i]);if(!options.TryAdd(args[i],args[++i]))throw new ArgumentException("Duplicate option.");}

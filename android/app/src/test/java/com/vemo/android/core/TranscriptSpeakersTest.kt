@@ -143,11 +143,50 @@ class TranscriptSpeakersTest {
         assertTrue(error.message.orEmpty().contains("complexity"))
     }
 
-    @Test fun secondsUseStoredMillisecondsWithStrictDurationBoundary() {
+    @Test fun observedEightMillisecondContainerDifferencePreservesSidecarAndOriginalText() {
         val obj = document()
-        obj.getAsJsonArray("segments")[1].asJsonObject.addProperty("end_s", 4.0001)
-        assertThrows(ProtocolException::class.java) { parse(Json.bytes(obj)) }
-        assertEquals(2, TranscriptSpeakers.parse(Json.bytes(obj), binding.hash, transcript, 4001).size)
+        obj.getAsJsonArray("turns")[0].asJsonObject.addProperty("end_s", 35.008)
+        obj.getAsJsonArray("segments")[1].asJsonObject.addProperty("end_s", 35.0)
+        val bytes = Json.bytes(obj)
+        val original = bytes.copyOf()
+        val rows = TranscriptSpeakers.parse(bytes, binding.hash, transcript, 35000)
+        assertEquals(transcript, rows.joinToString("") { it.text })
+        assertArrayEquals(original, bytes)
+        assertEquals(35.008, Json.parse(bytes).getAsJsonArray("turns")[0].asJsonObject["end_s"].asDouble, 0.0)
+    }
+
+    @Test fun containerDurationToleranceIsBoundedAndNeverExtendsStartOrOneHourCap() {
+        for (collection in listOf("turns", "segments")) {
+            for (end in listOf(4.0001, 4.008, 4.05)) {
+                val obj = document()
+                obj.getAsJsonArray(collection)[0].asJsonObject.addProperty("end_s", end)
+                // Keep segment order valid when extending the first segment.
+                if (collection == "segments") {
+                    obj.getAsJsonArray("turns")[0].asJsonObject.addProperty("end_s", end)
+                    obj.getAsJsonArray("segments")[1].asJsonObject.apply {
+                        addProperty("start_s", 4.0); addProperty("end_s", end)
+                    }
+                }
+                assertEquals(2, parse(Json.bytes(obj)).size)
+            }
+            for (end in listOf("4.050001", "4.1", "1e9999")) {
+                val obj = document()
+                obj.getAsJsonArray(collection)[0].asJsonObject.add("end_s", com.google.gson.JsonParser.parseString(end))
+                assertThrows(ProtocolException::class.java) { parse(Json.bytes(obj)) }
+            }
+            val beyondStart = document()
+            beyondStart.getAsJsonArray(collection)[0].asJsonObject.apply { addProperty("start_s", 4.001); addProperty("end_s", 4.008) }
+            assertThrows(ProtocolException::class.java) { parse(Json.bytes(beyondStart)) }
+            for (end in listOf(3600.000001, 3600.008, 3600.05)) {
+                val obj = document()
+                obj.getAsJsonArray(collection)[0].asJsonObject.addProperty("end_s", end)
+                assertThrows(ProtocolException::class.java) { TranscriptSpeakers.parse(Json.bytes(obj), binding.hash, transcript, 3600000) }
+            }
+        }
+        val atCap = document()
+        atCap.getAsJsonArray("turns")[0].asJsonObject.addProperty("end_s", 3600.0)
+        assertEquals(2, TranscriptSpeakers.parse(Json.bytes(atCap), binding.hash, transcript, 3600000).size)
+        assertThrows(ProtocolException::class.java) { TranscriptSpeakers.parse(Json.bytes(document()), binding.hash, transcript, 0) }
     }
 
     @Test fun wordSegmentsBecomeSentenceRowsWithoutCrossingSpeakerChanges() {
@@ -220,6 +259,17 @@ class TranscriptSpeakersTest {
         assertEquals(listOf("민수", "영희"), rows.map { it.speakerName })
         assertEquals(listOf(0L, 2000L), rows.map { it.startMs })
         assertEquals(raw, rows.joinToString("") { it.text })
+    }
+
+    @Test fun speakerBoundaryInsideGraphemeDoesNotTransferTextToAnotherSpeaker() {
+        val text = "a\u0338"
+        val doc = mapOf("schema_version" to 1, "audio_sha256" to binding.hash,
+            "transcript_sha256" to digest(ByteArrayInputStream(text.toByteArray(Charsets.UTF_8))),
+            "generation" to binding.id,
+            "speakers" to listOf(mapOf("id" to "speaker_1", "name" to "민수"), mapOf("id" to "speaker_2", "name" to "영희")),
+            "turns" to listOf(mapOf("start_s" to 0, "end_s" to 1, "speaker_id" to "speaker_1"), mapOf("start_s" to 1, "end_s" to 2, "speaker_id" to "speaker_2")),
+            "segments" to listOf(mapOf("start_s" to 0, "end_s" to 1, "text" to "a", "speaker_id" to "speaker_1"), mapOf("start_s" to 1, "end_s" to 2, "text" to "\u0338", "speaker_id" to "speaker_2")))
+        assertThrows(ProtocolException::class.java) { TranscriptSpeakers.parse(Json.bytes(doc), binding.hash, text, 2000) }
     }
 
     @Test fun optionalIoFailureFallsBackButCancellationPropagates() {

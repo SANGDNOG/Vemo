@@ -82,7 +82,29 @@ public sealed class MobileFolderAdapter(LibraryStore store)
         var audio = Path.Combine(requestDir, "audio.m4a"); SafeFiles.NoLinks(audio);
         if (new FileInfo(audio).Length != request.Bytes || SafeFiles.Hash(audio) != m.AudioSha256) throw new InvalidDataException("Remote mobile audio hash/size changed; refusing stale result.");
         if (before != SafeFiles.Read(marker)) throw new IOException("Mobile request is changing; retry after sync completes.");
-        if (File.Exists(dest)) { if (SafeFiles.Read(dest) == json) return; throw new IOException("A different result already exists; preserving it."); }
+        if (File.Exists(dest)) { if (SafeFiles.Read(dest) == json) { PublishSpeakers(); return; } throw new IOException("A different result already exists; preserving it."); }
         SafeFiles.Atomic(dest, json, false);
+        PublishSpeakers();
+        void PublishSpeakers()
+        {
+            var speakers = store.ReadSpeakerDocument(id); if (speakers == null) return;
+            if (store.Get(id) != j || before != SafeFiles.Read(marker) || store.ReadTranscript(id) != transcript) throw new IOException("Recording changed during speaker publication.");
+            var sidecar = Path.Combine(Path.GetDirectoryName(dest)!, SpeakerDocument.FileName); SafeFiles.NoLinks(sidecar);
+            var serialized = speakers.Serialize();
+            if (File.Exists(sidecar))
+            {
+                var previous = ReadSidecar();
+                if (previous == serialized) return;
+                SpeakerDocument.Parse(previous, m.AudioSha256, transcript);
+                if (previous != ReadSidecar()) throw new IOException("Speaker sidecar changed during publication.");
+            }
+            SafeFiles.Atomic(sidecar, serialized);
+            string ReadSidecar()
+            {
+                SafeFiles.NoLinks(sidecar);
+                if (new FileInfo(sidecar).Length > SpeakerDocument.MaximumBytes) throw new InvalidDataException("Speaker sidecar exceeds 8 MiB.");
+                return File.ReadAllText(sidecar, new System.Text.UTF8Encoding(false, true));
+            }
+        }
     }
 }

@@ -11,6 +11,7 @@ func wave() -> Data {
         do { try await run() } catch { try? FileHandle.standardError.write(contentsOf: Data("FAIL: \(error.localizedDescription)\n".utf8)); exit(1) }
     }
     static func run() async throws {
+        if CommandLine.arguments.contains("--speaker-checks") { try speakerChecks(); print("All speaker checks passed"); return }
         if CommandLine.arguments.contains("--library-drag-checks") { try await libraryDragChecks(); print("All library drag checks passed"); return }
         if CommandLine.arguments.contains("--library-hierarchy-checks") { try await libraryHierarchyChecks(); print("All library hierarchy checks passed"); return }
         if CommandLine.arguments.contains("--library-folder-checks") { try await libraryFolderChecks(); print("All library folder checks passed"); return }
@@ -43,6 +44,7 @@ func wave() -> Data {
         try rejects("failed alignment cannot export SRT") { _ = try TranscriptExport.render(failed, title: "녹음", format: "srt") }
         try check(try TranscriptExport.render(failed, title: "녹음", format: "txt").contains("보존한 원문"), "failed alignment preserves text export")
         try transcriptDisplayChecks()
+        try speakerChecks()
         try notesChecks()
         try await libraryFolderChecks()
         try await libraryHierarchyChecks()

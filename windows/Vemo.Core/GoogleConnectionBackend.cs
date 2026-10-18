@@ -320,7 +320,7 @@ public sealed partial class GoogleConnectionService
         var result = await Drive.FileAsync(ensuredResult.Id, ct); GoogleDriveClient.Validate(result, parent, current, "application/json"); Live(job, ct);
         if (result.Size is > 0)
         {
-            var oldBytes = await Drive.JsonAsync(result, ct); if (oldBytes.AsSpan().SequenceEqual(bytes)) { Live(job, ct); return; }
+            var oldBytes = await Drive.JsonAsync(result, ct); if (oldBytes.AsSpan().SequenceEqual(bytes)) { Live(job, ct); await PublishSpeakers(job, parent, current[..current.LastIndexOf('/')], transcript, ct); return; }
             using var previous = GoogleWire.Strict(oldBytes); var p = previous.RootElement;
             GoogleWire.Keys(p, "schema_version", "recording_id", "audio_sha256", "processor_id", "title", "recorded_at", "transcript", "notes_markdown");
             if (p.GetProperty("schema_version").GetInt32() != 1 || p.GetProperty("recording_id").GetString() != mobile.RecordingId || p.GetProperty("audio_sha256").GetString() != mobile.AudioSha256 || p.GetProperty("processor_id").GetString() != store.ProcessorId || p.GetProperty("recorded_at").GetString() != mobile.RecordedAt) throw new GoogleConnectionException("result_conflict");
@@ -335,6 +335,32 @@ public sealed partial class GoogleConnectionService
         await Checked(ct); Live(job, ct); await Drive.UploadAsync(result.Id, bytes, result.ETag ?? "", ct);
         var confirmed = await Drive.FileAsync(result.Id, ct); GoogleDriveClient.Validate(confirmed, parent, current, "application/json");
         if (!(await Drive.JsonAsync(confirmed, ct)).AsSpan().SequenceEqual(bytes)) throw new GoogleConnectionException("upload_mismatch"); Live(job, ct);
+        await PublishSpeakers(job, parent, current[..current.LastIndexOf('/')], transcript, ct);
+    }
+    async Task PublishSpeakers(RecordingJob job, string parent, string directory, string transcript, CancellationToken ct)
+    {
+        var document = store.ReadSpeakerDocument(job.Id); if (document == null) return;
+        var serialized = document.Serialize(); var bytes = Encoding.UTF8.GetBytes(serialized);
+        var path = directory + "/" + SpeakerDocument.FileName;
+        void Current()
+        {
+            Live(job, ct);
+            if (store.ReadTranscript(job.Id) != transcript || store.ReadSpeakerDocument(job.Id)?.Serialize() != serialized) throw new GoogleConnectionException("stale_job");
+        }
+        Current();
+        var ensured = await EnsureJson(parent, path, bytes, ct);
+        var file = await Drive.FileAsync(ensured.Id, ct); GoogleDriveClient.Validate(file, parent, path, "application/json"); Current();
+        if (file.Size is > 0)
+        {
+            var old = await Drive.JsonAsync(file, ct); if (old.AsSpan().SequenceEqual(bytes)) return;
+            try { SpeakerDocument.Parse(new UTF8Encoding(false, true).GetString(old), job.AudioSha256, transcript); }
+            catch (Exception e) when (e is InvalidDataException or ArgumentException) { throw new GoogleConnectionException("result_conflict"); }
+        }
+        else if (journal.Ids.GetValueOrDefault(path) != file.Id) throw new GoogleConnectionException("foreign_empty_file");
+        await Checked(ct); Current();
+        await Drive.UploadAsync(file.Id, bytes, file.ETag ?? "", ct);
+        var confirmed = await Drive.FileAsync(file.Id, ct); GoogleDriveClient.Validate(confirmed, parent, path, "application/json");
+        if (!(await Drive.JsonAsync(confirmed, ct)).AsSpan().SequenceEqual(bytes)) throw new GoogleConnectionException("upload_mismatch"); Current();
     }
     private partial void DisposeCore()
     {

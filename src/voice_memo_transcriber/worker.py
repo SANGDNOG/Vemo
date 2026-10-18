@@ -129,15 +129,22 @@ def notes(request):
     result=run_study_notes(transcript,path)
     return {'notes_protocol':'study_v1','notes':result,'completed_units':None,'total_units':None}
 
+def diarize(request):
+    from .diarization_runtime import run, DiarizationError
+    try: return run(request)
+    except DiarizationError as exc: return {'speaker_error': str(exc)}
+    except Exception: return {'speaker_error': 'diarization_failed'}
+
 def main():
     if len(sys.argv)!=3:return 2
     os.environ.update(HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',HF_DATASETS_OFFLINE='1',TOKENIZERS_PARALLELISM='false')
     # Defense beyond cache flags: no accidental Hub request can leave this process.
     sys.addaudithook(check_network_event)
     try:
-        request=json.loads(Path(sys.argv[1]).read_text());op=request['op']
-        if op not in {'prepare','asr','align','title','notes'}:raise ValueError('unknown_operation')
-        result={'prepare':prepare,'asr':asr,'align':align,'title':title,'notes':notes}[op](request)
+        from .diarization import decode_document
+        request=decode_document(Path(sys.argv[1]).read_bytes());op=request['op']
+        if op not in {'prepare','asr','align','title','notes','diarize'}:raise ValueError('unknown_operation')
+        result={'prepare':prepare,'asr':asr,'align':align,'title':title,'notes':notes,'diarize':diarize}[op](request)
         atomic_json(sys.argv[2],result);return 0
     except Exception as exc:
         if locals().get('op')=='notes':

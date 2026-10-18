@@ -76,6 +76,18 @@ def main():
             dest = output / name
             build_options = ['-p:GoogleInstalledClientJsonPath=' + str(google_client)] if google_client and project == 'Vemo.App' else []
             run('publish-' + name, ['publish', 'windows/' + project, '-c', 'Release', '-r', rid, '--self-contained', 'true', '-o', str(dest), '--nologo', *build_options])
+            if project == 'Vemo.App':
+                helper_dest = dest / 'diarization'
+                run('publish-diarization-' + rid, ['publish', 'windows/Vemo.Diarization', '-c', 'Release', '-r', rid, '--self-contained', 'true', '-o', str(helper_dest), '--nologo'])
+                helper_pe = pe_metadata(helper_dest / 'Vemo.Diarization.exe')
+                expected_helper = '0x8664' if rid == 'win-x64' else '0xaa64'
+                if not helper_pe or helper_pe['machine'] != expected_helper:
+                    raise RuntimeError(f'Unexpected speaker helper architecture: {helper_pe}')
+                (helper_dest / 'MODEL_NOTICES.txt').write_text(
+                    'Optional speaker analysis: sherpa-onnx 1.13.8 (Apache-2.0, k2-fsa); ONNX Runtime (MIT, Microsoft).\n'
+                    'pyannote segmentation-3.0: MIT, Copyright 2022 CNRS; https://huggingface.co/pyannote/segmentation-3.0/blob/main/LICENSE\n'
+                    '3D-Speaker eres2net base zh-cn 16k: Apache-2.0, Alibaba; https://github.com/modelscope/3D-Speaker/blob/main/LICENSE\n'
+                    'Models installed separately through pinned public downloads.\n', encoding='utf-8')
             exe = dest / (project + '.exe')
             pe = pe_metadata(exe)
             expected = '0x8664' if rid == 'win-x64' else '0xaa64'

@@ -10,12 +10,15 @@ from .artifacts import atomic_json,build_publication,valid_receipt,sha256
 from .models import model_status,ModelInventory
 from .model_catalog import DEFAULT_SELECTION,PROFILES,device_capabilities,recommendations,validate_selection
 from .process import ManagedProcess
+from .diarization import decode_document,validate_document,rename_speaker,speaker_count
+from .diarization_io import sources as speaker_sources,read_owned as speaker_read,commit as speaker_commit
+from .diarization_runtime import MESSAGES as SPEAKER_MESSAGES
 from .notes import validate_notes,source_chunks,source_digest
 from .study_notes import ERROR_CODES,safe_diagnostics
 
-JOB_FIELDS=('id','uuid','topic','recording_date','recorded_at','duration_s','status','wait_reason','stage','completed_units','total_units','elapsed_seconds','artifact_path','audio_path','pcm_path','error','title_status','alignment_status','original_title','notes_path','notes_status','notes_error','notes_protocol','deleted_at')
+JOB_FIELDS=('id','uuid','topic','recording_date','recorded_at','duration_s','status','wait_reason','stage','completed_units','total_units','elapsed_seconds','artifact_path','audio_path','pcm_path','error','title_status','alignment_status','original_title','notes_path','notes_status','notes_error','notes_protocol','deleted_at','speakers_path','speakers_status','speakers_error')
 RUNNING={'preparing','transcribing','aligning','titling','noting'}
-RESULT_FIELDS=('model_selection','pcm_hash','frames','duration_s','audio_path','pcm_path','artifact_path','asr_chunks','aligned_chunks','alignment_status','topic','title_status','title_checkpoint','notes_path','notes_status','notes_error','notes_protocol','notes_checkpoint','notes_only','notes_prior_status','publication_id','manifest_path','receipt')
+RESULT_FIELDS=('model_selection','pcm_hash','frames','duration_s','audio_path','pcm_path','artifact_path','asr_chunks','aligned_chunks','alignment_status','topic','title_status','title_checkpoint','notes_path','notes_status','notes_error','notes_protocol','notes_checkpoint','notes_only','notes_prior_status','publication_id','manifest_path','receipt','speakers_path','speakers_status','speakers_error')
 
 def on_ac_power():
     try:
@@ -44,6 +47,8 @@ class Engine:
                 # Legacy checkpoints always used the original pinned profiles.
                 if not job.get('deleted_at') and 'model_selection' not in job and job.get('status') not in {'completed','needs_recording_date'} and (job.get('phase') in {'prepare','asr','align','title','notes'} or job.get('pcm_hash')):
                     job['model_selection']=dict(DEFAULT_SELECTION);self.store.put(job)
+                if job.get('speakers_status') in {'queued','analyzing'}:
+                    job.update(speakers_status='cancelled',speakers_error=None);self.store.put(job)
                 if job.get('deleted_at'):
                     job['queued']=False;self.store.put(job)
                 elif job['phase']=='snapshot' and job['queued'] and job.get('snapshot_request_id'):
@@ -182,6 +187,8 @@ class Engine:
         job['generation']=job.get('generation',0)+1
         job.update(snapshot_request_id=None,snapshot_token_required=True)
     def stop_job(self,job):
+        if job.get('speakers_status') in {'queued','analyzing'}:
+            job.update(speakers_status='cancelled',speakers_error=None)
         if self.active and self.active['job_id']==job['id']:
             active=self.active;active['task'].stop();self.active=None
             job['elapsed_seconds']+=time.monotonic()-self.started.pop(job['id'],time.monotonic())
@@ -283,6 +290,8 @@ class Engine:
         if kind=='import':self.discover([payload['memo']],True);return {'ok':True}
         if kind in {'pause','resume'}:
             self.store.set_meta('paused',kind=='pause')
+            if kind=='pause' and self.active and self.active['op']=='diarize':
+                job=self.store.get(self.active['job_id']);self.stop_job(job);self.save(job)
             if kind=='pause' and self.active and self.active['op']=='notes':
                 active=self.active;job=self.store.get(active['job_id'])
                 if job.get('notes_protocol')=='study_v1':
@@ -303,12 +312,15 @@ class Engine:
             return {'ok':True}
         if kind=='download_models':
             notes_only=payload.get('notes_only',False)
+            speakers_only=payload.get('speakers_only',False)
+            if type(speakers_only) is not bool or speakers_only and notes_only:raise ValueError('invalid_download_scope')
             if type(notes_only) is not bool:raise ValueError('notes_only_must_be_boolean')
             if self.download:return {'ok':False,'error':failure('models_busy','download_active')}
             try:validate_selection(self.selection,self.device)
             except ValueError as exc:return {'ok':False,'error':failure(str(exc))}
             self.store.set_meta('download_model_selection',dict(self.selection))
             self.store.set_meta('download_notes_only',notes_only)
+            self.store.set_meta('download_speakers_only',speakers_only)
             self.store.set_meta('download_requested',True);return {'ok':True}
         if kind in {'enqueue','backfill'}:
             ids=payload['uuids']
@@ -351,6 +363,28 @@ class Engine:
                 self.save(job)
             return {'ok':True}
         if job.get('deleted_at'):raise ValueError('recording_trashed')
+        if kind=='cancel_speakers':
+            if self.active and self.active['job_id']==job['id'] and self.active['op']=='diarize':self.stop_job(job)
+            job.update(speakers_status='cancelled',speakers_error=None)
+            self.save(job);return {'ok':True}
+        if kind in {'analyze_speakers','rename_speaker'}:
+            if not job.get('artifact_path') or not job.get('audio_path'):raise ValueError('transcript_not_ready')
+            if job.get('refresh_requested') or job.get('refresh_state') or job['status'] not in {'completed','needs_recording_date','failed'} or job.get('queued'):
+                raise ValueError('job_busy')
+            if job.get('speakers_status') in {'queued','analyzing'}:raise ValueError('speaker_analysis_busy')
+            if kind=='analyze_speakers':
+                if not job.get('pcm_path'):raise ValueError('transcript_not_ready')
+                count=payload.get('num_speakers')
+                speaker_count(count)
+                # Explicit optional intent. It does not change the transcription queue.
+                job.update(speakers_status='queued',speakers_error=None,speakers_num_speakers=count)
+            else:
+                audio_hash,transcript=speaker_sources(self.root,job['audio_path'],job['artifact_path'])
+                doc=decode_document(speaker_read(self.root,job['speakers_path']))
+                if payload.get('generation')!=doc['generation']:raise ValueError('stale_speaker_generation')
+                doc=rename_speaker(doc,payload.get('speaker_id'),payload.get('name'),audio_hash,transcript['text'])
+                job.update(speakers_path=speaker_commit(self.root,job['artifact_path'],doc),speakers_status='completed',speakers_error=None)
+            self.save(job);return {'ok':True}
         if kind=='refresh_recording':
             self.request_refresh(job);self.save(job);return {'ok':True}
         if kind=='snapshot_ready':
@@ -429,26 +463,30 @@ class Engine:
         if 'model_selection' not in job:job['model_selection']=dict(self.job_selection(job))
         request={'model_selection':dict(job['model_selection']),'op':op,'uuid':job['uuid'],'state_root':str(self.root),'model_root':str(self.model_root),'ffmpeg_path':self.ffmpeg_path,**data}
         req=directory/'request.json';out=directory/'result.json';atomic_json(req,request)
-        env=os.environ.copy();env.update(HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',HF_DATASETS_OFFLINE='1',TOKENIZERS_PARALLELISM='false')
+        env=os.environ.copy();env.update(HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',HF_DATASETS_OFFLINE='1',TOKENIZERS_PARALLELISM='false',OMP_NUM_THREADS='2',OPENBLAS_NUM_THREADS='2',VECLIB_MAXIMUM_THREADS='2',MKL_NUM_THREADS='2')
         with self.lifecycle_lock:
             if self.stopping:return
             task=ManagedProcess([*self.worker_command,str(req),str(out)],timeout=self.worker_timeout,env=env)
             if self.stopping:task.stop();return
             self.active={'job_id':job['id'],'op':op,'task':task,'output':out,'index':data.get('index'),'generation':job.get('generation',0),'pcm_hash':job.get('pcm_hash')}
         self.started[job['id']]=time.monotonic()
+        if op=='diarize':
+            job.update(speakers_status='analyzing',speakers_error=None);self.save(job);return
         job.update(status={'prepare':'preparing','asr':'transcribing','align':'aligning','title':'titling','notes':'noting'}[op],stage={'prepare':'preparing','asr':'transcribing','align':'aligning','title':'titling','notes':'noting'}[op],wait_reason=None,error=None)
         self.save(job)
     def complete_task(self):
         active=self.active
         if active is None or active['task'].poll() is None:return
         self.active=None;job=self.store.get(active['job_id']);op=active['op']
+        if op=='diarize':
+            self.complete_speakers(job,active);return
         if (job.get('deleted_at') or job.get('refresh_requested') or active.get('generation')!=job.get('generation',0)
                 or active.get('pcm_hash')!=job.get('pcm_hash') or job['phase']!={'prepare':'prepare','asr':'asr','align':'align','title':'title','notes':'notes'}[op]):
             self.started.pop(job['id'],None);return
         job['elapsed_seconds']+=time.monotonic()-self.started.pop(job['id'],time.monotonic())
         try:
             if active['task'].proc.returncode!=0:raise ValueError('model_timeout' if active['task'].timed_out else 'worker_failed')
-            result=json.loads(active['output'].read_text())
+            result=decode_document(active['output'].read_bytes())
             if not isinstance(result,dict):raise ValueError('invalid_worker_result')
             self.accept(job,op,result,active['index'])
             job['attempts'].pop(op,None)
@@ -465,6 +503,30 @@ class Engine:
                 if job.get('refresh_previous') is not None:self.refresh_failed(job,error)
                 else:job.update(status='failed',wait_reason=None,queued=False,error=error)
         self.save(job)
+    def complete_speakers(self,job,active):
+        self.started.pop(job['id'],None)
+        if (job.get('deleted_at') or job.get('refresh_requested') or job.get('refresh_state')
+                or job.get('speakers_status')!='analyzing' or active.get('generation')!=job.get('generation',0)
+                or active.get('pcm_hash')!=job.get('pcm_hash')):return
+        try:
+            if active['task'].proc.returncode!=0:raise ValueError('diarization_failed')
+            result=decode_document(speaker_read(self.root,active['output']))
+            if result.get('speaker_error'):
+                code=result['speaker_error']
+                raise ValueError(code if code in SPEAKER_MESSAGES else 'diarization_failed')
+            audio_hash,transcript=speaker_sources(self.root,job['audio_path'],job['artifact_path'])
+            doc=validate_document(result['speakers'],audio_hash,transcript['text'])
+            projection=[{k:s[k] for k in ('start_s','end_s','text')} for s in doc['segments']]
+            original=[{k:s[k] for k in ('start_s','end_s','text')} for s in transcript['segments']]
+            if projection!=original:raise ValueError('diarization_failed')
+            if any(s['end_s']>job['duration_s'] for s in doc['turns']+doc['segments']):raise ValueError('diarization_failed')
+            job.update(speakers_path=speaker_commit(self.root,job['artifact_path'],doc),speakers_status='completed',speakers_error=None)
+        except (OSError,ValueError,TypeError,KeyError,AttributeError):
+            code=locals().get('code','diarization_failed')
+            if code not in SPEAKER_MESSAGES:code='diarization_failed'
+            job.update(speakers_status='failed',speakers_error=failure(code,SPEAKER_MESSAGES[code]))
+        self.save(job)
+
     def accept(self,job,op,result,index):
         if op=='prepare':
             h=result['pcm_hash']
@@ -575,6 +637,7 @@ class Engine:
         digest=__import__('hashlib').sha256(json.dumps(transcript,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
         path=self.root/'artifacts'/job['id']/('transcript-'+digest+'.json')
         if not path.exists():atomic_json(path,transcript)
+        if job.get('artifact_path')!=str(path):job.update(speakers_path=None,speakers_status=None,speakers_error=None)
         job['artifact_path']=str(path)
     def replay(self,job):
         if job.get('deleted_at') or job.get('refresh_requested'):return
@@ -685,6 +748,19 @@ class Engine:
                 else:job.update(status='failed',queued=False,error=failure('pipeline_failed'))
                 with self.store.transaction():self.save(job)
             break
+        if not self.active and not self.download and not paused:
+            for job in self.store.jobs():
+                if job.get('speakers_status')!='queued':continue
+                if (job.get('deleted_at') or job.get('refresh_requested') or job.get('refresh_state') or job.get('queued')
+                        or job['status'] not in {'completed','needs_recording_date','failed'}):
+                    job.update(speakers_status='cancelled');self.save(job);continue
+                if self.store.get_meta('ac_only',True) and not self.power:continue
+                try:
+                    with self.store.transaction():self.launch(job,'diarize',{'audio_path':job['audio_path'],'pcm_path':job['pcm_path'],'artifact_path':job['artifact_path'],'num_speakers':job.get('speakers_num_speakers')})
+                except (OSError,ValueError,TypeError,KeyError):
+                    job.update(speakers_status='failed',speakers_error=failure('diarization_failed',SPEAKER_MESSAGES['diarization_failed']))
+                    with self.store.transaction():self.save(job)
+                break
         self.flush_changed()
     def model_manifest(self,job=None):
         try:manifest=json.loads((self.model_root/'models.json').read_text())
@@ -704,7 +780,9 @@ class Engine:
                         except (ValueError,KeyError):pass
             except OSError:pass
             if task.poll() is not None:
-                if task.proc.returncode!=0:self.emit('model_progress',{'model':'all','downloaded_bytes':0,'total_bytes':None,'state':'failed','error':failure('model_download_failed')})
+                if self.download.get('speakers_only'):
+                    self.emit('model_progress',{'model':'speakers','state':'completed' if task.proc.returncode==0 else 'failed'})
+                elif task.proc.returncode!=0:self.emit('model_progress',{'model':'all','downloaded_bytes':0,'total_bytes':None,'state':'failed','error':failure('model_download_failed')})
                 self.download=None
                 if self.inventory:self.inventory.start()
                 self.models=self.readiness();self.emit('snapshot',self.snapshot())
@@ -718,9 +796,13 @@ class Engine:
                 selected=self.store.get_meta('download_model_selection',dict(DEFAULT_SELECTION))
                 arguments.extend(['--asr-profile',selected['asr'],'--notes-profile',selected['notes']])
                 if self.store.get_meta('download_notes_only',False):arguments.append('--notes-only')
+                speakers_only=self.store.get_meta('download_speakers_only',False)
+                if speakers_only:
+                    arguments=[sys.executable,'-m','voice_memo_transcriber.diarization_models','--model-root',str(self.model_root)]
                 with open(path,'wb') as out:task=ManagedProcess(arguments,timeout=6*3600,stdout=out)
                 if self.stopping:task.stop();return
-                self.download={'task':task,'progress':path,'offset':0}
+                self.download={'task':task,'progress':path,'offset':0,'speakers_only':speakers_only}
+                if speakers_only:self.emit('model_progress',{'model':'speakers','state':'downloading'})
     def request_stop(self):
         # Called by supervisor without touching SQLite, even during blocking disk work.
         with self.lifecycle_lock:
@@ -732,6 +814,8 @@ class Engine:
         if self.closed:return
         self.request_stop()
         if self.active:
-            job=self.store.get(self.active['job_id']);job.update(status='waiting',wait_reason='restart')
+            job=self.store.get(self.active['job_id'])
+            if self.active['op']=='diarize':job.update(speakers_status='cancelled')
+            else:job.update(status='waiting',wait_reason='restart')
             with self.store.transaction():self.store.put(job)
         self.store.close();self.closed=True
