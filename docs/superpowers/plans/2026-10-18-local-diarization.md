@@ -33,3 +33,9 @@ Actual Sherpa output overshot end by16ms(Mac) and29.7ms(Windows). Pinned model r
 Automatic diarization is experimental: a33min lecture produced168clusters in249s; not committed to user job. More than20 automatic clusters is rejected; explicit1-20 count supported. Higher global threshold was rejected because known two-voice fixture collapsed. Exact long-probe peak memory is unknown after Int32 monitoring overflow; >=2.1GiB observed.
 
 Windows0.1.20 build and Android sidecar receipt are tracked in local-validation/diarization/windows-cli-verification. Installed Windows UI path and Android visual confirmation are separate from CLI/API and transfer-integrity tests; do not claim those when unavailable.
+
+## Final checkpoint
+
+Implementation committed bf8fdd4; Mac build36, Windows0.1.20, Android0.1.19(version19) installed. Windows Core437/App128+1skip/Provision24 passed. Android final89tests0fail. Actual installed Windows helper -> conditional Drive sidecar/name update -> Android saved document verified11checks; original result/ZIP8checks pass. Android accepts bounded50ms metadata duration differences with hard3600s cap; observed35.008s PCM versus35s metadata.
+
+Mac UI analyze/rename/restart verified; Windows installed UI and Android visual speaker display remain unverified. Auto quality remains experimental; this is not a full accuracy certification. Worktree clean after feature checkpoint; remote temporary OAuth build input removed and duplicate model download copies cleaned after hash comparison. NAS reviewedrecord/checksum/index verified at /mnt/nas/codex-worklog/records/2026/10/2026-10-18-210018-vemo-asr-drive-speakers.
