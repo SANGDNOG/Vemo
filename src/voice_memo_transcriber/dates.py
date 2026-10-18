@@ -15,8 +15,20 @@ def recording_day(value, original_timezone, fallback='Asia/Seoul'):
     instant = dt.datetime.fromisoformat(value.replace('Z','+00:00'))
     if instant.tzinfo is None or instant.utcoffset() is None:
         raise ValueError('recorded_at requires a timezone')
-    # An explicit native timezone takes priority; otherwise the configured zone.
-    return instant.astimezone(ZoneInfo(original_timezone or fallback)).date().isoformat()
+    # Mobile recordings know their capture offset without necessarily knowing an
+    # IANA location. Preserve that offset rather than inventing a geographical zone.
+    name = original_timezone or fallback
+    if name.startswith(('UTC+', 'UTC-')):
+        match = re.fullmatch(r'UTC([+-])([0-9]{2}):([0-9]{2})', name)
+        if not match: raise ValueError('invalid_fixed_timezone')
+        hours, minutes = int(match[2]), int(match[3])
+        if hours > 14 or minutes >= 60 or (hours == 14 and minutes):
+            raise ValueError('invalid_fixed_timezone')
+        offset = (hours * 60 + minutes) * (-1 if match[1] == '-' else 1)
+        zone = dt.timezone(dt.timedelta(minutes=offset))
+    else:
+        zone = ZoneInfo(name)
+    return instant.astimezone(zone).date().isoformat()
 
 def apple_epoch_iso(seconds):
     return (dt.datetime(2001,1,1,tzinfo=dt.timezone.utc)+dt.timedelta(seconds=float(seconds))).isoformat()

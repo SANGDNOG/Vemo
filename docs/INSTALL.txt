@@ -1,4 +1,4 @@
-Vemo — Apple Silicon preview.5 (0.2.0 build 24)
+Vemo — Apple Silicon preview.6 (0.2.1 build 36)
 
 1. Drag Vemo.app into Applications.
 2. Open Vemo. This preview is not signed with an Apple Developer ID or notarized.

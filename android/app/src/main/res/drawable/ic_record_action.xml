@@ -1,0 +1,8 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="36dp" android:height="36dp" android:viewportWidth="36" android:viewportHeight="36">
+    <path android:fillColor="@color/vemo_design_surface"
+        android:strokeColor="@color/vemo_design_destructive" android:strokeWidth="0.8"
+        android:pathData="M18,1A17,17 0,1 1,18 35A17,17 0,1 1,18 1" />
+    <path android:fillColor="@color/vemo_design_destructive"
+        android:pathData="M18,7A11,11 0,1 1,18 29A11,11 0,1 1,18 7" />
+</vector>

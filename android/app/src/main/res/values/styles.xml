@@ -1,0 +1,12 @@
+<resources>
+<style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+    <item name="android:fontFamily">sans</item>
+    <item name="android:windowBackground">@color/vemo_design_surface</item>
+    <item name="android:colorControlHighlight">@color/vemo_design_ripple</item>
+    <item name="android:colorAccent">@color/vemo_design_accent</item>
+    <item name="android:windowLightStatusBar">true</item>
+    <item name="android:statusBarColor">@color/vemo_design_surface</item>
+    <item name="android:navigationBarColor">@color/vemo_design_surface</item>
+    <item name="android:windowActionModeOverlay">true</item>
+</style>
+</resources>

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <dimen name="vemo_design_touch_min">48dp</dimen>
+  <dimen name="vemo_design_folder_pill">32dp</dimen>
+  <dimen name="vemo_design_row">54dp</dimen>
+  <dimen name="vemo_design_sheet_radius">24dp</dimen>
+  <dimen name="vemo_design_button_radius">16dp</dimen>
+</resources>

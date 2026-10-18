@@ -61,8 +61,21 @@ struct RecordingBulkConfirmation {
     @Published var notesModelReady = false
     @Published var notesModelState = "verifying"
     @Published var notesModelStatus = "노트 모델 상태 확인 중"
+    @Published var availableModels: [SelectableModel] = []
+    @Published var selectedASRModel = "asr-qwen3-1.7b"
+    @Published var selectedNotesModel = "notes-qwen3.5-27b"
+    @Published var canChangeModels = false
+    @Published var modelChangeMessage: String?
+    @Published var modelDeviceDescription = "기기 성능 확인 중"
+    @Published var recommendedASR: String?
+    @Published var recommendedNotes: String?
     @Published var paused = false
     @Published var transcript: Transcript?
+    @Published var speakers: SpeakerDocument?
+    @Published var editingSpeaker: String?
+    @Published var speakerDraft = ""
+    @Published var speakerModelState = ""
+    @Published var speakerCount = 0
     @Published var notes: RecordingNotes?
     @Published var notesReadError: String?
     @Published var detailMode = "transcript"
@@ -99,6 +112,16 @@ struct RecordingBulkConfirmation {
     private var player: AVAudioPlayer?
     private var started = false
     private lazy var imports = ImportBroker(root:stateRoot)
+    private lazy var mobileSync = MobileSyncBroker(root:stateRoot)
+    lazy var googleConnection = GoogleConnectionModel(root: stateRoot)
+    private var googleSyncTask: Task<Void, Never>?
+    @Published var mobileSyncFolder = ""
+    @Published var mobileSyncStatus = "연결하지 않음"
+    @Published var mobileSyncBusy = false
+    private var mobileSyncPanel: NSOpenPanel?
+    private var mobileSyncTask: Task<Void, Never>?
+    private var mobileSyncLoaded = false
+    private var mobileResultKeys: Set<String> = []
     private lazy var source = SourceBroker(root:stateRoot,adapter:AppleVoiceMemosAdapter(
         recordingsRoot:FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings"),
         editingRisk:{ !NSRunningApplication.runningApplications(withBundleIdentifier:"com.apple.VoiceMemos").isEmpty }))
@@ -319,7 +342,7 @@ struct RecordingBulkConfirmation {
         guard !DemoContent.enabled else { return }
         let request = WireCommand(kind,payload)
         if ["snapshot_ready","publish_ack"].contains(kind) { internalBrokerReplies.insert(request.request_id) }
-        if ["trash_recording","purge_recording","retitle","generate_notes","set_recording_date"].contains(kind), let id = payload["job_id"]?.string { pendingRecordingCommands[request.request_id] = id; cancelObsoleteExport() }
+        if ["trash_recording","purge_recording","retitle","generate_notes","set_recording_date","analyze_speakers","cancel_speakers","rename_speaker"].contains(kind), let id = payload["job_id"]?.string { pendingRecordingCommands[request.request_id] = id; cancelObsoleteExport() }
         Task {
             do { try await sendRecordingCommand(request) }
             catch { internalBrokerReplies.remove(request.request_id); pendingRecordingCommands.removeValue(forKey:request.request_id); problem = error.localizedDescription }
@@ -381,7 +404,9 @@ struct RecordingBulkConfirmation {
                 }
             case "engine_status": updateEngine(event.payload["engine_status"]?.object ?? event.payload)
             case "model_progress":
-                if event.payload["model"]?.string == "notes" {
+                if event.payload["model"]?.string == "speakers" {
+                    speakerModelState = event.payload["state"]?.string ?? ""
+                } else if event.payload["model"]?.string == "notes" {
                     notesModelState = event.payload["state"]?.string ?? notesModelState
                     notesModelStatus = ModelProgress.description(event.payload)
                 } else { modelStatus = ModelProgress.description(event.payload) }
@@ -430,6 +455,26 @@ struct RecordingBulkConfirmation {
         } catch { problem = "엔진 상태를 해석하지 못했습니다: \(error.localizedDescription)" }
     }
     private func updateEngine(_ status: [String:JSONValue]) {
+        if let catalog = status["model_catalog"], let decoded = try? catalog.decoded([SelectableModel].self) { availableModels = decoded }
+        if let selection = status["model_selection"]?.object {
+            selectedASRModel = selection["asr"]?.string ?? selectedASRModel
+            selectedNotesModel = selection["notes"]?.string ?? selectedNotesModel
+            canChangeModels = selection["can_change"]?.bool == true
+            switch selection["disabled_reason"]?.string {
+            case "processing": modelChangeMessage = "진행 중인 녹음 처리를 마친 뒤 모델을 바꿀 수 있습니다."
+            case "download_active": modelChangeMessage = "다운로드를 마친 뒤 모델을 바꿀 수 있습니다."
+            case .some: modelChangeMessage = "현재 모델 설정을 변경할 수 없습니다."
+            case .none: modelChangeMessage = nil
+            }
+        }
+        if let recommendation = status["model_recommendations"]?.object {
+            recommendedASR = recommendation["asr"]?.string
+            recommendedNotes = recommendation["notes"]?.string
+            if let device = recommendation["device"]?.object {
+                let memory = device["ram_bytes"]?.numeric.map { "\(Int(($0 / 1_073_741_824).rounded())) GB" } ?? "확인 불가"
+                modelDeviceDescription = device["unified_memory"]?.bool == true ? "Apple Silicon · 통합 메모리 \(memory)" : "메모리 \(memory)"
+            }
+        }
         modelsReady = status["models_ready"]?.bool ?? modelsReady; paused = status["paused"]?.bool ?? paused
         let states = status["model_status"]?.object ?? [:]
         if modelsReady { modelStatus = "전사 · 정렬 · 제목 모델 준비됨" }
@@ -446,6 +491,10 @@ struct RecordingBulkConfirmation {
         }
     }
     func downloadNotesModel() { command("download_models",["notes_only":.bool(true)]) }
+    func applyModelSelection(asr: String, notes: String) {
+        guard canChangeModels else { return }
+        command("set_models", ["asr": .string(asr), "notes": .string(notes)])
+    }
     private func readTranscript(_ path: String) async throws -> Transcript {
         let root = stateRoot
         return try await Task.detached { let url = try Validation.owned(path, root: root); let data = try Data(contentsOf: url); return try JSONDecoder().decode(Transcript.self, from: data) }.value
@@ -472,10 +521,11 @@ struct RecordingBulkConfirmation {
         guard let job = selected else { transcript = nil; notes = nil; quoteRow = nil; focusedQuote = nil; return }; transcript = DemoContent.transcript(for:job.id); notes = DemoContent.notes(for:job.id); quoteRow = nil; focusedQuote = nil; topic = job.topic ?? ""; dateInput = job.recording_date ?? ""; currentTime = 0; audioDuration = 0
     }
     func loadSelection() async {
-        if DemoContent.enabled { loadDemoSelection(); return }
         let token = UUID(); loadID = token
-        guard let job = selected, job.deleted_at == nil else { player?.stop(); player = nil; loadedAudioKey = nil; loadedSelection = nil; transcript = nil; notes = nil; notesReadError = nil; playing = false; return }
+        if DemoContent.enabled { speakers = nil; editingSpeaker = nil; loadDemoSelection(); return }
+        guard let job = selected, job.deleted_at == nil else { speakers = nil; editingSpeaker = nil; player?.stop(); player = nil; loadedAudioKey = nil; loadedSelection = nil; transcript = nil; notes = nil; notesReadError = nil; playing = false; return }
         if loadedSelection != job.id {
+            speakers = nil; editingSpeaker = nil
             player?.stop(); player = nil; loadedAudioKey = nil; playing = false; currentTime = 0; audioDuration = 0; transcript = nil; notes = nil; notesReadError = nil; quoteRow = nil; focusedQuote = nil
             topic = job.topic ?? ""; dateInput = job.recording_date ?? ""; loadedSelection = job.id
         }
@@ -483,6 +533,13 @@ struct RecordingBulkConfirmation {
             do { let value = try await readTranscript(path); guard loadID == token else { return }; transcript = value }
             catch { guard loadID == token else { return }; transcript = nil; notes = nil; problem = error.localizedDescription }
         } else { transcript = nil; notes = nil; quoteRow = nil; focusedQuote = nil }
+        if let transcript {
+            let root = stateRoot
+            let value = await Task.detached { try? SpeakerDocument.load(job: job, root: root, transcript: transcript) }.value
+            guard loadID == token, selected?.id == job.id else { return }
+            if value == nil || speakers?.generation != value?.generation { editingSpeaker = nil }
+            speakers = value
+        } else { speakers = nil; editingSpeaker = nil }
         if let path = job.notes_path, let transcript {
             do { let value = try await readNotes(path,text:transcript.text); guard loadID == token else { return }; notes = value; notesReadError = nil }
             catch { guard loadID == token else { return }; notes = nil; notesReadError = error.localizedDescription }
@@ -495,10 +552,18 @@ struct RecordingBulkConfirmation {
         }
     }
     func togglePlayback() { guard let player else { return }; if player.isPlaying { player.pause() } else { player.play() }; playing = player.isPlaying }
+    func analyzeSpeakers(_ job: Job) {
+        processingCommand("analyze_speakers", ["job_id": .string(job.id), "num_speakers": speakerCount == 0 ? .null : .integer(Int64(speakerCount))])
+    }
+    func cancelSpeakers(_ job: Job) { command("cancel_speakers", ["job_id": .string(job.id)]) }
+    func renameSpeaker(_ job: Job, id: String, name: String, generation: String) {
+        command("rename_speaker", ["job_id": .string(job.id), "speaker_id": .string(id), "name": .string(name), "generation": .string(generation)])
+    }
     func seek(_ value: Double) { player?.currentTime = max(0, min(value, audioDuration)); currentTime = player?.currentTime ?? 0 }
     private func tick() { currentTime = player?.currentTime ?? currentTime; playing = player?.isPlaying ?? false
         ticks += 1
         if ticks % 5 == 0 && connected { scanSources() }
+        if ticks % 30 == 0 && connected { checkMobileSync(); checkGoogleSync() }
         if ticks % 60 == 0 { scheduleAutomaticOutputs(reconcile:true) }
     }
     func setPolicy(_ value: Bool) { UserDefaults.standard.set(value,forKey:"acOnly"); if connected { command("set_policy",["ac_only":.bool(value)]) } }
@@ -654,6 +719,7 @@ struct RecordingBulkConfirmation {
         cancelObsoleteExport()
         guard !DemoContent.enabled, connected, !zipExportClosing else { return }
         requestMissingNotes()
+        if !mobileSyncLoaded || reconcile { checkMobileSync(); checkGoogleSync() }
         guard autoZIPEnabled else { return }
         checkRecordingZIPs(manual:false,reconcile:reconcile)
     }
@@ -746,9 +812,118 @@ struct RecordingBulkConfirmation {
     }
     func flushZIPExport() async {
         zipExportClosing = true
+        googleSyncTask?.cancel()
+        await googleConnection.shutdown()
+        await googleSyncTask?.value
+        mobileSyncTask?.cancel()
+        await mobileSyncTask?.value
         if zipExportBusy { zipExportProgress = "종료 대기 · ZIP 내보내기를 마치는 중" }
         await automaticNotesTask?.value
         await zipExportTask?.value
+    }
+    func checkGoogleSync() {
+        guard !DemoContent.enabled, connected, googleSyncTask == nil, !zipExportClosing else { return }
+        googleSyncTask = Task { [self] in
+            defer { googleSyncTask = nil }
+            await googleConnection.restoreIfNeeded()
+            guard !Task.isCancelled, !zipExportClosing else { return }
+            // Withhold any job whose delete/restore/refresh command is still pending.
+            if await googleConnection.synchronize(imports: imports, jobs: { [weak self] in
+                guard let self, !self.zipExportClosing else { return [] }
+                return self.jobs.filter { !self.recordingCommandPending($0.id) }
+            }), !Task.isCancelled {
+                await deliverPendingImports()
+            }
+        }
+    }
+    func chooseMobileSyncFolder() {
+        guard !DemoContent.enabled, !mobileSyncBusy, !zipExportClosing else { return }
+        if let panel = mobileSyncPanel { panel.makeKeyAndOrderFront(nil); return }
+        let panel = NSOpenPanel()
+        panel.title = "모바일 녹음 동기화 폴더"
+        panel.prompt = "연결"
+        panel.canChooseDirectories = true; panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false; panel.canCreateDirectories = true
+        mobileSyncPanel = panel
+        panel.begin { [weak self, weak panel] response in
+            Task { @MainActor in
+                guard let self, let panel, self.mobileSyncPanel === panel else { return }
+                self.mobileSyncPanel = nil
+                guard response == .OK, let url = panel.url else { return }
+                self.mobileSyncBusy = true
+                self.mobileSyncTask = Task { [self] in
+                    defer { self.mobileSyncBusy = false; self.mobileSyncTask = nil }
+                    do {
+                        for value in [self.inputFolder, self.outputFolder, self.zipExportFolder] where !value.isEmpty {
+                            try FolderConnection.validate(input: URL(fileURLWithPath: value), output: url)
+                        }
+                        let config = try await self.mobileSync.register(syncRoot: url, displayName: Host.current().localizedName ?? "Vemo Mac")
+                        self.mobileSyncFolder = config.syncRoot.path; self.mobileSyncLoaded = true
+                        self.mobileResultKeys.removeAll()
+                        self.mobileSyncStatus = "연결됨 · 클라우드 앱에서 이 폴더의 오프라인 사용을 켜세요."
+                    } catch { self.mobileSyncStatus = (error as? BrokerFailure)?.message ?? "폴더 연결을 완료하지 못했습니다." }
+                }
+            }
+        }
+    }
+    func disconnectMobileSync() {
+        guard !mobileSyncBusy, !zipExportClosing else { return }
+        mobileSyncBusy = true
+        mobileSyncTask = Task { [self] in
+            defer { mobileSyncBusy = false; mobileSyncTask = nil }
+            do {
+                try await mobileSync.disconnect()
+                mobileSyncFolder = ""; mobileResultKeys.removeAll(); mobileSyncStatus = "연결 해제됨 · 원본과 클라우드 파일은 유지됩니다."
+            } catch { mobileSyncStatus = "연결을 해제하지 못했습니다. 다시 시도하세요." }
+        }
+    }
+    func checkMobileSync() {
+        guard !DemoContent.enabled, connected, !mobileSyncBusy, !zipExportClosing else { return }
+        mobileSyncBusy = true
+        mobileSyncTask = Task { [self] in
+            defer { mobileSyncBusy = false; mobileSyncTask = nil }
+            do {
+                mobileSyncLoaded = true
+                guard let config = try await mobileSync.configuration() else { return }
+                mobileSyncFolder = config.syncRoot.path
+                let report = try await mobileSync.scan(importBroker: imports)
+                try Task.checkCancellation()
+                await deliverPendingImports()
+                let mappings = try await mobileSync.mappings()
+                var saved = 0
+                var publicationFailures: [String] = []
+                for mapping in mappings where !mapping.suppressed {
+                    try Task.checkCancellation()
+                    guard let job = jobs.first(where: { $0.uuid == mapping.memoUUID }) else { continue }
+                    if !mapping.delivered { try await mobileSync.bindJob(memoUUID: job.uuid, jobID: job.id) }
+                    guard job.deleted_at == nil, job.purge_pending != true, !recordingCommandPending(job.id),
+                          job.status == "completed", job.notes_status == "completed" else { continue }
+                    let key = AutomaticRecordingPolicy.zipKey(job, destination: config.syncRoot.path, libraryRevision: 0)
+                    // A provider or user can remove the remote-facing file during
+                    // this session. Reconcile missing files even after a prior save.
+                    let resultURL = config.syncRoot.appendingPathComponent("results")
+                        .appendingPathComponent(mapping.recordingID)
+                        .appendingPathComponent(mapping.audioSHA256)
+                        .appendingPathComponent("result.json")
+                    guard !mobileResultKeys.contains(key) || !FileManager.default.fileExists(atPath: resultURL.path) else { continue }
+                    do {
+                        _ = try await mobileSync.publish(job: job)
+                        mobileResultKeys.insert(key); saved += 1
+                    } catch is CancellationError { throw CancellationError() }
+                    catch { publicationFailures.append((error as? BrokerFailure)?.message ?? "모바일 결과 저장을 다시 시도합니다.") }
+                }
+                if let failure = publicationFailures.first {
+                    mobileSyncStatus = "결과 저장 \(saved)개 · 확인 필요 \(publicationFailures.count)개 · \(failure)"
+                } else if let issue = report.issues.first {
+                    mobileSyncStatus = "확인 필요 \(report.issues.count)개 · \(issue.message)"
+                } else if saved > 0 {
+                    mobileSyncStatus = "결과 \(saved)개를 로컬 폴더에 저장했습니다. 업로드는 클라우드 앱이 진행합니다."
+                } else {
+                    mobileSyncStatus = "연결됨 · 완료된 녹음과 결과를 30초마다 확인합니다."
+                }
+            } catch is CancellationError { }
+            catch { mobileSyncStatus = (error as? BrokerFailure)?.message ?? "모바일 동기화 폴더를 확인하지 못했습니다." }
+        }
     }
     private func updateZIPProgress(_ message: String) {
         zipExportProgress = (zipExportClosing ? "종료 대기 · " : "") + message
@@ -915,7 +1090,7 @@ enum AutomaticRecordingPolicy {
     }
     static func notesKey(_ job: Job) -> String { key([job.id,job.artifact_path]) }
     static func zipKey(_ job: Job, destination: String, libraryRevision: Int = 0) -> String {
-        key([destination,job.id,job.title,job.recording_date,job.audio_path,job.artifact_path,job.notes_path,String(libraryRevision),job.status,job.notes_status,job.deleted_at])
+        key([destination,job.id,job.title,job.recording_date,job.audio_path,job.artifact_path,job.notes_path,job.speakers_path,String(libraryRevision),job.status,job.notes_status,job.deleted_at])
     }
     private static func key(_ values: [String?]) -> String {
         String(decoding:(try? JSONEncoder().encode(values)) ?? Data(),as:UTF8.self)

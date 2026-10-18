@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <color name="vemo_design_canvas">#F6F5F8</color>
+  <color name="vemo_design_surface">#FFFFFF</color>
+  <color name="vemo_design_sidebar">#F7F7FA</color>
+  <color name="vemo_design_divider">#E8E8ED</color>
+  <color name="vemo_design_text">#202126</color>
+  <color name="vemo_design_secondary">#6B6D78</color>
+  <color name="vemo_design_accent">#6D5BB5</color>
+  <color name="vemo_design_selection">#F0ECFA</color>
+  <color name="vemo_design_destructive">#B5444D</color>
+  <color name="vemo_design_destructivesurface">#FBEFF0</color>
+  <color name="vemo_design_ripple">#226D5BB5</color>
+</resources>

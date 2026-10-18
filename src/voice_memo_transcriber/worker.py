@@ -4,6 +4,7 @@ from pathlib import Path
 from .artifacts import atomic_json,sync_dir
 from .media import stable_copy,pcm_identity,validate_owned
 from .titles import token_chunks
+from .model_catalog import DEFAULT_SELECTION,profile_storage
 
 def check_network_event(event,args):
     if event in {'socket.connect','socket.connect_ex','socket.getaddrinfo','socket.sendto'}:
@@ -29,7 +30,7 @@ def prepare(request):
     return {'pcm_hash':h,'duration_s':duration,'frames':frames,'audio_path':str(audio),'pcm_path':str(pcm)}
 
 def local_model(request,name):
-    path=Path(request['model_root']).resolve()/name
+    path=Path(request['model_root']).resolve()/profile_storage(request.get('model_selection') or DEFAULT_SELECTION,name)
     if not path.is_dir() or path.is_symlink() or not (path/'config.json').is_file() or not list(path.glob('*.safetensors')):
         raise ValueError('local_model_missing')
     return str(path)
@@ -128,15 +129,22 @@ def notes(request):
     result=run_study_notes(transcript,path)
     return {'notes_protocol':'study_v1','notes':result,'completed_units':None,'total_units':None}
 
+def diarize(request):
+    from .diarization_runtime import run, DiarizationError
+    try: return run(request)
+    except DiarizationError as exc: return {'speaker_error': str(exc)}
+    except Exception: return {'speaker_error': 'diarization_failed'}
+
 def main():
     if len(sys.argv)!=3:return 2
     os.environ.update(HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',HF_DATASETS_OFFLINE='1',TOKENIZERS_PARALLELISM='false')
     # Defense beyond cache flags: no accidental Hub request can leave this process.
     sys.addaudithook(check_network_event)
     try:
-        request=json.loads(Path(sys.argv[1]).read_text());op=request['op']
-        if op not in {'prepare','asr','align','title','notes'}:raise ValueError('unknown_operation')
-        result={'prepare':prepare,'asr':asr,'align':align,'title':title,'notes':notes}[op](request)
+        from .diarization import decode_document
+        request=decode_document(Path(sys.argv[1]).read_bytes());op=request['op']
+        if op not in {'prepare','asr','align','title','notes','diarize'}:raise ValueError('unknown_operation')
+        result={'prepare':prepare,'asr':asr,'align':align,'title':title,'notes':notes,'diarize':diarize}[op](request)
         atomic_json(sys.argv[2],result);return 0
     except Exception as exc:
         if locals().get('op')=='notes':

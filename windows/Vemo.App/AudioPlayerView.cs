@@ -1,0 +1,89 @@
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Layout;
+using Avalonia.Media;
+using Avalonia.Threading;
+
+namespace Vemo.App;
+
+public sealed class AudioPlayerView : UserControl, IDisposable
+{
+    readonly AudioPlayback playback = new();
+    static readonly Geometry playGeometry = Geometry.Parse("M8 4l12 8-12 8z"), pauseGeometry = Geometry.Parse("M8 5v14 M16 5v14");
+    readonly Avalonia.Controls.Shapes.Path playbackIcon = new() { Data = playGeometry, Stroke = NativeWhite.Secondary, StrokeThickness = 1.6, StrokeLineCap = PenLineCap.Round, IsHitTestVisible = false };
+    readonly Button play = new() { Width = 32, Height = 32, MinWidth = 32, MinHeight = 0, Padding = new Thickness(0), HorizontalContentAlignment = HorizontalAlignment.Center, VerticalContentAlignment = VerticalAlignment.Center };
+    readonly Slider seek = new() { Minimum = 0, Maximum = 1, MinWidth = 60, Height = 32, MinHeight = 0, VerticalAlignment = VerticalAlignment.Center, Foreground = Brush.Parse("#9C8BCB") };
+    readonly TextBlock elapsed = new() { Text = "0:00", VerticalAlignment = VerticalAlignment.Center, FontSize = 10, Foreground = NativeWhite.Secondary };
+    readonly TextBlock duration = new() { Text = "0:00", VerticalAlignment = VerticalAlignment.Center, FontSize = 10, Foreground = NativeWhite.Secondary };
+    readonly TextBlock error = new() { IsVisible = false, TextWrapping = TextWrapping.Wrap, FontSize = 12, Foreground = NativeWhite.Danger };
+    readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromMilliseconds(200) };
+    bool updating, disposed;
+    string? source;
+
+    public AudioPlayerView()
+    {
+        play.Classes.Add("quiet");
+        var iconCanvas = new Canvas { Width = 24, Height = 24, IsHitTestVisible = false };
+        iconCanvas.Children.Add(playbackIcon);
+        play.Content = new Viewbox { Width = 15, Height = 15, Stretch = Stretch.Uniform, Child = iconCanvas, IsHitTestVisible = false };
+        // Keep Fluent's keyboard/pointer behavior with prototype-sized track and thumb.
+        seek.Resources["SliderHorizontalThumbWidth"] = 10d;
+        seek.Resources["SliderHorizontalThumbHeight"] = 10d;
+        seek.Resources["SliderThumbCornerRadius"] = new CornerRadius(5);
+        seek.Resources["SliderTrackThemeHeight"] = 3d;
+        seek.Background = NativeWhite.Divider;
+        foreach (var state in new[] { "", "PointerOver", "Pressed" })
+        {
+            seek.Resources["SliderThumbBackground" + state] = seek.Foreground;
+            seek.Resources["SliderTrackValueFill" + state] = seek.Foreground;
+        }
+        NativeWhite.Label(play, "오디오 재생"); NativeWhite.Label(seek, "오디오 재생 위치", "방향키로 재생 위치 이동");
+        var row = new Grid { ColumnDefinitions = new("Auto,Auto,*,Auto"), ColumnSpacing = 9 };
+        row.Children.Add(play); Grid.SetColumn(elapsed, 1); row.Children.Add(elapsed);
+        Grid.SetColumn(seek, 2); row.Children.Add(seek); Grid.SetColumn(duration, 3); row.Children.Add(duration);
+        var body = new StackPanel { Spacing = 5 }; body.Children.Add(row); var errorScroll = new ScrollViewer { Content = error, MaxHeight = 32, IsVisible = false }; error.PropertyChanged += (_, e) => { if (e.Property == IsVisibleProperty) errorScroll.IsVisible = error.IsVisible; }; body.Children.Add(errorScroll);
+        Content = new Border { BorderBrush = NativeWhite.Divider, BorderThickness = new Thickness(0, 1), Padding = new Thickness(1, 6, 9, 6), Child = body };
+        play.Click += (_, _) => { if (playback.IsPlaying) playback.Pause(); else playback.Play(); Update(); };
+        seek.ValueChanged += (_, _) => { if (!updating) { playback.Seek(TimeSpan.FromSeconds(seek.Value)); Update(); } };
+        timer.Tick += (_, _) => Update();
+        AttachedToVisualTree += (_, _) => { if (!disposed) timer.Start(); };
+        DetachedFromVisualTree += (_, _) => { timer.Stop(); Stop(); };
+        Update();
+    }
+    public void SetSource(string? path)
+    {
+        if (disposed) return;
+        // Library refreshes may reapply the selected owned path while it is playing.
+        if (source == path) return;
+        source = path; playback.SetSource(path); Update();
+    }
+    public void Seek(double seconds)
+    {
+        if (disposed || !double.IsFinite(seconds) || seconds < 0) return;
+        playback.Seek(TimeSpan.FromSeconds(seconds)); Update();
+    }
+    public void Stop() { playback.Stop(); Update(); }
+    void Update()
+    {
+        playback.Refresh();
+        updating = true;
+        try
+        {
+            seek.Maximum = Math.Max(0.001, playback.Duration.TotalSeconds);
+            seek.Value = playback.Position.TotalSeconds;
+            elapsed.Text = Format(playback.Position); duration.Text = Format(playback.Duration);
+            playbackIcon.Data = playback.IsPlaying ? pauseGeometry : playGeometry;
+            NativeWhite.Label(play, playback.IsPlaying ? "오디오 일시정지" : "오디오 재생");
+            play.IsEnabled = seek.IsEnabled = !disposed && playback.HasSource;
+            error.Text = playback.Error; error.IsVisible = playback.Error != null;
+        }
+        catch (Exception e) { playback.Stop(); error.Text = "오디오 재생 실패: " + e.Message; error.IsVisible = true; play.IsEnabled = seek.IsEnabled = false; }
+        finally { updating = false; }
+    }
+    static string Format(TimeSpan time) => time.TotalHours >= 1 ? time.ToString(@"h\:mm\:ss") : $"{(int)time.TotalMinutes}:{time.Seconds:00}";
+    public void Dispose()
+    {
+        if (disposed) return;
+        disposed = true; timer.Stop(); playback.Dispose(); source = null; Update();
+    }
+}
