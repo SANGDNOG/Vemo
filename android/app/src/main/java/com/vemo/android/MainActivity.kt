@@ -41,7 +41,7 @@ class MainActivity : Activity() {
     private var entries: LinearLayout? = null
     private var search: EditText? = null
     private var recordingAction: Button? = null
-    private var syncAction: Button? = null
+    private var syncAction: ImageButton? = null
     private var libraryError: String? = null
     private var interactionFrozen = false
     private var refreshPending = false
@@ -198,8 +198,10 @@ class MainActivity : Activity() {
     }
     private fun updateSyncAction() {
         syncAction?.apply {
-            text = if (vemo().syncing) "동기화 중…" else "녹음 업로드 / 결과 확인"
+            contentDescription = if (vemo().syncing) "동기화 중" else "수동 동기화"
+            tooltipText = contentDescription
             isEnabled = !vemo().gate.busy()
+            alpha = if (isEnabled) 1f else 0.4f
         }
     }
     private fun render() {
@@ -412,13 +414,23 @@ class MainActivity : Activity() {
         }
         if (snapshot != null && snapshot.folders.isEmpty()) navigation.addView(text("폴더를 만들어 녹음을 정리하세요.", 14f, muted))
         val list = column()
-        list.addView(text(if (selectedFolder == null && !unfiled) "최근 녹음" else "폴더의 녹음", 14f, muted, true))
+        list.addView(row().apply {
+            addView(text(if (selectedFolder == null && !unfiled) "최근 녹음" else "폴더의 녹음", 14f, muted, true), LinearLayout.LayoutParams(0, -2, 1f))
+            if (vemo().cloudConfigured()) {
+                syncAction = ImageButton(this@MainActivity).apply {
+                    setImageResource(R.drawable.ic_refresh)
+                    imageTintList = android.content.res.ColorStateList.valueOf(purple)
+                    background = android.graphics.drawable.RippleDrawable(ripple, surface(Color.TRANSPARENT), null)
+                    setPadding(dp(12), dp(12), dp(12), dp(12))
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                    stateListAnimator = null; elevation = 0f
+                    setOnClickListener { vemo().sync(true) }
+                }
+                addView(syncAction, LinearLayout.LayoutParams(dp(48), dp(48)))
+                updateSyncAction()
+            }
+        })
         entries = column(); list.addView(entries)
-        if (vemo().cloudConfigured()) {
-            syncAction = button("녹음 업로드 / 결과 확인") { vemo().sync(true) }
-            list.addView(syncAction)
-            updateSyncAction()
-        }
         if (wideLibrary()) {
             body.addView(navigation, LinearLayout.LayoutParams(dp(240), -2).apply { marginEnd = dp(24) })
             body.addView(list, LinearLayout.LayoutParams(0, -2, 1f))
