@@ -27,6 +27,7 @@ final class GoogleConnectionModel: ObservableObject {
     private var panel: NSOpenPanel?
     private var cancellation: Task<Void, Never>?
     private var restored = false
+    private var nextRestoreAttemptAt: Date?
     private var closing = false
     private var hasAuthorization = false
     private let displayName = "Vemo 테스트"
@@ -73,6 +74,7 @@ final class GoogleConnectionModel: ObservableObject {
 
     func connect() {
         guard !isBusy, !closing, !needsKeychainRecovery else { return }
+        stopAutomaticRestore()
         start { [self] in
             do {
                 try loadLocalConfiguration()
@@ -100,6 +102,7 @@ final class GoogleConnectionModel: ObservableObject {
     /// User-button-only path; startup restore and sync never call this method.
     func recoverKeychainAccess() {
         guard needsKeychainRecovery, !isBusy, !closing else { return }
+        stopAutomaticRestore()
         start { [self] in
             do {
                 status = "macOS에서 기존 Keychain 항목 접근을 승인하세요. Google 재동의와는 별개입니다."
@@ -143,6 +146,7 @@ final class GoogleConnectionModel: ObservableObject {
 
     func disconnect() {
         guard !isBusy, !closing else { return }
+        stopAutomaticRestore()
         start { [self] in
             do {
                 try loadLocalConfiguration()
@@ -157,6 +161,7 @@ final class GoogleConnectionModel: ObservableObject {
 
     func cancel() {
         guard isBusy else { return }
+        stopAutomaticRestore()
         if let panel { panel.cancel(nil); return }
         operation?.cancel()
         let current = oauth
@@ -165,9 +170,11 @@ final class GoogleConnectionModel: ObservableObject {
         status = "취소 중 · 완료된 로컬 저장과 원격 작업은 보존됩니다."
     }
 
-    func restoreIfNeeded() async {
+    func restoreIfNeeded(now: Date = Date()) async {
         guard !restored, !isBusy, !closing else { return }
+        if let nextRestoreAttemptAt, now < nextRestoreAttemptAt { return }
         restored = true
+        nextRestoreAttemptAt = nil
         start { [self] in
             do {
                 try loadLocalConfiguration()
@@ -184,10 +191,37 @@ final class GoogleConnectionModel: ObservableObject {
                 try Task.checkCancellation()
                 isConnected = true
                 status = "Google 연결 복원됨 · 기존 계정과 전용 폴더를 확인했습니다."
-            } catch { status = message(error) }
+            } catch {
+                status = message(error)
+                if !Task.isCancelled, !closing, Self.isTransientRestoreFailure(error) {
+                    restored = false
+                    nextRestoreAttemptAt = now.addingTimeInterval(30)
+                    status += " · 다음 자동 확인에서 연결을 다시 시도합니다."
+                }
+            }
             return false
         }
         _ = await operation?.value
+    }
+
+    private func stopAutomaticRestore() {
+        restored = true
+        nextRestoreAttemptAt = nil
+    }
+
+    private static func isTransientRestoreFailure(_ error: any Error) -> Bool {
+        if (error as? GoogleOAuthError) == .transport { return true }
+        if case .http(let code) = error as? GoogleDriveError {
+            return code == 429 || (500...599).contains(code)
+        }
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .timedOut, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed,
+                 .networkConnectionLost, .notConnectedToInternet: return true
+            default: return false
+            }
+        }
+        return false
     }
 
     func synchronize(imports: ImportBroker, jobs: @escaping @MainActor @Sendable () -> [Job]) async -> Bool {
