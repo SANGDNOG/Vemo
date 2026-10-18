@@ -221,8 +221,9 @@ class LibraryUiTest : InstrumentationTestCase() {
             assertEquals(folder.id, LibraryStore(File(app.filesDir, "library.json")).folderFor(id))
             back(); click(complete.title)
             screenshot("detail-real-capture")
-            click("녹음 듣기"); assertText("재생 중지")
-            click("재생 중지"); assertText("녹음 듣기")
+            click("녹음 듣기"); assertPlaybackControl("일시정지")
+            click("일시정지"); assertPlaybackControl("재생")
+            click("재생"); assertPlaybackControl("일시정지")
             assertEquals(complete.hash, sha256(app.store.audio(id)))
             back()
             val stale = app.library.createFolder("검증 임시 폴더").also { ownedFolders += it.id }
@@ -349,6 +350,16 @@ class LibraryUiTest : InstrumentationTestCase() {
 
     private fun assertText(value: String) = await("Expected visible text: $value") { visibleText(value) }
     private fun assertNoText(value: String) { instrumentation.waitForIdleSync(); assertFalse("Unexpected text: $value", visibleText(value)) }
+
+    private fun assertPlaybackControl(description: String) = await("Expected playback control: $description") {
+        var found = false
+        onMain {
+            found = currentViews().any {
+                it is android.widget.ImageButton && it.isShown && it.isEnabled && it.contentDescription?.toString() == description
+            }
+        }
+        found
+    }
 
     private fun click(value: String) {
         var clicked = false

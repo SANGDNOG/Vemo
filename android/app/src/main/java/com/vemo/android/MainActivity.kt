@@ -61,6 +61,22 @@ class MainActivity : Activity() {
     private var activityResumed = false
     private var player: MediaPlayer? = null
     private var playerId: String? = null
+    private var playbackSeek: SeekBar? = null
+    private var playbackTime: TextView? = null
+    private var playbackToggle: ImageButton? = null
+    private var playbackRefreshPending = false
+    private var playbackDragging = false
+    private var playbackComplete = false
+    private var pendingSeek: Int? = null
+    private var seekInFlight: Int? = null
+    private var revealPlayer = false
+    private val playbackTick = object : Runnable {
+        override fun run() {
+            if (!activityResumed || player == null || playbackSeek == null) return
+            updatePlaybackControls()
+            if (activityResumed && player != null) handler.postDelayed(this, 250)
+        }
+    }
     private val handler = Handler(Looper.getMainLooper())
     private val listener: () -> Unit = {
         statusView?.text = vemo().message
@@ -69,7 +85,8 @@ class MainActivity : Activity() {
             if (lastNotice.isNotBlank()) Toast.makeText(this, lastNotice, Toast.LENGTH_LONG).show()
         }
         // Keep the search field and keyboard intact when background sync changes rows.
-        if (interactionFrozen) { refreshPending = true }
+        if (playbackDragging) { playbackRefreshPending = true }
+        else if (interactionFrozen) { refreshPending = true }
         else if (tab == "list" && detailId == null && libraryStructure() == lastStructure) {
             updateEntries(); updateRecordingAction(); updateSyncAction()
         } else if (tab == "settings") refreshSettings?.invoke()
@@ -211,6 +228,8 @@ class MainActivity : Activity() {
     private fun render() {
         if (interactionFrozen) { refreshPending = true; return }
         holds.forEach { it.cancel() }; holds.clear()
+        handler.removeCallbacks(playbackTick)
+        playbackSeek = null; playbackTime = null; playbackToggle = null; playbackDragging = false; playbackRefreshPending = false
         refreshSettings = null; amplitudeView = null; timer = null; search = null; entries = null; recordingAction = null; syncAction = null; folderControls.clear()
         val snapshot = library()
         if (selectedFolder != null && snapshot?.folders?.none { it.id == selectedFolder } == true) selectedFolder = null
@@ -509,10 +528,10 @@ class MainActivity : Activity() {
             if (vemo().cloudConfigured()) {
                 syncAction = ImageButton(this@MainActivity).apply {
                     setImageResource(R.drawable.ic_refresh)
+                    scaleType = ImageView.ScaleType.CENTER_INSIDE
                     imageTintList = android.content.res.ColorStateList.valueOf(purple)
                     background = android.graphics.drawable.RippleDrawable(ripple, surface(Color.TRANSPARENT), null)
                     setPadding(dp(12), dp(12), dp(12), dp(12))
-                    scaleType = ImageView.ScaleType.FIT_CENTER
                     stateListAnimator = null; elevation = 0f
                     setOnClickListener { vemo().sync(true) }
                 }
@@ -897,11 +916,12 @@ class MainActivity : Activity() {
         if (item.uploadable) {
             content.addView((if (resources.configuration.fontScale > 1.3f) column() else row()).apply {
                 val stacked = orientation == LinearLayout.VERTICAL
-                addView(compactAction(if (playerId == item.id) "재생 중지" else "녹음 듣기", if (playerId == item.id) R.drawable.ic_stop else R.drawable.ic_play, true) { play(item) }.apply {
+                addView(compactAction("녹음 듣기", R.drawable.ic_play, true) { play(item) }.apply {
                     isEnabled = !vemo().gate.isRecording()
                 }, if (stacked) LinearLayout.LayoutParams(-1, -2) else LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(8) })
                 addView(compactAction("오디오 공유", R.drawable.ic_share) { shareRecording(id) }, if (stacked) LinearLayout.LayoutParams(-1, -2) else LinearLayout.LayoutParams(0, -2, 1f))
             })
+            if (playerId == item.id) content.addView(playbackPanel())
         }
         gap(20)
         val tabs = row().apply { background = surface(subtle); setPadding(dp(4), dp(4), dp(4), dp(4)) }
@@ -1194,20 +1214,152 @@ class MainActivity : Activity() {
             } catch (error: Exception) { vemo().notify(safeError(error)) }
         }
     }
+    private fun playbackPanel(): LinearLayout = column().apply {
+        background = surface(subtle, true)
+        setPadding(dp(12), dp(8), dp(12), dp(8))
+        playbackSeek = SeekBar(this@MainActivity).apply {
+            minimumHeight = dp(48); max = player?.duration ?: 0
+            progressTintList = android.content.res.ColorStateList.valueOf(purple)
+            thumbTintList = android.content.res.ColorStateList.valueOf(purple)
+            contentDescription = "재생 위치"
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onStartTrackingTouch(seekBar: SeekBar) { playbackDragging = true }
+                override fun onProgressChanged(seekBar: SeekBar, progress: Int, fromUser: Boolean) {
+                    if (fromUser) {
+                        playbackTime?.text = "${duration(progress.toLong())} / ${duration(seekBar.max.toLong())}"
+                        if (!playbackDragging) seekPlayback(progress.toLong())
+                    }
+                }
+                override fun onStopTrackingTouch(seekBar: SeekBar) {
+                    playbackDragging = false
+                    seekPlayback(seekBar.progress.toLong())
+                    flushPlaybackRefresh()
+                }
+            })
+            setOnTouchListener { view, event ->
+                if (event.actionMasked == MotionEvent.ACTION_CANCEL) view.post {
+                    if (playbackSeek === view) {
+                        playbackDragging = false
+                        updatePlaybackControls()
+                        flushPlaybackRefresh()
+                    }
+                }
+                false // Keep native SeekBar drag, keyboard and accessibility handling.
+            }
+        }
+        addView(playbackSeek, LinearLayout.LayoutParams(-1, -2))
+        playbackTime = text("", 13f, muted).apply { gravity = Gravity.CENTER }
+        addView(playbackTime)
+        addView(row().apply {
+            gravity = Gravity.CENTER
+            addView(headerAction(R.drawable.ic_replay_10, "10초 뒤로") { skipPlayback(-10_000) })
+            playbackToggle = headerAction(R.drawable.ic_pause, "일시정지") { togglePlayback() }
+            addView(playbackToggle)
+            addView(headerAction(R.drawable.ic_forward_10, "10초 앞으로") { skipPlayback(10_000) })
+        })
+        updatePlaybackControls()
+        handler.post(playbackTick)
+        if (revealPlayer) {
+            revealPlayer = false
+            if (android.animation.ValueAnimator.areAnimatorsEnabled()) {
+                alpha = 0f; translationY = dp(8).toFloat()
+                animate().alpha(1f).translationY(0f).setDuration(180).start()
+            }
+        }
+    }
+    private fun flushPlaybackRefresh() {
+        if (playbackRefreshPending && !playbackDragging) {
+            playbackRefreshPending = false
+            if (activityResumed) render()
+        }
+    }
+    private fun updatePlaybackControls() {
+        val media = player ?: return
+        try {
+            val total = media.duration.coerceAtLeast(0)
+            val position = (pendingSeek ?: if (playbackComplete) total else media.currentPosition).coerceIn(0, total)
+            if (!playbackDragging) {
+                playbackSeek?.max = total; playbackSeek?.progress = position
+                playbackTime?.text = "${duration(position.toLong())} / ${duration(total.toLong())}"
+            }
+            playbackToggle?.apply {
+                setImageResource(if (media.isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
+                contentDescription = if (media.isPlaying) "일시정지" else if (playbackComplete) "처음부터 다시 재생" else "재생"
+                tooltipText = contentDescription
+            }
+        } catch (error: Exception) { playbackError(error) }
+    }
+    private fun skipPlayback(deltaMs: Long) {
+        val media = player ?: return
+        try { seekPlayback((pendingSeek ?: if (playbackComplete) media.duration else media.currentPosition).toLong() + deltaMs) }
+        catch (error: Exception) { playbackError(error) }
+    }
+    private fun seekPlayback(positionMs: Long) {
+        val media = player ?: return
+        try {
+            val target = positionMs.coerceIn(0L, media.duration.toLong()).toInt()
+            pendingSeek = target; playbackComplete = false
+            if (seekInFlight == null) issuePlaybackSeek(media, target)
+            updatePlaybackControls()
+        } catch (error: Exception) { playbackError(error) }
+    }
+    private fun issuePlaybackSeek(media: MediaPlayer, target: Int) {
+        seekInFlight = target
+        media.seekTo(target.toLong(), MediaPlayer.SEEK_CLOSEST)
+    }
+    private fun togglePlayback() {
+        val media = player ?: return
+        try {
+            if (media.isPlaying) media.pause() else {
+                if (playbackComplete || (pendingSeek ?: media.currentPosition) >= media.duration) seekPlayback(0)
+                media.start()
+            }
+            updatePlaybackControls()
+        } catch (error: Exception) { playbackError(error) }
+    }
     private fun play(item: Recording) {
-        if (playerId == item.id) { stopPlayer(); render(); return }
+        if (playerId == item.id) return
         stopPlayer()
         try {
-            player = MediaPlayer().apply {
-                setDataSource(vemo().store.audio(item.id).absolutePath)
-                setOnCompletionListener { stopPlayer(); render() }
-                setOnErrorListener { _, _, _ -> stopPlayer(); vemo().notify("오디오를 재생할 수 없습니다. 원본은 보존했습니다."); true }
-                prepare(); start()
+            val media = MediaPlayer()
+            player = media // Own the instance before setup so every preparation failure releases it.
+            media.setDataSource(vemo().store.audio(item.id).absolutePath)
+            media.setOnCompletionListener { completed ->
+                if (player === completed && pendingSeek == null) {
+                    playbackComplete = true; updatePlaybackControls()
+                }
             }
-            playerId = item.id; render()
-        } catch (error: Exception) { stopPlayer(); vemo().notify(safeError(error)) }
+            media.setOnSeekCompleteListener { completed ->
+                if (player === completed) {
+                    val finishedTarget = seekInFlight
+                    seekInFlight = null
+                    val desired = pendingSeek
+                    try {
+                        if (desired != null && desired != finishedTarget) issuePlaybackSeek(completed, desired)
+                        else pendingSeek = null
+                        updatePlaybackControls()
+                    } catch (error: Exception) { playbackError(error) }
+                }
+            }
+            media.setOnErrorListener { failed, _, _ ->
+                if (player === failed) {
+                    stopPlayer(); vemo().notify("오디오를 재생할 수 없습니다. 원본은 보존했습니다.")
+                }
+                true
+            }
+            media.prepare(); media.start()
+            playerId = item.id; revealPlayer = true; render()
+        } catch (error: Exception) { playbackError(error) }
     }
-    private fun stopPlayer() { try { player?.release() } catch (_: Exception) { }; player = null; playerId = null }
+    private fun playbackError(error: Exception) { stopPlayer(); vemo().notify(safeError(error)) }
+    private fun stopPlayer() {
+        handler.removeCallbacks(playbackTick)
+        val released = player
+        player = null; playerId = null; pendingSeek = null; seekInFlight = null; playbackComplete = false; revealPlayer = false
+        try { released?.release() } catch (_: Exception) { }
+        playbackDragging = false
+        flushPlaybackRefresh()
+    }
     private fun duration(ms: Long): String = "%02d:%02d".format(ms / 60_000, ms / 1000 % 60)
     private fun date(value: String): String = try { OffsetDateTime.parse(value).format(DateTimeFormatter.ofPattern("yyyy.MM.dd HH:mm xxx")) } catch (_: Exception) { value }
     private fun state(item: Recording): String = when (item.state) {
