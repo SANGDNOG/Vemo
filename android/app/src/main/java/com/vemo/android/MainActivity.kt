@@ -54,8 +54,11 @@ class MainActivity : Activity() {
     private data class FolderControl(val view: LinearLayout, val name: TextView, val count: TextView, val folderId: String?, val unfiled: Boolean)
     private val folderControls = mutableListOf<FolderControl>()
     private var detailId: String? = null
+    private var amplitudeView: RecordingMeter? = null
     private var timer: TextView? = null
     private var statusView: TextView? = null
+    private var refreshSettings: (() -> Unit)? = null
+    private var activityResumed = false
     private var player: MediaPlayer? = null
     private var playerId: String? = null
     private val handler = Handler(Looper.getMainLooper())
@@ -69,11 +72,12 @@ class MainActivity : Activity() {
         if (interactionFrozen) { refreshPending = true }
         else if (tab == "list" && detailId == null && libraryStructure() == lastStructure) {
             updateEntries(); updateRecordingAction(); updateSyncAction()
-        } else if (tab != "settings") render()
+        } else if (tab == "settings") refreshSettings?.invoke()
+        else render()
     }
     private val tick = object : Runnable {
         override fun run() {
-            timer?.text = duration(vemo().elapsedMs)
+            timer?.text = duration(if (activeRecording() == null) 0L else vemo().elapsedMs)
             updateRecordingAction()
             handler.postDelayed(this, 1000)
         }
@@ -114,8 +118,8 @@ class MainActivity : Activity() {
         outState.putBoolean("searchFocused", search?.hasFocus() == true)
         outState.putInt("searchCursor", search?.selectionStart ?: query.length)
     }
-    override fun onResume() { super.onResume(); vemo().listeners.add(listener); handler.post(tick); handler.postDelayed(poll, 30_000); SyncJobService.schedule(this); if (!::container.isInitialized) render() else listener() }
-    override fun onPause() { if (interactionFrozen) container.cancelDragAndDrop(); holds.forEach { it.cancel() }; vemo().listeners.remove(listener); handler.removeCallbacks(tick); handler.removeCallbacks(poll); stopPlayer(); super.onPause() }
+    override fun onResume() { super.onResume(); activityResumed = true; vemo().listeners.add(listener); handler.post(tick); handler.postDelayed(poll, 30_000); SyncJobService.schedule(this); if (!::container.isInitialized) render() else listener(); amplitudeView?.updateSampling() }
+    override fun onPause() { activityResumed = false; amplitudeView?.updateSampling(); if (interactionFrozen) container.cancelDragAndDrop(); holds.forEach { it.cancel() }; vemo().listeners.remove(listener); handler.removeCallbacks(tick); handler.removeCallbacks(poll); stopPlayer(); super.onPause() }
     override fun onDestroy() {
         if (Build.VERSION.SDK_INT >= 33) backCallback?.let { onBackInvokedDispatcher.unregisterOnBackInvokedCallback(it) }
         backCallback = null
@@ -207,7 +211,7 @@ class MainActivity : Activity() {
     private fun render() {
         if (interactionFrozen) { refreshPending = true; return }
         holds.forEach { it.cancel() }; holds.clear()
-        timer = null; search = null; entries = null; recordingAction = null; syncAction = null; folderControls.clear()
+        refreshSettings = null; amplitudeView = null; timer = null; search = null; entries = null; recordingAction = null; syncAction = null; folderControls.clear()
         val snapshot = library()
         if (selectedFolder != null && snapshot?.folders?.none { it.id == selectedFolder } == true) selectedFolder = null
         lastStructure = libraryStructure()
@@ -223,36 +227,34 @@ class MainActivity : Activity() {
             } else view.setPadding(dp(20), dp(8), dp(20), dp(8))
             insets
         }
+        val libraryHome = tab == "list" && detailId == null
         container.addView(row().apply {
-            if (tab != "list" || detailId != null) addView(ImageButton(this@MainActivity).apply {
-                setImageResource(R.drawable.ic_back); imageTintList = android.content.res.ColorStateList.valueOf(ink)
-                contentDescription = "라이브러리로 돌아가기"
-                background = android.graphics.drawable.RippleDrawable(ripple, surface(Color.WHITE), null)
-                setPadding(dp(12), dp(12), dp(12), dp(12)); stateListAnimator = null; elevation = 0f
-                setOnClickListener { home() }
-            }, LinearLayout.LayoutParams(dp(48), dp(48)))
-            val libraryHome = tab == "list" && detailId == null
-            addView(text(if (libraryHome) folderTitle() else "Vemo", if (libraryHome) 28f else 23f, ink, true).apply {
-                maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+            if (!libraryHome) addView(headerAction(R.drawable.ic_back, "라이브러리로 돌아가기") { home() })
+            addView(text(if (libraryHome) folderTitle() else when (tab) {
+                "settings" -> "설정"
+                "record" -> "새 녹음"
+                else -> "녹음"
+            }, if (libraryHome) 28f else 25f, ink, true).apply {
+                if (libraryHome) { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END }
+                else gravity = Gravity.CENTER
                 contentDescription = text
             }, LinearLayout.LayoutParams(0, -2, 1f))
-            addView(ImageView(this@MainActivity).apply {
-                setImageResource(R.drawable.vemo_icon); importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-            }, LinearLayout.LayoutParams(dp(32), dp(32)).apply { marginStart = dp(8); marginEnd = dp(4) })
-            addView(ImageButton(this@MainActivity).apply {
-                setImageResource(R.drawable.ic_settings); imageTintList = android.content.res.ColorStateList.valueOf(muted)
-                contentDescription = "설정"; background = surface(Color.WHITE)
-                setPadding(dp(12), dp(12), dp(12), dp(12))
-                setOnClickListener { stopPlayer(); tab = "settings"; detailId = null; render() }
-            }, LinearLayout.LayoutParams(dp(48), dp(48)))
+            if (libraryHome) {
+                addView(ImageView(this@MainActivity).apply {
+                    setImageResource(R.drawable.vemo_icon); importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                }, LinearLayout.LayoutParams(dp(32), dp(32)).apply { marginStart = dp(8); marginEnd = dp(4) })
+                addView(headerAction(R.drawable.ic_settings, "설정") { stopPlayer(); tab = "settings"; detailId = null; render() })
+            } else if (detailId != null) {
+                addView(headerAction(R.drawable.ic_more, "녹음 더보기") { detailId?.let { detailActions(it) } })
+            } else addView(Space(this@MainActivity), LinearLayout.LayoutParams(dp(48), dp(48)))
         })
         val scroll = LibraryDragScroll(this) { finishInteraction() }.apply { isFillViewport = true }
         mainScroll = scroll
         content = column().apply { val padding = if (tab == "list" && detailId == null && compactLibrary()) 4 else 16; setPadding(0, dp(padding), 0, dp(padding)) }
         scroll.addView(content)
         container.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
-        divider(container)
-        if (tab != "record") {
+        if (libraryHome) {
+            divider(container)
             recordingAction = button("새 녹음") { stopPlayer(); detailId = null; tab = "record"; render() }.apply {
                 setTextColor(ink)
                 background = android.graphics.drawable.RippleDrawable(ripple, surface(Color.WHITE), null)
@@ -269,30 +271,118 @@ class MainActivity : Activity() {
         statusView = null
         when (tab) { "settings" -> settings(); "list" -> if (detailId == null) recordings() else detail(detailId!!); else -> record() }
     }
+    private fun headerAction(icon: Int, title: String, action: () -> Unit) = ImageButton(this).apply {
+        setImageResource(icon); imageTintList = android.content.res.ColorStateList.valueOf(muted)
+        contentDescription = title; tooltipText = title
+        background = android.graphics.drawable.RippleDrawable(ripple, surface(Color.WHITE), null)
+        setPadding(dp(12), dp(12), dp(12), dp(12)); stateListAnimator = null; elevation = 0f
+        layoutParams = LinearLayout.LayoutParams(dp(48), dp(48))
+        setOnClickListener { action() }
+    }
     private fun record() {
-        val active = vemo().store.list().firstOrNull { it.state in setOf(CaptureState.RECORDING, CaptureState.PAUSED, CaptureState.FINALIZING) }
-        label(if (active == null) "새로운 녹음" else if (active.state == CaptureState.PAUSED) "잠시 쉬는 중" else if (active.state == CaptureState.FINALIZING) "녹음 저장 중" else "지금 녹음 중")
-        content.addView(text(if (active == null) "저장 위치 · ${if (selectedFolder == null) "미분류" else folderTitle()}" else active.title, 14f, muted))
-        gap()
-        content.addView(card().apply {
-            addView(text("●", 64f, deleteRed).apply { gravity = Gravity.CENTER })
-            timer = text(if (active == null) "00:00" else duration(vemo().elapsedMs), 48f, ink, true).apply { gravity = Gravity.CENTER }
-            addView(timer)
-            addView(text(if (active == null) "준비되면 녹음을 시작하세요." else if (active.state == CaptureState.PAUSED) "일시정지됨" else if (active.state == CaptureState.FINALIZING) "녹음 저장 중" else "녹음 중", 14f, muted).apply { gravity = Gravity.CENTER })
+        val active = activeRecording()
+        val paused = active?.state == CaptureState.PAUSED
+        val finalizing = active?.state == CaptureState.FINALIZING
+        content.gravity = Gravity.CENTER
+        val stage = column().apply {
+            gravity = Gravity.CENTER
+            setPadding(0, dp(32), 0, dp(32))
+        }
+        content.addView(stage, LinearLayout.LayoutParams(-1, -2))
+        stage.addView(text(when {
+            active == null -> "녹음 준비"
+            paused -> "일시정지됨"
+            finalizing -> "녹음 저장 중"
+            else -> "●  녹음 중"
+        }, 14f, if (active != null && !paused) deleteRed else muted).apply { gravity = Gravity.CENTER })
+        timer = text(if (active == null) "00:00" else duration(vemo().elapsedMs), 52f).apply {
+            gravity = Gravity.CENTER
+            typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
+            setPadding(0, dp(22), 0, dp(8))
+        }
+        stage.addView(timer)
+        stage.addView(text(active?.title ?: "새로운 기록", 14f, muted).apply { gravity = Gravity.CENTER })
+        val folder = if (active == null) selectedFolder else library()?.recordingFolders?.get(active.id)
+        val path = folder?.let { try { vemo().library.path(it) } catch (_: Exception) { "폴더 확인 필요" } } ?: "미분류"
+        stage.addView(text("저장 위치 · $path", 13f, muted).apply { gravity = Gravity.CENTER })
+        amplitudeView = RecordingMeter().apply {
+            contentDescription = if (active == null) "녹음 시작 전 · 마이크 입력 없음" else if (paused || finalizing) "마이크 입력 표시 중지됨" else "실제 마이크 입력 레벨"
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+        }
+        stage.addView(amplitudeView, LinearLayout.LayoutParams(-1, dp(if (resources.configuration.screenHeightDp < 500) 64 else 140)).apply {
+            topMargin = dp(20); bottomMargin = dp(28)
         })
-        gap(20)
-        if (active == null) {
-            content.addView(button("녹음 시작", true) { startRecording() }.apply { setTextColor(Color.WHITE); backgroundTintList = android.content.res.ColorStateList.valueOf(deleteRed); isEnabled = !vemo().gate.busy() })
-            content.addView(text("화면을 나가도 녹음은 계속됩니다.", 13f, muted))
-        } else {
-            if (active.state != CaptureState.FINALIZING) {
-                content.addView(button(if (active.state == CaptureState.PAUSED) "녹음 재개" else "일시정지") { command(if (active.state == CaptureState.PAUSED) "RESUME" else "PAUSE") })
-                content.addView(button("녹음 완료", true) { command("STOP") })
+        stage.addView(row().apply {
+            gravity = Gravity.CENTER
+            if (active == null) {
+                addView(recordControl("녹음 시작", R.drawable.ic_mic, true, !vemo().gate.busy()) { startRecording() })
+            } else {
+                addView(recordControl(if (paused) "재개" else "일시정지", if (paused) R.drawable.ic_play else R.drawable.ic_pause, false, !finalizing) {
+                    command(if (paused) "RESUME" else "PAUSE")
+                }, LinearLayout.LayoutParams(0, -2, 1f))
+                addView(recordControl("완료", R.drawable.ic_stop, true, !finalizing) { command("STOP") }, LinearLayout.LayoutParams(0, -2, 1f))
+            }
+        }, LinearLayout.LayoutParams(-1, -2))
+        stage.addView(text(if (finalizing) "원본을 확정하고 있습니다. 잠시 기다려 주세요." else if (active == null) "준비되면 녹음을 시작하세요." else "화면을 나가도 녹음은 계속됩니다.", 13f, muted).apply {
+            gravity = Gravity.CENTER; setPadding(0, dp(28), 0, 0)
+        })
+        if (vemo().store.unreadableCount() > 0) content.addView(text("읽을 수 없는 로컬 메타데이터가 있습니다. 앱을 삭제하지 마세요. 원본 폴더는 보존했습니다.", 13f, deleteRed))
+    }
+    private inner class RecordingMeter : View(this@MainActivity) {
+        private var meterAttached = false
+        private val levels = java.util.ArrayDeque<Int>()
+        private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = deleteRed; strokeWidth = dp(3).toFloat(); strokeCap = android.graphics.Paint.Cap.ROUND
+        }
+        private val sample = object : Runnable {
+            override fun run() {
+                if (!activityResumed || !meterAttached || windowVisibility != View.VISIBLE) return
+                levels.addLast(RecordingService.currentAmplitude.coerceIn(0, 32767))
+                while (levels.size > 60) levels.removeFirst()
+                invalidate(); postDelayed(this, 100)
             }
         }
-        gap()
-        content.addView(button("녹음 목록 보기") { tab = "list"; detailId = null; render() })
-        if (vemo().store.unreadableCount() > 0) content.addView(text("읽을 수 없는 로컬 메타데이터가 있습니다. 앱을 삭제하지 마세요. 원본 폴더는 보존했습니다.", 13f, deleteRed))
+        fun updateSampling() {
+            removeCallbacks(sample)
+            if (activityResumed && isAttachedToWindow && windowVisibility == View.VISIBLE) post(sample)
+        }
+        override fun onAttachedToWindow() { super.onAttachedToWindow(); meterAttached = true; updateSampling() }
+        override fun onWindowVisibilityChanged(visibility: Int) {
+            super.onWindowVisibilityChanged(visibility)
+            if (meterAttached) updateSampling()
+        }
+        override fun onDetachedFromWindow() { meterAttached = false; removeCallbacks(sample); super.onDetachedFromWindow() }
+        override fun onDraw(canvas: android.graphics.Canvas) {
+            super.onDraw(canvas)
+            // No idle animation or generated bars: each bar is one measured microphone peak.
+            val spacing = dp(6).toFloat()
+            val count = minOf(60, (width / spacing).toInt())
+            val values = levels.toList().takeLast(count)
+            val left = (width - (count - 1) * spacing) / 2f
+            values.forEachIndexed { index, value ->
+                if (value > 0) {
+                    val half = (height * 0.42f * kotlin.math.sqrt(value / 32767f)).coerceAtLeast(dp(1).toFloat())
+                    val x = left + (count - values.size + index) * spacing
+                    canvas.drawLine(x, height / 2f - half, x, height / 2f + half, paint)
+                }
+            }
+        }
+    }
+    private fun recordControl(title: String, icon: Int, stop: Boolean, enabled: Boolean, action: () -> Unit): LinearLayout = column().apply {
+        gravity = Gravity.CENTER
+        addView(ImageButton(this@MainActivity).apply {
+            setImageResource(icon); contentDescription = title; tooltipText = title
+            imageTintList = android.content.res.ColorStateList.valueOf(if (stop) deleteRed else ink)
+            val circle = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(if (stop) getColor(R.color.vemo_design_destructivesurface) else subtle)
+                setStroke(dp(1), if (stop) Color.rgb(238, 212, 214) else line)
+            }
+            background = android.graphics.drawable.RippleDrawable(ripple, circle, null)
+            setPadding(dp(20), dp(20), dp(20), dp(20)); isEnabled = enabled; alpha = if (enabled) 1f else 0.4f
+            setOnClickListener { action() }
+        }, LinearLayout.LayoutParams(dp(if (stop) 68 else 56), dp(if (stop) 68 else 56)))
+        addView(text(title, 13f, muted).apply { gravity = Gravity.CENTER; setPadding(dp(4), dp(11), dp(4), 0) })
     }
     private fun startRecording() {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) { requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 41); return }
@@ -740,90 +830,206 @@ class MainActivity : Activity() {
             if (destinations.none { canMove(item, it, snapshot) }) body.addView(text("이동할 다른 폴더가 없습니다.", 15f, muted))
         }
     }
+    private fun detailActions(id: String) {
+        val item = try { vemo().store.get(id) } catch (error: Exception) { libraryAction { throw error }; return }
+        management("녹음 더보기") { dialog, body, _ ->
+            body.addView(text("${state(item)} · ${item.bytes / 1024} KB", 13f, muted))
+            if (item.status.isNotBlank()) body.addView(text(item.status, 13f, muted))
+            fun action(title: String, enabled: Boolean = true, run: () -> Unit) {
+                body.addView(button(title) { dialog.dismiss(); run() }.apply {
+                    isEnabled = enabled; gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                    background = android.graphics.drawable.RippleDrawable(ripple, surface(Color.WHITE), null)
+                })
+            }
+            action("폴더 이동") { moveRecording(id) }
+            if (item.uploadable) {
+                action("폴더에 복사") { vemo().export(id) }
+                if (vemo().cloudConfigured()) action("동기화 다시 시도 / PC 결과 확인", !vemo().gate.busy()) { vemo().sync(true) }
+            } else if (item.state == CaptureState.INTERRUPTED) action("보존한 오디오 복구 시도") { vemo().recover(id) }
+            if (item.state !in setOf(CaptureState.RECORDING, CaptureState.PAUSED, CaptureState.FINALIZING))
+                action("목록에서 숨기기") { hideRecording(id) }
+        }
+        managementDialog?.window?.apply {
+            setGravity(Gravity.BOTTOM)
+            setLayout(minOf(dp(480), dp(resources.configuration.screenWidthDp)), WindowManager.LayoutParams.WRAP_CONTENT)
+        }
+    }
     private fun detail(id: String) {
         val item = try { vemo().store.get(id) } catch (_: Exception) { detailId = null; recordings(); return }
         val result = try { vemo().store.result(item) } catch (_: Exception) { null }
-
-        label(result?.title ?: item.title)
-        content.addView(text(date(item.recordedAt), 14f, muted))
-        content.addView(text("${state(item)} · ${duration(item.durationMs)} · ${item.bytes / 1024} KB", 14f, purple))
-        content.addView(text(item.status, 14f, muted))
+        content.addView(text(if (result != null) "PC에서 받은 결과" else state(item), 13f, muted))
+        gap(12)
+        label(result?.title ?: item.title, 24f)
+        gap(8)
+        content.addView(text("${date(item.recordedAt)} · ${duration(item.durationMs)}", 13f, muted))
         val folder = library()?.recordingFolders?.get(id)
         val path = if (folder == null) "미분류" else try { vemo().library.path(folder) } catch (_: Exception) { "폴더 확인 필요" }
-        content.addView(text(path, 14f, muted))
-        content.addView(button("폴더 이동") { moveRecording(id) })
-        if (item.state in setOf(CaptureState.RECORDING, CaptureState.PAUSED, CaptureState.FINALIZING)) {
-            content.addView(button("진행 중인 녹음 열기", true) { tab = "record"; detailId = null; render() })
-        }
-        gap()
-        if (item.uploadable) {
-            content.addView(button(if (playerId == item.id) "재생 중지" else "녹음 재생", true) { play(item) }.apply { isEnabled = !vemo().gate.isRecording() })
-            content.addView(row().apply {
-                addView(button("폴더에 복사") { vemo().export(id) }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(8) })
-                addView(button("공유") { try { startActivity(Intent.createChooser(ShareAudio.intent(this@MainActivity, item), "녹음 공유")) } catch (error: Exception) { vemo().notify(safeError(error)) } }, LinearLayout.LayoutParams(0, -2, 1f))
-            })
-            if (vemo().cloudConfigured()) content.addView(button("동기화 다시 시도 / PC 결과 확인") { vemo().sync(true) }.apply { isEnabled = !vemo().gate.busy() })
-        } else if (item.state == CaptureState.INTERRUPTED) content.addView(button("보존한 오디오 복구 시도") { vemo().recover(id) })
-        gap()
-        content.addView(row().apply {
-            for ((key, title) in listOf("transcript" to "전사", "notes" to "노트")) {
-                addView(button(title) { detailTab = key; render() }.apply {
-                    isSelected = detailTab == key
-                    val fill = if (isSelected) selection else subtle
-                    background = android.graphics.drawable.RippleDrawable(ripple, surface(fill), null)
-                    setTextColor(if (isSelected) purple else muted)
-                    contentDescription = title + if (isSelected) ", 선택됨" else ""
-                }, LinearLayout.LayoutParams(0, -2, 1f).apply { if (key == "transcript") marginEnd = dp(8) })
-            }
+        content.addView(text(path, 14f, purple).apply {
+            setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.ic_folder, 0, 0, 0)
+            compoundDrawablePadding = dp(8); setPadding(0, dp(16), 0, dp(16))
         })
-        gap()
-        if (result != null) {
-            content.addView(text(if (detailTab == "notes") result.notes else result.transcript, 16f).apply {
-                setTextIsSelectable(true); setLineSpacing(dp(6).toFloat(), 1.3f)
+        if (item.state in setOf(CaptureState.RECORDING, CaptureState.PAUSED, CaptureState.FINALIZING)) {
+            content.addView(compactAction("진행 중인 녹음 열기") { tab = "record"; detailId = null; render() })
+        }
+        if (item.uploadable) {
+            content.addView((if (resources.configuration.fontScale > 1.3f) column() else row()).apply {
+                val stacked = orientation == LinearLayout.VERTICAL
+                addView(compactAction(if (playerId == item.id) "재생 중지" else "녹음 듣기", if (playerId == item.id) R.drawable.ic_stop else R.drawable.ic_play, true) { play(item) }.apply {
+                    isEnabled = !vemo().gate.isRecording()
+                }, if (stacked) LinearLayout.LayoutParams(-1, -2) else LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(8) })
+                addView(compactAction("오디오 공유", R.drawable.ic_share) { shareRecording(id) }, if (stacked) LinearLayout.LayoutParams(-1, -2) else LinearLayout.LayoutParams(0, -2, 1f))
             })
+        }
+        gap(20)
+        val tabs = row().apply { background = surface(subtle); setPadding(dp(4), dp(4), dp(4), dp(4)) }
+        for ((key, title) in listOf("transcript" to "전사", "notes" to "노트")) {
+            tabs.addView(compactAction(title) { detailTab = key; render() }.apply {
+                isSelected = detailTab == key
+                background = android.graphics.drawable.RippleDrawable(ripple, surface(if (isSelected) selection else subtle), null)
+                setTextColor(if (isSelected) purple else muted)
+                contentDescription = title + if (isSelected) ", 선택됨" else ""
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+        }
+        content.addView(tabs, LinearLayout.LayoutParams(if (resources.configuration.fontScale > 1.3f) -1 else dp(200), -2))
+        gap(24)
+        if (result != null) {
+            val body = if (detailTab == "notes") result.notes else result.transcript
+            if (body.isBlank()) content.addView(text(if (detailTab == "notes") "아직 생성된 노트가 없습니다." else "아직 생성된 전사가 없습니다.", 15f, muted))
+            else if (detailTab == "notes") renderNotes(body)
+            else body.split(Regex("\\n[ \t]*\\n")).forEach { paragraph ->
+                divider(content)
+                content.addView(text(paragraph, 16f).apply {
+                    setTextIsSelectable(true); setLineSpacing(dp(4).toFloat(), 1.3f)
+                    setPadding(0, dp(18), 0, dp(18))
+                })
+            }
         } else {
             content.addView(text(if (item.mode == Mode.DESKTOP && item.uploadable)
                 if (item.uploaded) "PC 결과 대기 중. 전사와 노트가 완료되면 여기에 표시됩니다."
                 else "클라우드 연결 후 완료한 녹음을 업로드하세요. 기기 원본은 오프라인에서도 유지됩니다."
                 else "아직 생성된 전사와 노트가 없습니다.", 15f, muted))
+            if (item.status.isNotBlank()) content.addView(text(item.status, 13f, muted))
         }
-        gap()
-        if (item.state !in setOf(CaptureState.RECORDING, CaptureState.PAUSED, CaptureState.FINALIZING))
-            content.addView(button("목록에서 숨기기") { hideRecording(id) })
+    }
+    private fun compactAction(title: String, icon: Int? = null, outlined: Boolean = false, action: () -> Unit): Button = button(title, action = action).apply {
+        minHeight = dp(48); textSize = 14f
+        setPadding(dp(12), dp(8), dp(12), dp(8))
+        setTextColor(muted)
+        background = android.graphics.drawable.RippleDrawable(ripple, surface(if (outlined) subtle else Color.WHITE, outlined), null)
+        if (icon != null) {
+            val drawable = getDrawable(icon)?.mutate()?.apply { setTint(muted); setBounds(0, 0, dp(22), dp(22)) }
+            setCompoundDrawablesRelative(drawable, null, null, null); compoundDrawablePadding = dp(6)
+        }
+    }
+    private fun renderNotes(markdown: String) {
+        // Only format explicit source headings/list markers; never infer sections or summaries.
+        val styled = android.text.SpannableStringBuilder()
+        markdown.lines().forEachIndexed { index, source ->
+            if (index > 0) styled.append('\n')
+            val heading = Regex("^(#{1,6}) +(.+)$").matchEntire(source)
+            val bullet = Regex("^([ \t]*)[-*+] +(.+)$").matchEntire(source)
+            val start = styled.length
+            styled.append(heading?.groupValues?.get(2) ?: bullet?.let { it.groupValues[1] + it.groupValues[2] } ?: source)
+            val end = styled.length
+            if (heading != null) {
+                styled.setSpan(android.text.style.StyleSpan(Typeface.BOLD), start, end, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                styled.setSpan(android.text.style.RelativeSizeSpan(if (heading.groupValues[1].length <= 2) 1.25f else 1.1f), start, end, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+            if (bullet != null) styled.setSpan(android.text.style.BulletSpan(dp(8)), start, end, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+        content.addView(text("", 16f).apply {
+            text = styled; setTextIsSelectable(true); setLineSpacing(dp(5).toFloat(), 1.3f)
+        })
+    }
+    private fun settingsGroup(title: String): LinearLayout {
+        content.addView(text(title, 13f, muted).apply { setPadding(0, dp(18), 0, dp(10)) })
+        return column().apply { background = surface(Color.WHITE, true); content.addView(this) }
+    }
+    private fun settingRow(target: LinearLayout, title: String, subtitle: String, actionTitle: String? = null, action: (() -> Unit)? = null): TextView {
+        if (target.childCount > 0) divider(target)
+        val summary = text(subtitle, 13f, muted).apply {
+            setLineSpacing(dp(2).toFloat(), 1.1f)
+            visibility = if (subtitle.isBlank()) View.GONE else View.VISIBLE
+        }
+        val body = column().apply { addView(text(title, 15f)); addView(summary) }
+        target.addView(if (resources.configuration.fontScale > 1.3f) column().apply {
+            setPadding(dp(14), dp(10), dp(14), dp(10)); addView(body)
+            if (actionTitle != null && action != null) addView(compactAction(actionTitle, action = action))
+        } else row().apply {
+            setPadding(dp(14), dp(10), dp(10), dp(10))
+            addView(body, LinearLayout.LayoutParams(0, -2, 1f))
+            if (actionTitle != null && action != null) addView(compactAction(actionTitle, action = action), LinearLayout.LayoutParams(-2, -2))
+        })
+        return summary
+    }
+    private fun configureSection(title: String, build: () -> Unit) {
+        val host = content
+        val body = column().apply { visibility = View.GONE; setPadding(dp(14), dp(8), dp(14), dp(14)); background = surface(Color.WHITE, true) }
+        host.addView(compactAction("$title  ▾", action = {}).apply {
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            if (Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
+            setOnClickListener {
+                val open = body.visibility != View.VISIBLE
+                body.visibility = if (open) View.VISIBLE else View.GONE
+                text = "$title  " + if (open) "▴" else "▾"
+                contentDescription = title + if (open) ", 펼쳐짐" else ", 접힘"
+            }
+            contentDescription = "$title, 접힘"
+        })
+        host.addView(body)
+        content = body
+        try { build() } finally { content = host }
     }
     private fun settings() {
-        label("설정")
-        statusView = text(vemo().message, 13f, muted)
-        content.addView(statusView)
-        gap()
-        label("기본 녹음 모드", 20f)
-        val group = RadioGroup(this)
-        val local = RadioButton(this).apply { id = View.generateViewId(); text = "녹음만 · 폴더 저장/공유"; minHeight = dp(52); setTextColor(ink) }
-        val desktop = RadioButton(this).apply { id = View.generateViewId(); text = "PC 자동 처리 · 클라우드 연결 시"; minHeight = dp(52); setTextColor(ink) }
-        group.addView(local); group.addView(desktop); group.check(if (vemo().mode() == Mode.DESKTOP) desktop.id else local.id)
-        group.setOnCheckedChangeListener { _, selected -> vemo().preferences.edit().putString("mode", if (selected == desktop.id) "desktop" else "record_only").apply() }
-        content.addView(group)
-        gap(20)
-        label("저장 및 연결", 20f)
-        content.addView(text("자동 동기화: " + if (vemo().preferences.getString("provider", "nextcloud") == "google") "Google Drive" else "Nextcloud", 14f, muted))
-        if (vemo().syncing && vemo().preferences.getString("provider", "nextcloud") == "google") content.addView(button("Drive 동기화 취소") { vemo().google.cancel(); vemo().notify("Drive 동기화 취소 요청 · 다시 시도할 수 있습니다.") })
-        content.addView(text("기기 원본은 앱 내부에 보관합니다. 앱 삭제/데이터 초기화 전에는 폴더 복사 또는 공유로 내보내세요.", 14f, muted))
-        gap()
-        label("시스템 저장 폴더", 20f)
-        content.addView(text(if (vemo().preferences.getString("folder", null) == null) "선택한 폴더 없음" else "시스템 폴더 선택됨 · 녹음 완료 후 자동 복사", 14f, muted))
-        content.addView(button("저장 폴더 선택") {
+        val mode = settingsGroup("녹음")
+        settingRow(mode, "기본 모드", if (vemo().mode() == Mode.DESKTOP) "PC 자동 처리" else "녹음만", "변경") {
+            val choices = arrayOf("PC 자동 처리 · 클라우드 연결 시", "녹음만 · 폴더 저장/공유")
+            AlertDialog.Builder(this).setTitle("기본 녹음 모드")
+                .setSingleChoiceItems(choices, if (vemo().mode() == Mode.DESKTOP) 0 else 1) { dialog, which ->
+                    vemo().preferences.edit().putString("mode", if (which == 0) "desktop" else "record_only").apply()
+                    dialog.dismiss(); render()
+                }.setNegativeButton("취소", null).show()
+        }
+        val storage = settingsGroup("저장 위치")
+        val folderChosen = vemo().preferences.getString("folder", null) != null
+        settingRow(storage, "녹음 폴더", if (folderChosen) "시스템 폴더 선택됨 · 녹음 완료 후 자동 복사" else "선택한 폴더 없음", if (folderChosen) "변경" else "선택") {
             try { startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION), 51) }
             catch (error: Exception) { vemo().notify(safeError(error)) }
-        })
-        if (vemo().preferences.contains("folder")) content.addView(button("폴더 자동 복사 해제") {
+        }
+        if (folderChosen) settingRow(storage, "폴더에 자동 복사", "기기 원본은 그대로 보관합니다.", "해제") {
             vemo().preferences.getString("folder", null)?.let { try { contentResolver.releasePersistableUriPermission(Uri.parse(it), Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION) } catch (_: Exception) { } }
             vemo().preferences.edit().remove("folder").apply(); render()
-        })
+        }
+        val connections = settingsGroup("연결")
+        val googleSummary = settingRow(connections, "Google Drive", "연결 상태 확인 중")
+        val davSummary = settingRow(connections, "Nextcloud", "연결 상태 확인 중")
+        val processorSummary = settingRow(connections, "PC 처리기", "동기화하여 연결 상태와 결과 확인", "확인") { vemo().sync(true) }
+        val cancelRow = column()
+        connections.addView(cancelRow)
+        settingRow(cancelRow, "Drive 동기화", "취소 후 다시 시도할 수 있습니다.", "취소") {
+            vemo().google.cancel(); vemo().notify("Drive 동기화 취소 요청 · 다시 시도할 수 있습니다.")
+        }
+        cancelRow.addView(View(this).apply { setBackgroundColor(line) }, 0, LinearLayout.LayoutParams(-1, dp(1)))
+        refreshSettings = {
+            val binding = try { vemo().google.binding() } catch (_: Exception) { null }
+            val dav = try { vemo().vault.load() } catch (_: Exception) { null }
+            val googleActive = vemo().preferences.getString("provider", "nextcloud") == "google"
+            googleSummary.text = if (binding == null) "연결된 계정 없음" else if (googleActive) "연결됨 · 자동 동기화에 사용" else "연결 정보 저장됨"
+            davSummary.text = if (dav == null) "연결된 계정 없음" else if (!googleActive) "연결 정보 저장됨 · 자동 동기화에 사용" else "연결 정보 저장됨"
+            processorSummary.text = if (vemo().syncing) "동기화 중" else "동기화하여 연결 상태와 결과 확인"
+            cancelRow.visibility = if (vemo().syncing && googleActive) View.VISIBLE else View.GONE
+        }
+        refreshSettings?.invoke()
+        statusView = text(vemo().message, 13f, muted).apply { accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE }
+        content.addView(statusView)
+        gap(8)
+        configureSection("Google Drive 연결 설정 · 고급") { googleSettings() }
+        configureSection("Nextcloud 연결 설정 · 고급") { nextcloudSettings() }
+        gap(16)
+        content.addView(text("기기 원본은 앱 내부에 보관합니다. 앱 삭제/데이터 초기화 전에는 폴더 복사 또는 공유로 내보내세요.", 13f, muted))
         content.addView(text("표시되는 폴더 공급자는 Android가 결정합니다. Google Drive가 폴더 선택에 표시되지 않으면 녹음의 공유 버튼에서 Drive를 선택하세요. 공유는 자동 PC 처리 연결과 별개입니다.", 13f, muted))
-        gap(20)
-        googleSettings()
-        gap(20)
-        label("Nextcloud · 선택 사항", 20f)
+    }
+    private fun nextcloudSettings() {
         content.addView(text("HTTPS WebDAV 폴더로 완료한 녹음과 PC 결과를 교환합니다. 데스크톱에서 같은 폴더를 등록하세요.", 14f, muted))
         val old = try { vemo().vault.load() } catch (_: Exception) { null }
         fun field(caption: String, initial: String = "", secret: Boolean = false): EditText {

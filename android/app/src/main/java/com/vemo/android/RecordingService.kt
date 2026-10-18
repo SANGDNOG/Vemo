@@ -10,6 +10,18 @@ import com.vemo.android.core.*
 import java.io.FileOutputStream
 
 class RecordingService : Service() {
+    companion object {
+        // Transient UI metering only. Never persisted or used to determine capture state.
+        @Volatile private var amplitude = 0
+        val currentAmplitude: Int get() = amplitude
+    }
+    private val amplitudeTick = object : Runnable {
+        override fun run() {
+            if (id == null || finishing || paused) { amplitude = 0; return }
+            amplitude = try { recorder?.maxAmplitude ?: 0 } catch (_: Exception) { 0 }
+            handler.postDelayed(this, 100)
+        }
+    }
     private var recorder: MediaRecorder? = null
     private var output: FileOutputStream? = null
     private var id: String? = null
@@ -72,6 +84,7 @@ class RecordingService : Service() {
             started = SystemClock.elapsedRealtime(); accumulated = 0; paused = false
             app.elapsedMs = 0
             handler.post(ticker)
+            handler.post(amplitudeTick)
             classificationWarning = null
             if (folderId != null) {
                 try { app.library.assign(record.id, folderId) }
@@ -88,6 +101,7 @@ class RecordingService : Service() {
             recorder!!.pause()
             accumulated += SystemClock.elapsedRealtime() - started
             paused = true
+            handler.removeCallbacks(amplitudeTick); amplitude = 0
             vemo().store.transition(id!!, CaptureState.PAUSED)
             vemo().notify("일시정지 · 완료하거나 재개하세요. 업로드하지 않습니다.")
         } catch (error: Exception) { interrupt(safeError(error)) }
@@ -96,6 +110,7 @@ class RecordingService : Service() {
         if (id == null || !paused || finishing) return
         try {
             recorder!!.resume(); started = SystemClock.elapsedRealtime(); paused = false
+            handler.post(amplitudeTick)
             vemo().store.transition(id!!, CaptureState.RECORDING)
             vemo().notify("녹음 중")
         } catch (error: Exception) { interrupt(safeError(error)) }
@@ -105,6 +120,7 @@ class RecordingService : Service() {
         if (finishing) return
         finishing = true
         handler.removeCallbacks(ticker)
+        handler.removeCallbacks(amplitudeTick); amplitude = 0
         val app = vemo()
         try {
             app.store.transition(current, CaptureState.FINALIZING)
@@ -136,6 +152,7 @@ class RecordingService : Service() {
     }
     private fun interrupt(message: String) {
         handler.removeCallbacks(ticker)
+        handler.removeCallbacks(amplitudeTick); amplitude = 0
         try { recorder?.stop() } catch (_: Exception) { }
         release()
         id?.let { current ->
@@ -159,6 +176,7 @@ class RecordingService : Service() {
     override fun onDestroy() {
         if (id != null && !finishing) interrupt("녹음 서비스가 중단되었습니다. 원본을 보존했습니다.")
         handler.removeCallbacks(ticker)
+        handler.removeCallbacks(amplitudeTick); amplitude = 0
         super.onDestroy()
     }
     private fun notificationManager() = getSystemService(NotificationManager::class.java)

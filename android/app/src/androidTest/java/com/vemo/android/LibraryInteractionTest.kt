@@ -185,7 +185,7 @@ class LibraryInteractionTest : InstrumentationTestCase() {
         clickDialog("폴더 이동"); screenshot("rounded-recording-move"); clickDialog("취소")
         assertEquals(child.id, reopened().folderFor(memo.id))
         holdRelease(recordingView(memo.title)); clickDialog("열기")
-        await("Recording context Open failed") { nodeText("녹음 재생") }
+        await("Recording context Open failed") { nodeText("녹음 듣기") }
         back(); assertLibrary()
         holdRelease(folderView(created.id)); clickDialog("폴더 삭제")
         screenshot("rounded-delete-confirmation")

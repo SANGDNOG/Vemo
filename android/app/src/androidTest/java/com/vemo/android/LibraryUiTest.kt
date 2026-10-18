@@ -102,10 +102,10 @@ class LibraryUiTest : InstrumentationTestCase() {
         manageFolder(child.id); click("이름 변경"); setDialogText("설계 회의"); click("저장")
         assertEquals("설계 회의", LibraryStore(File(app.filesDir, "library.json")).snapshot().folders.single { it.id == child.id }.name)
         selectFolder("전체 녹음")
-        click(first.title); click("폴더 이동"); click("${parent.name} / 설계 회의")
+        click(first.title); click("녹음 더보기"); click("폴더 이동"); click("${parent.name} / 설계 회의")
         assertEquals(child.id, app.library.folderFor(first.id))
         back()
-        click(second.title); click("폴더 이동"); click(parent.name); back()
+        click(second.title); click("녹음 더보기"); click("폴더 이동"); click(parent.name); back()
         selectFolder(parent.name)
         assertText(second.title); assertNoText(first.title); assertNoText(third.title)
         selectFolder("설계 회의")
@@ -178,7 +178,7 @@ class LibraryUiTest : InstrumentationTestCase() {
         recreate(); assertText(notes)
         screenshot("detail-notes")
         back(); assertLibrary(); assertText(design.title)
-        click("설정"); assertText("기본 녹음 모드"); back(); assertLibrary()
+        click("설정"); assertText("기본 모드"); back(); assertLibrary()
         click("새 녹음"); assertText("녹음 시작"); back(); assertLibrary()
         captureDisplayVariants()
     }
@@ -205,13 +205,15 @@ class LibraryUiTest : InstrumentationTestCase() {
             screenshot("recording-active")
             back(); assertLibrary()
             openActiveCapture(); assertText("일시정지")
-            click("설정"); assertText("기본 녹음 모드"); back(); assertLibrary()
+            back(); assertLibrary()
+            click("설정"); assertText("기본 모드"); back(); assertLibrary()
+            assertEquals("Navigation must preserve the owned active capture", CaptureState.RECORDING, app.store.get(id).state)
             openActiveCapture(); recreate(); assertText("일시정지")
             click("일시정지"); awaitCapture(CaptureState.PAUSED)
             assertFalse(app.store.get(id).uploadable)
-            back(); openActiveCapture(); click("녹음 재개"); awaitCapture(CaptureState.RECORDING)
+            back(); openActiveCapture(); click("재개"); awaitCapture(CaptureState.RECORDING)
             SystemClock.sleep(3000)
-            click("녹음 완료")
+            click("완료")
             val complete = awaitCapture(CaptureState.COMPLETE)
             await("Capture gate not released") { !app.gate.isRecording() }
             assertTrue(complete.bytes > 0); assertTrue(complete.durationMs > 0)
@@ -219,8 +221,8 @@ class LibraryUiTest : InstrumentationTestCase() {
             assertEquals(folder.id, LibraryStore(File(app.filesDir, "library.json")).folderFor(id))
             back(); click(complete.title)
             screenshot("detail-real-capture")
-            click("녹음 재생"); assertText("재생 중지")
-            click("재생 중지"); assertText("녹음 재생")
+            click("녹음 듣기"); assertText("재생 중지")
+            click("재생 중지"); assertText("녹음 듣기")
             assertEquals(complete.hash, sha256(app.store.audio(id)))
             back()
             val stale = app.library.createFolder("검증 임시 폴더").also { ownedFolders += it.id }
@@ -257,9 +259,9 @@ class LibraryUiTest : InstrumentationTestCase() {
             shell("cmd overlay enable-exclusive --category com.android.internal.systemui.navbar.gestural")
             await("Gesture navigation did not activate") { shell("settings get secure navigation_mode") == "2" }
             launch()
-            click(record.title); assertText("폴더 이동")
+            click(record.title); assertText("녹음 듣기")
             gestureBack(); await("Native Back did not return detail to library") { hasSearchField() }
-            click("설정"); assertText("기본 녹음 모드")
+            click("설정"); assertText("기본 모드")
             gestureBack(); await("Native Back did not return settings to library") { hasSearchField() }
             assertFalse("Native Back closed the activity", activity!!.isFinishing)
         } finally {
