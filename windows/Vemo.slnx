@@ -1,0 +1,9 @@
+<Solution>
+  <Project Path="Vemo.App.Tests/Vemo.App.Tests.csproj" />
+  <Project Path="Vemo.App/Vemo.App.csproj" />
+  <Project Path="Vemo.Core.Tests/Vemo.Core.Tests.csproj" />
+  <Project Path="Vemo.Core/Vemo.Core.csproj" />
+  <Project Path="Vemo.Provision.Tests/Vemo.Provision.Tests.csproj" />
+  <Project Path="Vemo.Provision/Vemo.Provision.csproj" />
+  <Project Path="Vemo.Validation/Vemo.Validation.csproj" />
+</Solution>

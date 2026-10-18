@@ -24,27 +24,32 @@ public sealed class MainWindow : Window
     readonly WindowWork work = new(); readonly DispatcherTimer refresh = new() { Interval = TimeSpan.FromSeconds(1) };
     readonly List<(Control Control, Func<bool> Enabled)> actions = [];
     readonly Dictionary<string, (string Signature, string Text)> searchCache = [];
-    string? selectedFolder, detailId; string view = "all"; bool refreshing, closing, closeReady, editing, importing; Task backgroundTask = Task.CompletedTask; string lastSignature = ""; int focusPane;
+    string? selectedFolder, detailId; string view = "all"; bool refreshing, refreshPending, closing, closeReady, editing, importing; Task backgroundTask = Task.CompletedTask; string lastSignature = ""; int focusPane;
     record FolderChoice(string? Id, string Label, string View = "folder", int Depth = 0, int Count = 0) { public override string ToString() => Label; }
     record JobChoice(RecordingJob Job) { public override string ToString() => $"{Job.Title} · {StateLabel(Job.State)}"; }
-    public MainWindow()
+    public MainWindow() : this(null) { }
+    public MainWindow(string? libraryRoot)
     {
         Title = "Vemo — Windows functional preview"; Width = 1280; Height = 820; MinWidth = 980; MinHeight = 540;
         Icon = new WindowIcon(Avalonia.Platform.AssetLoader.Open(new Uri("avares://Vemo.App/Assets/vemo-icon.png")));
-        store = new(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Vemo", "WindowsPreview")); runner = new(store, new LocalCliInferenceEngine()); mobile = new(store);
+        store = new(libraryRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Vemo", "WindowsPreview")); runner = new(store, new LocalCliInferenceEngine()); mobile = new(store);
         navigation.Classes.Add("navigation"); folders.Classes.Add("navigation"); jobs.Classes.Add("recordings"); search.Classes.Add("search"); title.Classes.Add("title"); transcript.Classes.Add("reading"); notes.Classes.Add("reading");
         NativeWhite.Label(navigation, "라이브러리", "방향키로 전체 녹음, 미분류, 휴지통 선택"); NativeWhite.Label(folders, "폴더", "방향키로 선택, F6으로 다음 영역"); NativeWhite.Label(jobs, "녹음 목록", "Ctrl/Shift 다중 선택, Ctrl+A 전체 선택, Delete 휴지통");
         NativeWhite.Label(search, "현재 목록의 제목, 전사, 노트 검색", "Ctrl+F 검색, Escape 지우기"); NativeWhite.Label(title, "녹음 제목", "Enter 저장, Escape 변경 취소"); NativeWhite.Label(date, "녹음 날짜", "시간대를 포함한 ISO 8601, 모르면 비워 두세요"); NativeWhite.Label(transcript, "전사 원문"); NativeWhite.Label(notes, "생성된 노트, Markdown 원문");
         folders.ItemTemplate = new FuncDataTemplate<FolderChoice>((f, _) =>
         {
-            var row = new Grid { ColumnDefinitions = new("20,*,Auto"), Margin = new Thickness(f!.Depth * 12, 0, 0, 0) }; row.Children.Add(NativeWhite.SelectionMark());
+            // Avalonia clears Content to null when recycling an item container.
+            if (f == null) return null;
+            var row = new Grid { ColumnDefinitions = new("20,*,Auto"), Margin = new Thickness(f.Depth * 12, 0, 0, 0) }; row.Children.Add(NativeWhite.SelectionMark());
             var label = new TextBlock { Text = f.Label, TextTrimming = TextTrimming.CharacterEllipsis }; ToolTip.SetTip(label, f.Label); Grid.SetColumn(label, 1); row.Children.Add(label);
             var count = NativeWhite.Text(f.Count.ToString(), "caption"); Grid.SetColumn(count, 2); row.Children.Add(count); return row;
         });
         navigation.ItemTemplate = folders.ItemTemplate;
+        folders.ContextMenu = new ContextMenu { ItemsSource = new Control[] { Menu("새 하위 폴더…", CreateFolder, () => selectedFolder != null), Menu("선택 폴더 이동…", MoveFolder, () => selectedFolder != null) } };
         jobs.ItemTemplate = new FuncDataTemplate<JobChoice>((choice, _) =>
         {
-            var j = choice!.Job; var row = new StackPanel { Spacing = 7 };
+            if (choice == null) return null;
+            var j = choice.Job; var row = new StackPanel { Spacing = 7 };
             row.Children.Add(new TextBlock { Text = j.Title, FontWeight = FontWeight.SemiBold, TextWrapping = TextWrapping.Wrap, MaxLines = 2, TextTrimming = TextTrimming.CharacterEllipsis });
             var recorded = NativeWhite.Text(DisplayDate(j.RecordedAt), "caption"); ToolTip.SetTip(recorded, j.RecordedAt ?? "녹음 날짜 미확인"); row.Children.Add(recorded);
             row.Children.Add(NativeWhite.Text(StateLabel(j.State) + (j.ExportError != null ? " · ZIP 저장 실패" : ""), j.State == JobState.Failed || j.ExportError != null ? "error" : "caption"));
@@ -87,10 +92,12 @@ public sealed class MainWindow : Window
         tabs.ItemsSource = new[] { new TabItem { Header = "전사", Content = transcript }, new TabItem { Header = "노트 · Markdown", Content = notes } }; Grid.SetRow(tabs, 3); detailBody.Children.Add(tabs);
         var footer = new WrapPanel { Margin = new Thickness(0, 16, 0, 0) }; footer.Children.Add(Button("ZIP 내보내기", Export, null, () => HasSelection() && SelectedJobs().All(j => j.State == JobState.Completed))); footer.Children.Add(Button("선택 이동…", Move, null, HasSelection)); Grid.SetRow(footer, 4); detailBody.Children.Add(footer);
         status.Margin = new Thickness(16, 8); var statusBar = new Border { Child = new ScrollViewer { Content = status, MaxHeight = 70 }, Background = NativeWhite.Sidebar, BorderBrush = NativeWhite.Divider, BorderThickness = new Thickness(0, 1, 0, 0) }; Grid.SetRow(statusBar, 1); outer.Children.Add(statusBar); Content = outer;
-        navigation.SelectionChanged += (_, _) => { if (refreshing || closing) return; if (navigation.SelectedItem is FolderChoice f) { selectedFolder = null; view = f.View; lastSignature = ""; Refresh(); } };
-        folders.SelectionChanged += (_, _) => { if (refreshing || closing) return; if (folders.SelectedItem is FolderChoice f) { selectedFolder = f.Id; view = f.View; } lastSignature = ""; Refresh(); };
-        jobs.SelectionChanged += (_, _) => { if (!refreshing) Detail(); }; search.TextChanged += (_, _) => { if (closing) return; lastSignature = ""; Refresh(); };
-        title.TextChanged += (_, _) => { if (!refreshing) editing = true; }; date.TextChanged += (_, _) => { if (!refreshing) editing = true; };
+        navigation.SelectionChanged += (_, _) => { if (refreshing || closing) return; if (navigation.SelectedItem is FolderChoice f) { selectedFolder = null; view = f.View; RequestRefresh(); } };
+        folders.SelectionChanged += (_, _) => { if (refreshing || closing) return; if (folders.SelectedItem is FolderChoice f) { selectedFolder = f.Id; view = f.View; RequestRefresh(); } };
+        jobs.SelectionChanged += (_, _) => { if (!refreshing) Detail(); }; search.TextChanged += (_, _) => { if (!closing) RequestRefresh(); };
+        // TextChanged is asynchronous and runs after Detail clears refreshing.
+        // Track edits synchronously so loading stored metadata never marks it dirty.
+        title.TextChanging += (_, _) => { if (!refreshing) editing = true; }; date.TextChanging += (_, _) => { if (!refreshing) editing = true; };
         title.KeyDown += EditKey; date.KeyDown += EditKey; AddHandler(KeyDownEvent, Shortcut, RoutingStrategies.Tunnel);
         refresh.Tick += (_, _) => Refresh(); Opened += (_, _) => { if (closing) return; Refresh(); refresh.Start(); backgroundTask = work.Start(RunBackground); };
         Closing += (_, e) =>
@@ -168,9 +175,17 @@ public sealed class MainWindow : Window
     RecordingJob? Current() => jobs.SelectedItem is JobChoice choice ? store.Get(choice.Job.Id) : null;
     static string DisplayDate(string? value) => DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.None, out var date) ? date.ToString("yyyy.MM.dd · HH:mm", CultureInfo.InvariantCulture) : "녹음 날짜 미확인";
     static string StateLabel(JobState state) => state switch { JobState.Queued => "처리 대기", JobState.Transcribing => "전사 중", JobState.GeneratingNotes => "노트 생성 중", JobState.Completed => "완료", JobState.Failed => "처리 실패", JobState.Cancelled => "취소됨", _ => "삭제됨" };
+    void RequestRefresh()
+    {
+        lastSignature = "";
+        if (refreshPending || closing) return;
+        refreshPending = true;
+        // Finish the current selection/text event before replacing item sources.
+        Dispatcher.UIThread.Post(() => { refreshPending = false; Refresh(); });
+    }
     void Refresh()
     {
-        if (closing) return;
+        if (refreshing || closing) return;
         var all = store.Jobs; var queued = all.Count(j => !j.Trashed && j.State == JobState.Queued);
         var active = all.FirstOrDefault(j => j.State is JobState.Transcribing or JobState.GeneratingNotes);
         queueInfo.Text = (store.Settings.QueuePaused ? "새 작업 일시중지" : active != null ? StateLabel(active.State) : "처리 중인 작업 없음") + (queued > 0 ? $" · 대기 {queued}개" : "");
@@ -181,8 +196,11 @@ public sealed class MainWindow : Window
         var selected = Selected().ToHashSet(); var primary = Current()?.Id; refreshing = true;
         try
         {
-            navigation.ItemsSource = choices.Take(3).ToArray(); navigation.SelectedItem = choices.Take(3).FirstOrDefault(f => f.View == view);
-            folders.ItemsSource = choices.Skip(3).ToArray(); folders.SelectedItem = choices.Skip(3).FirstOrDefault(f => f.Id == selectedFolder && view == "folder");
+            var libraryChoices = choices.Take(3).ToArray(); var folderChoices = choices.Skip(3).ToArray();
+            if (navigation.ItemsSource is not FolderChoice[] currentLibrary || !currentLibrary.SequenceEqual(libraryChoices)) navigation.ItemsSource = libraryChoices;
+            navigation.SelectedItem = navigation.ItemsSource.Cast<FolderChoice>().FirstOrDefault(f => f.View == view);
+            if (folders.ItemsSource is not FolderChoice[] currentFolders || !currentFolders.SequenceEqual(folderChoices)) folders.ItemsSource = folderChoices;
+            folders.SelectedItem = folders.ItemsSource.Cast<FolderChoice>().FirstOrDefault(f => f.Id == selectedFolder && view == "folder");
             var visible = all.Where(j => j.State != JobState.Purged && j.Trashed == (view == "trash") && (view is "all" or "trash" || (view == "unfiled" ? j.FolderId == null : j.FolderId == selectedFolder)));
             var query = search.Text?.Trim() ?? ""; var list = visible.Where(j => Matches(j, query)).Select(j => new JobChoice(j)).ToArray();
             jobs.ItemsSource = list;
@@ -292,7 +310,14 @@ public sealed class MainWindow : Window
         var parent = selectedFolder; var input = new TextBox { PlaceholderText = "폴더 이름" }; NativeWhite.Label(input, "새 폴더 이름");
         var dialog = Dialog("새 폴더", 420, 260); var stack = new StackPanel { Margin = new Thickness(24), Spacing = 14 }; stack.Children.Add(NativeWhite.Text("새 폴더", "heading")); stack.Children.Add(input); var error = NativeWhite.Text("", "error"); stack.Children.Add(error);
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right }; buttons.Children.Add(NativeWhite.Action("취소", () => dialog.Close()));
-        var ok = NativeWhite.Action("만들기", () => { try { work.Token.ThrowIfCancellationRequested(); store.CreateFolder(input.Text ?? "", parent); dialog.Close(); } catch (Exception e) { error.Text = e.Message; } }, "primary"); ok.IsDefault = true; buttons.Children.Add(ok); stack.Children.Add(buttons); dialog.Content = new ScrollViewer { Content = stack }; dialog.Opened += (_, _) => input.Focus(); await dialog.ShowDialog(this).WaitAsync(work.Token);
+        var ok = NativeWhite.Action("만들기", () =>
+        {
+            LibraryFolder created;
+            try { work.Token.ThrowIfCancellationRequested(); created = store.CreateFolder(input.Text ?? "", parent); }
+            catch (Exception e) { error.Text = e.Message; return; }
+            status.Text = $"폴더 ‘{created.Name}’을 만들었습니다.";
+            dialog.Close();
+        }, "primary"); ok.IsDefault = true; buttons.Children.Add(ok); stack.Children.Add(buttons); dialog.Content = new ScrollViewer { Content = stack }; dialog.Opened += (_, _) => input.Focus(); await dialog.ShowDialog(this).WaitAsync(work.Token);
     }
     async Task Purge()
     {

@@ -17,19 +17,20 @@ public sealed class SettingsWindow : Window
         var outer = new Grid { RowDefinitions = new("Auto,*,Auto") }; Content = outer;
         var header = new StackPanel { Margin = new Thickness(32, 26, 32, 18), Spacing = 8 }; header.Children.Add(NativeWhite.Text("설정", "heading")); header.Children.Add(NativeWhite.Text("로컬 처리기와 저장 위치를 설정합니다. 변경 내용은 저장한 뒤 적용됩니다.", "secondary")); outer.Children.Add(header);
         var content = new StackPanel { Margin = new Thickness(32, 0, 32, 24), Spacing = 20 }; var scroll = new ScrollViewer { Content = content }; Grid.SetRow(scroll, 1); outer.Children.Add(scroll);
-        var footer = new StackPanel { Margin = new Thickness(32, 16, 32, 20), Spacing = 12 }; var message = NativeWhite.Text("", "secondary"); footer.Children.Add(new ScrollViewer { Content = message, MaxHeight = 100 });
+        var footer = new StackPanel { Margin = new Thickness(32, 16, 32, 20), Spacing = 12 }; var message = NativeWhite.Text("", "secondary"); NativeWhite.Label(message, "설정 저장 상태"); footer.Children.Add(new ScrollViewer { Content = message, MaxHeight = 100 });
         var footerButtons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right }; footerButtons.Children.Add(NativeWhite.Action("취소", Close)); var save = new Button { Content = "설정 저장" }; save.Classes.Add("primary"); footerButtons.Children.Add(save); footer.Children.Add(footerButtons);
         var footerBorder = new Border { Child = footer, BorderBrush = NativeWhite.Divider, BorderThickness = new Thickness(0, 1, 0, 0) }; Grid.SetRow(footerBorder, 2); outer.Children.Add(footerBorder);
         StackPanel group = new();
         void Section(string name, string help)
         {
-            var section = new StackPanel { Spacing = 10 }; section.Children.Add(new TextBlock { Text = name, FontWeight = Avalonia.Media.FontWeight.SemiBold });
+            var section = new StackPanel { Spacing = 10 }; section.Children.Add(NativeWhite.Text(name, "secondary"));
             group = new StackPanel { Spacing = 12, Margin = new Thickness(18) }; group.Children.Add(NativeWhite.Text(help, "secondary"));
             section.Children.Add(new Border { Child = group, CornerRadius = new CornerRadius(12), BorderThickness = new Thickness(1), BorderBrush = NativeWhite.Divider }); content.Children.Add(section);
         }
+        var fieldErrors = new Dictionary<TextBox, TextBlock>();
         TextBox Field(string label, string value, bool folder = false, bool picker = false)
         {
-            var caption = NativeWhite.Text(label); group.Children.Add(caption); var row = new Grid { ColumnDefinitions = new("*,Auto") }; var box = new TextBox { Text = value }; NativeWhite.Label(box, label); AutomationProperties.SetLabeledBy(box, caption); ToolTip.SetTip(box, label); row.Children.Add(box);
+            var field = new StackPanel { Spacing = 8 }; group.Children.Add(field); var caption = NativeWhite.Text(label); field.Children.Add(caption); var row = new Grid { ColumnDefinitions = new("*,Auto") }; var box = new TextBox { Text = value }; NativeWhite.Label(box, label); AutomationProperties.SetLabeledBy(box, caption); ToolTip.SetTip(box, label); row.Children.Add(box);
             if (picker || folder)
             {
                 var browse = new Button { Content = "찾아보기…", Margin = new Thickness(8, 0, 0, 0) }; NativeWhite.Label(browse, label + " 찾아보기"); Grid.SetColumn(browse, 1);
@@ -44,11 +45,13 @@ public sealed class SettingsWindow : Window
                 };
                 row.Children.Add(browse);
             }
-            group.Children.Add(row); return box;
+            field.Children.Add(row);
+            var error = NativeWhite.Text("", "error"); error.IsVisible = false; field.Children.Add(error); fieldErrors.Add(box, error);
+            box.TextChanged += (_, _) => { error.IsVisible = false; }; return box;
         }
         ComboBox Choice(string label, string[] options, string selected)
         {
-            var caption = NativeWhite.Text(label); group.Children.Add(caption); var box = new ComboBox { ItemsSource = options, SelectedItem = selected, HorizontalAlignment = HorizontalAlignment.Stretch }; NativeWhite.Label(box, label); AutomationProperties.SetLabeledBy(box, caption); group.Children.Add(box); return box;
+            var field = new StackPanel { Spacing = 8 }; group.Children.Add(field); var caption = NativeWhite.Text(label); field.Children.Add(caption); var box = new ComboBox { ItemsSource = options, SelectedItem = selected, HorizontalAlignment = HorizontalAlignment.Stretch }; NativeWhite.Label(box, label); AutomationProperties.SetLabeledBy(box, caption); field.Children.Add(box); return box;
         }
         Section("입력 · 출력 폴더", "ZIP에는 원본 녹음, 전사 TXT, 노트 MD가 들어갑니다. 라이브러리와 모바일 폴더에서 분리된 저장 위치를 선택하세요.");
         var output = Field("자동 ZIP 저장 폴더", s.OutputDirectory, true);
@@ -81,9 +84,9 @@ public sealed class SettingsWindow : Window
         {
             try
             {
-                var files = await StorageProvider.OpenFilePickerAsync(new() { Title = "Choose provisioned settings.json", AllowMultiple = false });
+                var files = await StorageProvider.OpenFilePickerAsync(new() { Title = "설치한 settings.json 선택", AllowMultiple = false });
                 if (closed || files.Count == 0) return;
-                var path = files[0].TryGetLocalPath() ?? throw new IOException("Choose a local settings file.");
+                var path = files[0].TryGetLocalPath() ?? throw new IOException("이 PC에 저장된 설정 파일을 선택하세요.");
                 var preset = PresetSettings.Load(path); var selection = preset.Models;
                 whisperProfile.SelectedItem = selection.WhisperProfile; notesProfile.SelectedItem = selection.NotesProfile;
                 whisperExe.Text = selection.WhisperExecutable; whisperModel.Text = selection.WhisperModel;
@@ -99,10 +102,61 @@ public sealed class SettingsWindow : Window
             try
             {
                 if (closed) return;
-                var updated = store.Settings with { OutputDirectory = output.Text?.Trim() ?? "", MobileDirectory = sync.Text?.Trim() ?? "", Models = new() { WhisperProfile = whisperProfile.SelectedItem?.ToString() ?? "large-v3-turbo", NotesProfile = notesProfile.SelectedItem?.ToString() ?? "Qwen3.5 9B GGUF", WhisperExecutable = whisperExe.Text?.Trim() ?? "", WhisperModel = whisperModel.Text?.Trim() ?? "", LlamaExecutable = llamaExe.Text?.Trim() ?? "", LlamaModel = llamaModel.Text?.Trim() ?? "", FfmpegExecutable = ffmpeg.Text?.Trim() ?? "", Compute = compute.SelectedItem?.ToString() ?? "CPU", CudaConfirmed = cuda.IsChecked == true, GpuLayers = int.Parse(layers.Text ?? "20"), TimeoutMinutes = int.Parse(timeout.Text ?? "120") } };
-                store.UpdateSettings(updated); if (updated.MobileDirectory != "") mobile.Register(updated.MobileDirectory); Close();
+                int Number(TextBox field, int minimum, int maximum, string label)
+                {
+                    if (int.TryParse(field.Text, out var value) && value >= minimum && value <= maximum) return value;
+                    var error = fieldErrors[field]; error.Text = $"{minimum}–{maximum} 사이의 정수를 입력하세요."; error.IsVisible = true;
+                    field.Focus(); field.SelectAll(); field.BringIntoView();
+                    throw new InvalidDataException($"{label}: {error.Text}");
+                }
+                var gpuLayers = compute.SelectedItem?.ToString() == "CUDA" ? Number(layers, 0, 256, "GPU 레이어 수") : m.GpuLayers;
+                var timeoutMinutes = Number(timeout, 1, 1440, "프로세스별 시간 제한 · 분");
+                if (compute.SelectedItem?.ToString() == "CUDA" && cuda.IsChecked != true)
+                {
+                    cuda.Focus(); throw new InvalidDataException("CUDA 지원을 확인한 뒤 확인란을 선택하거나 CPU를 선택하세요.");
+                }
+                var updated = store.Settings with { OutputDirectory = output.Text?.Trim() ?? "", MobileDirectory = sync.Text?.Trim() ?? "", Models = new() { WhisperProfile = whisperProfile.SelectedItem?.ToString() ?? "large-v3-turbo", NotesProfile = notesProfile.SelectedItem?.ToString() ?? "Qwen3.5 9B GGUF", WhisperExecutable = whisperExe.Text?.Trim() ?? "", WhisperModel = whisperModel.Text?.Trim() ?? "", LlamaExecutable = llamaExe.Text?.Trim() ?? "", LlamaModel = llamaModel.Text?.Trim() ?? "", FfmpegExecutable = ffmpeg.Text?.Trim() ?? "", Compute = compute.SelectedItem?.ToString() ?? "CPU", CudaConfirmed = cuda.IsChecked == true, GpuLayers = gpuLayers, TimeoutMinutes = timeoutMinutes } };
+                ApplySettings(store, mobile, updated); Close();
             }
             catch (Exception e) { if (!closed) { message.Foreground = NativeWhite.Danger; message.Text = e.Message; } }
         };
     }
+
+    // Reject known ownership conflicts before committing; registration is not transactional.
+    internal static void ApplySettings(LibraryStore store, MobileFolderAdapter mobile, AppSettings updated)
+    {
+        var output = string.IsNullOrWhiteSpace(updated.OutputDirectory) ? "" : SafeFiles.Full(updated.OutputDirectory);
+        var sync = string.IsNullOrWhiteSpace(updated.MobileDirectory) ? "" : SafeFiles.Full(updated.MobileDirectory);
+        updated = updated with { OutputDirectory = output, MobileDirectory = sync };
+        if (output != "") SafeFiles.Disjoint(store.Root, output);
+        if (sync != "")
+        {
+            SafeFiles.Disjoint(store.Root, sync);
+            if (output != "") SafeFiles.Disjoint(output, sync);
+            var marker = Path.Combine(sync, "processor.json");
+            SafeFiles.NoLinks(marker);
+            if (File.Exists(marker))
+            {
+                using var doc = JsonFormat.Strict(SafeFiles.Read(marker));
+                var root = doc.RootElement;
+                if (root.ValueKind != System.Text.Json.JsonValueKind.Object || !root.EnumerateObject().Select(p => p.Name).ToHashSet().SetEquals(["schema_version", "processor_id", "display_name"]))
+                    throw new InvalidDataException("동기화 폴더의 processor.json 형식을 확인하세요.");
+                if (root.GetProperty("schema_version").GetInt32() != 1 || root.GetProperty("processor_id").GetString() != store.ProcessorId)
+                    throw new InvalidDataException("다른 PC에 연결된 동기화 폴더입니다. 이 PC의 폴더를 선택하세요.");
+            }
+        }
+        var previous = store.Settings;
+        try
+        {
+            store.UpdateSettings(updated);
+            if (sync != "") mobile.Register(sync);
+        }
+        catch
+        {
+            // Best-effort restoration; background readers can observe the intermediate settings.
+            if (store.Settings != previous) store.UpdateSettings(previous);
+            throw;
+        }
+    }
+
 }

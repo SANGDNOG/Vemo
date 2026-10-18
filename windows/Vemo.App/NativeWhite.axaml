@@ -27,7 +27,14 @@
   <Style Selector="TextBox.search"><Setter Property="Background" Value="#F7F7FA" /><Setter Property="BorderThickness" Value="0" /><Setter Property="CornerRadius" Value="12" /></Style>
   <Style Selector="TextBox.title"><Setter Property="FontSize" Value="26" /><Setter Property="FontWeight" Value="SemiBold" /><Setter Property="BorderThickness" Value="0" /><Setter Property="Background" Value="Transparent" /><Setter Property="Padding" Value="0,6" /></Style>
   <Style Selector="TextBox.reading"><Setter Property="BorderThickness" Value="0" /><Setter Property="Background" Value="Transparent" /><Setter Property="FontSize" Value="15" /><Setter Property="Padding" Value="0,16" /></Style>
-  <Style Selector="ComboBox"><Setter Property="CornerRadius" Value="10" /><Setter Property="MinHeight" Value="38" /><Setter Property="BorderBrush" Value="#E8E8ED" /></Style>
+  <Style Selector="ComboBox">
+    <Style.Resources>
+      <SolidColorBrush x:Key="ComboBoxDropDownBackground">#FFFFFF</SolidColorBrush>
+      <SolidColorBrush x:Key="ComboBoxDropDownBorderBrush">#E8E8ED</SolidColorBrush>
+      <CornerRadius x:Key="OverlayCornerRadius">12</CornerRadius>
+      <Thickness x:Key="ComboBoxDropdownBorderPadding">6</Thickness>
+    </Style.Resources>
+    <Setter Property="CornerRadius" Value="10" /><Setter Property="MinHeight" Value="38" /><Setter Property="BorderBrush" Value="#E8E8ED" /></Style>
   <Style Selector="ListBox"><Setter Property="Background" Value="Transparent" /><Setter Property="BorderThickness" Value="0" /><Setter Property="Padding" Value="0" /></Style>
   <Style Selector="ListBoxItem"><Setter Property="HorizontalContentAlignment" Value="Stretch" /><Setter Property="Padding" Value="12,10" /><Setter Property="CornerRadius" Value="9" /></Style>
   <Style Selector="ListBox.navigation ListBoxItem"><Setter Property="MinHeight" Value="42" /><Setter Property="Margin" Value="8,2" /></Style>
@@ -41,7 +48,29 @@
   <Style Selector="TabControl"><Setter Property="Padding" Value="0" /></Style>
   <Style Selector="TabItem"><Setter Property="FontSize" Value="14" /><Setter Property="Padding" Value="20,10" /></Style>
   <Style Selector="TabItem:selected"><Setter Property="Foreground" Value="#6D5BB5" /></Style>
-  <Style Selector="MenuItem"><Setter Property="Padding" Value="12,9" /></Style>
+  <!-- Shared popup surfaces cover toolbar flyouts, right-click menus and submenus. -->
+  <Style Selector="MenuFlyoutPresenter, ContextMenu, FlyoutPresenter">
+    <Setter Property="Background" Value="#FFFFFF" /><Setter Property="Foreground" Value="#202126" />
+    <Setter Property="BorderBrush" Value="#E8E8ED" /><Setter Property="BorderThickness" Value="1" />
+    <Setter Property="CornerRadius" Value="12" /><Setter Property="Padding" Value="6" />
+    <Setter Property="FontFamily" Value="Segoe UI, Malgun Gothic, Noto Sans CJK KR, sans-serif" /><Setter Property="FontSize" Value="14" />
+  </Style>
+  <Style Selector="MenuItem"><Setter Property="Padding" Value="12,9" /><Setter Property="MinHeight" Value="38" /><Setter Property="CornerRadius" Value="8" /></Style>
+  <Style Selector="MenuItem:pointerover /template/ Border#PART_LayoutRoot, MenuItem:selected /template/ Border#PART_LayoutRoot">
+    <Setter Property="Background" Value="#F0ECFA" /><Setter Property="BorderBrush" Value="Transparent" />
+  </Style>
+  <Style Selector="MenuItem:pointerover, MenuItem:selected"><Setter Property="Foreground" Value="#6D5BB5" /></Style>
+  <Style Selector="MenuItem.danger:pointerover /template/ Border#PART_LayoutRoot, MenuItem.danger:selected /template/ Border#PART_LayoutRoot"><Setter Property="Background" Value="#FBEFF0" /></Style>
+  <Style Selector="MenuItem.danger:pointerover, MenuItem.danger:selected"><Setter Property="Foreground" Value="#B5444D" /></Style>
+  <Style Selector="MenuItem:disabled"><Setter Property="Opacity" Value="0.5" /></Style>
+  <Style Selector="MenuFlyoutPresenter Separator, ContextMenu Separator"><Setter Property="Background" Value="#E8E8ED" /><Setter Property="Margin" Value="6,5" /></Style>
+  <Style Selector="ComboBoxItem"><Setter Property="Padding" Value="12,9" /><Setter Property="MinHeight" Value="38" /><Setter Property="CornerRadius" Value="8" /></Style>
+  <Style Selector="ComboBoxItem:selected /template/ ContentPresenter, ComboBoxItem:pointerover /template/ ContentPresenter"><Setter Property="Background" Value="#F0ECFA" /><Setter Property="Foreground" Value="#6D5BB5" /></Style>
+  <Style Selector="ToolTip"><Setter Property="Background" Value="#202126" /><Setter Property="Foreground" Value="White" /><Setter Property="CornerRadius" Value="8" /><Setter Property="Padding" Value="10,6" /></Style>
+  <Style Selector="Button:pointerover /template/ ContentPresenter"><Setter Property="Background" Value="#F0ECFA" /><Setter Property="BorderBrush" Value="#E8E8ED" /><Setter Property="Foreground" Value="#6D5BB5" /></Style>
+  <Style Selector="Button:pressed /template/ ContentPresenter"><Setter Property="Background" Value="#E5DFF4" /><Setter Property="Foreground" Value="#6D5BB5" /></Style>
+  <Style Selector="Button.primary:pointerover /template/ ContentPresenter, Button.primary:pressed /template/ ContentPresenter"><Setter Property="Background" Value="#6350A9" /><Setter Property="BorderBrush" Value="#6350A9" /><Setter Property="Foreground" Value="White" /></Style>
+  <Style Selector="Button.danger:pointerover /template/ ContentPresenter, Button.danger:pressed /template/ ContentPresenter"><Setter Property="Background" Value="#FBEFF0" /><Setter Property="Foreground" Value="#B5444D" /></Style>
   <Style Selector="MenuItem.danger"><Setter Property="Foreground" Value="#B5444D" /></Style>
   <Style Selector="Button:focus-visible"><Setter Property="BorderBrush" Value="#6D5BB5" /><Setter Property="BorderThickness" Value="2" /></Style>
   <Style Selector="ListBoxItem:focus-visible /template/ ContentPresenter"><Setter Property="BorderBrush" Value="#6D5BB5" /><Setter Property="BorderThickness" Value="1" /></Style>
