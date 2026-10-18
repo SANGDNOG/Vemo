@@ -12,7 +12,7 @@ using Vemo.Core;
 using System.Globalization;
 namespace Vemo.App;
 
-public sealed class MainWindow : Window
+public sealed partial class MainWindow : Window
 {
     readonly LibraryStore store; readonly JobRunner runner; readonly MobileFolderAdapter mobile;
     readonly ListBox navigation = new(), folders = new(), jobs = new() { SelectionMode = SelectionMode.Multiple };
@@ -92,6 +92,7 @@ public sealed class MainWindow : Window
         tabs.ItemsSource = new[] { new TabItem { Header = "전사", Content = transcript }, new TabItem { Header = "노트 · Markdown", Content = notes } }; Grid.SetRow(tabs, 3); detailBody.Children.Add(tabs);
         var footer = new WrapPanel { Margin = new Thickness(0, 16, 0, 0) }; footer.Children.Add(Button("ZIP 내보내기", Export, null, () => HasSelection() && SelectedJobs().All(j => j.State == JobState.Completed))); footer.Children.Add(Button("선택 이동…", Move, null, HasSelection)); Grid.SetRow(footer, 4); detailBody.Children.Add(footer);
         status.Margin = new Thickness(16, 8); var statusBar = new Border { Child = new ScrollViewer { Content = status, MaxHeight = 70 }, Background = NativeWhite.Sidebar, BorderBrush = NativeWhite.Divider, BorderThickness = new Thickness(0, 1, 0, 0) }; Grid.SetRow(statusBar, 1); outer.Children.Add(statusBar); Content = outer;
+        WireDragDrop(listArea);
         navigation.SelectionChanged += (_, _) => { if (refreshing || closing) return; if (navigation.SelectedItem is FolderChoice f) { selectedFolder = null; view = f.View; RequestRefresh(); } };
         folders.SelectionChanged += (_, _) => { if (refreshing || closing) return; if (folders.SelectedItem is FolderChoice f) { selectedFolder = f.Id; view = f.View; RequestRefresh(); } };
         jobs.SelectionChanged += (_, _) => { if (!refreshing) Detail(); }; search.TextChanged += (_, _) => { if (!closing) RequestRefresh(); };
@@ -185,7 +186,7 @@ public sealed class MainWindow : Window
     }
     void Refresh()
     {
-        if (refreshing || closing) return;
+        if (refreshing || closing || dragging) return;
         var all = store.Jobs; var queued = all.Count(j => !j.Trashed && j.State == JobState.Queued);
         var active = all.FirstOrDefault(j => j.State is JobState.Transcribing or JobState.GeneratingNotes);
         queueInfo.Text = (store.Settings.QueuePaused ? "새 작업 일시중지" : active != null ? StateLabel(active.State) : "처리 중인 작업 없음") + (queued > 0 ? $" · 대기 {queued}개" : "");
@@ -274,7 +275,7 @@ public sealed class MainWindow : Window
         {
             var destination = selectedFolder;
             var files = await StorageProvider.OpenFilePickerAsync(new() { Title = "완료된 오디오 파일 가져오기", AllowMultiple = true }).WaitAsync(work.Token); work.Token.ThrowIfCancellationRequested();
-            foreach (var file in files) { var path = file.TryGetLocalPath(); if (path == null) throw new IOException("로컬 파일을 선택하세요."); var j = store.Import(path); if (destination != null) store.Move([j.Id], destination); }
+            foreach (var file in files) { var path = file.TryGetLocalPath(); if (path == null) throw new IOException("로컬 파일을 선택하세요."); await Task.Run(() => store.Import(path, folderId: destination), work.Token); }
             if (files.Count > 0) status.Text = $"{files.Count}개 가져옴 · 원본은 유지됩니다. 녹음 날짜는 확인 후 입력하세요.";
         }
         finally { importing = false; UpdateActions(); }
@@ -301,8 +302,7 @@ public sealed class MainWindow : Window
     }
     async Task Move()
     {
-        var ids = Selected().ToArray(); var destination = await ChooseFolder(); work.Token.ThrowIfCancellationRequested(); store.Move(ids, destination);
-        foreach (var id in ids) if (store.Get(id).State == JobState.Completed && !store.Get(id).Trashed) { try { store.Export(id); } catch (Exception e) { store.SetExportError(id, e.Message); } }
+        var ids = Selected().ToArray(); var destination = await ChooseFolder(); work.Token.ThrowIfCancellationRequested(); await MoveRecordings(ids, destination);
     }
     async Task MoveFolder() { var id = selectedFolder ?? throw new InvalidOperationException("폴더를 먼저 선택하세요."); var destination = await ChooseFolder(id); work.Token.ThrowIfCancellationRequested(); store.MoveFolder(id, destination); }
     async Task CreateFolder()

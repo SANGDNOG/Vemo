@@ -18,6 +18,6 @@ dotnet publish windows/Vemo.App.Tests -c Release -r win-x64 --self-contained tru
 
 On Windows, run `Vemo.App.Tests.exe -noColor -trx headless-native.trx`. GUI rendering at actual display scale, native file pickers, and user-driven desktop behavior still require manual verification. Headless acceptance does not certify complete visual equivalence or all planned Mac features.
 
-The user-PC repair is installed side by side at `%LOCALAPPDATA%\Programs\Vemo\0.1.3-ui-repair`. The Desktop `Vemo.lnk` targets this executable. Existing library/model settings were preserved; a currently open old process must be closed before reopening. Previous 0.1.1 is retained for rollback. No public release or main-branch merge is implied.
+The user-PC repair is installed side by side at `%LOCALAPPDATA%\Programs\Vemo\0.1.3-ui-repair`. This was the installed 0.1.3 baseline; the Desktop shortcut now targets 0.1.4 (see [drag/drop validation](WINDOWS_DRAG_DROP.md)). Existing library/model settings were preserved; a currently open old process must be closed before reopening. Previous 0.1.1 is retained for rollback. No public release or main-branch merge is implied.
 
-Remaining Windows feature gaps include folder rename/delete/drag, playback, direct Google OAuth, automatic titles, and notes beyond 14,000 source characters. CPU transcription/notes/three-entry ZIP inference is independently verified; GPU notes compatibility remains unverified.
+Remaining Windows feature gaps include folder rename/delete, playback, direct Google OAuth, automatic titles, and notes beyond 14,000 source characters. CPU transcription/notes/three-entry ZIP inference is independently verified; GPU notes compatibility remains unverified.

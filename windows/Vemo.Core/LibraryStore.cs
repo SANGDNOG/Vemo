@@ -46,10 +46,11 @@ public sealed class LibraryStore : IDisposable
             data.Settings = settings; Save();
         }
     }
-    public RecordingJob Import(string source, string? title = null, string? recordedAt = null, MobileOrigin? mobile = null)
+    public RecordingJob Import(string source, string? title = null, string? recordedAt = null, MobileOrigin? mobile = null, string? folderId = null)
     {
         lock (gate)
         {
+            CheckFolder(folderId);
             if (mobile != null && data.Jobs.Any(j => j.Mobile != null && SameMobileRecording(j.Mobile, mobile))) throw new InvalidDataException("Mobile recording identity already exists, including purged recordings.");
             SafeFiles.NoLinks(source); SafeFiles.RecordedAt(recordedAt); title ??= Path.GetFileNameWithoutExtension(source); SafeFiles.Title(title);
             var ext = Path.GetExtension(source).ToLowerInvariant(); if (!new[] { ".wav", ".mp3", ".m4a", ".mp4", ".flac", ".ogg", ".aac", ".wma" }.Contains(ext)) throw new InvalidDataException("Unsupported audio extension.");
@@ -59,7 +60,7 @@ public sealed class LibraryStore : IDisposable
             {
                 var dest = Path.Combine(dir, "original" + ext); File.Copy(source, dest, false); var hash = SafeFiles.Hash(dest); if (hash != SafeFiles.Hash(source)) throw new IOException("Source changed while copying.");
                 if (mobile != null && (hash != mobile.AudioSha256 || recordedAt != mobile.RecordedAt)) throw new InvalidDataException("Mobile snapshot mismatch.");
-                var job = new RecordingJob { Id = id, Title = title, RecordedAt = recordedAt, Extension = ext, AudioSha256 = hash, Models = data.Settings.Models with { }, Mobile = mobile }; data.Jobs.Add(job); try { Save(); } catch { data.Jobs.Remove(job); throw; } return job;
+                var job = new RecordingJob { Id = id, Title = title, RecordedAt = recordedAt, Extension = ext, AudioSha256 = hash, Models = data.Settings.Models with { }, Mobile = mobile, FolderId = folderId }; data.Jobs.Add(job); try { Save(); } catch { data.Jobs.Remove(job); throw; } return job;
             }
             catch { SafeFiles.DeleteTree(dir); throw; }
         }

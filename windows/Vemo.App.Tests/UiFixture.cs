@@ -25,7 +25,7 @@ internal sealed class UiFixture : IAsyncDisposable
     public string TrashId { get; } = "";
     public string FolderId { get; } = "";
 
-    public UiFixture(bool seedRecordings = true)
+    public UiFixture(bool seedRecordings = true, Action<LibraryStore>? configure = null)
     {
         Directory.CreateDirectory(temporaryDirectory);
         // macOS /var is a symlink; LibraryStore intentionally rejects symlink paths.
@@ -45,6 +45,7 @@ internal sealed class UiFixture : IAsyncDisposable
                 TrashId = seed.Import(audio, "삭제한 녹음").Id;
                 seed.Trash([TrashId]);
             }
+            configure?.Invoke(seed);
         }
         Window = new MainWindow(LibraryRoot);
         Window.Show();
