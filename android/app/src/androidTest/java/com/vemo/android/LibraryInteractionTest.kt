@@ -297,7 +297,7 @@ class LibraryInteractionTest : InstrumentationTestCase() {
     }
     private fun folderView(id: String): View = filterView(app.library.path(id).replace("/", " / "))
     private fun filterView(path: String): View = findView {
-        it.isClickable && it.contentDescription?.toString()?.substringBefore(",") == path
+        it is ViewGroup && it.isClickable && it.contentDescription?.toString()?.substringBefore(",") == path
     }
     private fun recordingView(title: String): View = findView {
         it.isClickable && it.contentDescription?.toString()?.startsWith("$title,") == true

@@ -454,7 +454,10 @@ class MainActivity : Activity() {
         val body = if (wideLibrary()) row().apply { gravity = Gravity.TOP } else column()
         val navigation = column()
         val snapshot = library()
-        fun filter(name: String, id: String?, onlyUnfiled: Boolean, count: Int, depth: Int = 0) {
+        val folderIds = snapshot?.folders.orEmpty().map { it.id }.toSet()
+        val collapsedFolders = vemo().preferences.getStringSet("collapsed_library_folders", emptySet()).orEmpty()
+            .intersect(folderIds).toMutableSet()
+        fun filter(name: String, id: String?, onlyUnfiled: Boolean, count: Int, depth: Int = 0, hasChildren: Boolean = false) {
             val selected = selectedFolder == id && unfiled == onlyUnfiled
             val color = if (selected) purple else ink
             val control = row().apply {
@@ -479,6 +482,7 @@ class MainActivity : Activity() {
             control.addView(countView, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8); marginEnd = dp(8) })
             control.addView(ImageView(this).apply {
                 setImageResource(if (selected) R.drawable.ic_check else R.drawable.ic_chevron)
+                if (id != null && !selected) visibility = View.INVISIBLE
                 imageTintList = android.content.res.ColorStateList.valueOf(if (selected) color else muted)
                 importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             }, LinearLayout.LayoutParams(dp(16), dp(16)))
@@ -488,7 +492,29 @@ class MainActivity : Activity() {
                 dropTarget(control, id)
             }
             folderControls.add(FolderControl(control, nameView, countView, id, onlyUnfiled))
-            navigation.addView(control, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(2) })
+            val folderRow = if (id != null && hasChildren) row().apply {
+                addView(control, LinearLayout.LayoutParams(0, -2, 1f))
+                val collapsed = id in collapsedFolders
+                addView(headerAction(R.drawable.ic_chevron, "$name, " + if (collapsed) "접힘, 펼치기" else "펼쳐짐, 접기") {
+                    if (!interactionFrozen) {
+                        if (!collapsedFolders.add(id)) collapsedFolders.remove(id)
+                        vemo().preferences.edit().putStringSet("collapsed_library_folders", collapsedFolders.toSet()).apply()
+                        val scrollY = mainScroll?.scrollY ?: 0
+                        render()
+                        mainScroll?.let { scroll -> scroll.post { scroll.scrollTo(0, scrollY) } }
+                    }
+                }.apply {
+                    // Rotate just the glyph: keep the adjacent selection/drag target independent.
+                    setImageDrawable(getDrawable(R.drawable.ic_chevron)?.mutate()?.let { glyph ->
+                        android.graphics.drawable.RotateDrawable().apply {
+                            drawable = glyph; fromDegrees = if (collapsed) 0f else 90f; toDegrees = fromDegrees; level = 10000
+                        }
+                    })
+                    setPadding(dp(15), dp(15), dp(15), dp(15))
+                    if (Build.VERSION.SDK_INT >= 30) stateDescription = if (collapsed) "접힘" else "펼쳐짐"
+                })
+            } else control
+            navigation.addView(folderRow, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(2) })
         }
         val items = vemo().store.list()
         fun standardFilters() {
@@ -518,8 +544,9 @@ class MainActivity : Activity() {
         while (pending.isNotEmpty() && visited.size < snapshot?.folders.orEmpty().size) {
             val (folder, depth) = pending.removeLast()
             if (!visited.add(folder.id)) continue
-            filter(folder.name, folder.id, false, items.count { snapshot?.recordingFolders?.get(it.id) == folder.id }, depth)
-            children[folder.id].orEmpty().sortedByDescending { it.name }.forEach { pending.addLast(it to depth + 1) }
+            val descendants = children[folder.id].orEmpty()
+            filter(folder.name, folder.id, false, items.count { snapshot?.recordingFolders?.get(it.id) == folder.id }, depth, descendants.isNotEmpty())
+            if (folder.id !in collapsedFolders) descendants.sortedByDescending { it.name }.forEach { pending.addLast(it to depth + 1) }
         }
         if (snapshot != null && snapshot.folders.isEmpty()) navigation.addView(text("폴더를 만들어 녹음을 정리하세요.", 14f, muted))
         val list = column()
@@ -1218,9 +1245,9 @@ class MainActivity : Activity() {
         background = surface(subtle, true)
         setPadding(dp(8), dp(8), dp(8), dp(8))
         playbackSeek = SeekBar(this@MainActivity).apply {
-            minimumHeight = dp(48); max = player?.duration ?: 0
+            minimumHeight = dp(56); max = player?.duration ?: 0
             fun track(color: Int) = GradientDrawable().apply {
-                setColor(color); cornerRadius = dp(2).toFloat(); setSize(dp(4), dp(4))
+                setColor(color); cornerRadius = dp(4).toFloat(); setSize(dp(8), dp(8))
             }
             progressDrawable = android.graphics.drawable.LayerDrawable(arrayOf(
                 track(selection),
@@ -1228,7 +1255,7 @@ class MainActivity : Activity() {
             )).apply {
                 setId(0, android.R.id.background); setId(1, android.R.id.progress)
                 for (layer in 0..1) {
-                    setLayerHeight(layer, dp(4)); setLayerGravity(layer, Gravity.CENTER_VERTICAL)
+                    setLayerHeight(layer, dp(8)); setLayerGravity(layer, Gravity.CENTER_VERTICAL)
                 }
             }
             progressBackgroundTintList = android.content.res.ColorStateList.valueOf(selection)

@@ -302,7 +302,7 @@ class LibraryUiTest : InstrumentationTestCase() {
     }
     private fun selectFolder(name: String) {
         var label: String? = null
-        onMain { label = currentViews().firstOrNull { it.isClickable && it.contentDescription?.toString()?.substringBefore(",")?.let { path -> path == name || path.endsWith(" / $name") || path.endsWith("/$name") } == true }?.contentDescription?.toString() }
+        onMain { label = currentViews().firstOrNull { it is ViewGroup && it.isClickable && it.contentDescription?.toString()?.substringBefore(",")?.let { path -> path == name || path.endsWith(" / $name") || path.endsWith("/$name") } == true }?.contentDescription?.toString() }
         click(label ?: error("Missing folder filter: $name"))
     }
     private fun manageFolder(id: String) {
