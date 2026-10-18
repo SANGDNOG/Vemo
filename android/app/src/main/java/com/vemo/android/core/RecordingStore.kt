@@ -94,12 +94,26 @@ class RecordingStore(private val dir: File) {
         Wire.result(bytes, Binding(record.id, record.hash!!, record.targetProcessor!!))
         atomicWrite(File(folder(record.id), "result.json"), bytes)
     }
+    @Synchronized fun saveTimeline(record: Recording, bytes: ByteArray) {
+        val result = result(record) ?: throw ProtocolException("Timeline requires a result")
+        TranscriptTimeline.parse(bytes, Binding(record.id, record.hash!!, record.targetProcessor!!), result.transcript, record.durationMs)
+        atomicWrite(File(folder(record.id), TranscriptTimeline.FILE_NAME), bytes)
+    }
     @Synchronized fun result(record: Recording): Result? {
         if (!record.uploadable || record.targetProcessor == null) return null
         val file = File(folder(record.id), "result.json")
         rejectLink(file)
         if (!file.exists()) return null
-        return file.inputStream().use { Wire.result(readBounded(it, Wire.MAX_JSON), Binding(record.id, record.hash!!, record.targetProcessor)) }
+        val binding = Binding(record.id, record.hash!!, record.targetProcessor)
+        val result = file.inputStream().use { Wire.result(readBounded(it, Wire.MAX_JSON), binding) }
+        val timeline = try {
+            val sidecar = File(folder(record.id), TranscriptTimeline.FILE_NAME)
+            rejectLink(sidecar)
+            if (!sidecar.exists()) null else sidecar.inputStream().use {
+                TranscriptTimeline.parse(readBounded(it, Wire.MAX_JSON), binding, result.transcript, record.durationMs)
+            }
+        } catch (_: java.io.IOException) { null }
+        return result.copy(timeline = timeline)
     }
 }
 fun atomicWrite(file: File, bytes: ByteArray) {

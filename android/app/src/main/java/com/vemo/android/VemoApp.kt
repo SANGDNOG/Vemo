@@ -13,6 +13,7 @@ class VemoApp : Application() {
     lateinit var store: RecordingStore; private set
     lateinit var library: LibraryStore; private set
     val gate = OperationGate()
+    val syncFeedback = SyncFeedback()
     val io = Executors.newSingleThreadExecutor()
     val listeners = CopyOnWriteArraySet<() -> Unit>()
     private val main = Handler(Looper.getMainLooper())
@@ -37,9 +38,13 @@ class VemoApp : Application() {
     fun mode(): Mode = if (preferences.getString("mode", "record_only") == "desktop") Mode.DESKTOP else Mode.RECORD_ONLY
     fun sync(manual: Boolean = false, done: (() -> Unit)? = null) {
         if (!gate.beginSync()) { if (manual) notify("녹음/일시정지 중에는 동기화하지 않습니다. 진행 중 작업이 끝나면 다시 시도하세요."); done?.invoke(); return }
+        syncFeedback.begin(emptyList())
         syncing = true; changed()
         io.execute {
             try {
+                val candidates = store.list().filter { it.uploadable && (manual || it.mode == Mode.DESKTOP) }
+                syncFeedback.begin(candidates.map { it.id })
+                changed()
                 val useGoogle = preferences.getString("provider", "nextcloud") == "google"
                 val credentials = if (useGoogle) null else vault.load()
                 val driveBinding = if (useGoogle) google.binding() ?: throw ProtocolException("설정에서 Google Drive를 연결하세요.") else null
@@ -57,7 +62,7 @@ class VemoApp : Application() {
                 var processor: Processor? = null
                 var failures = 0
                 var checked = 0
-                for (original in store.list().filter { it.uploadable && (manual || it.mode == Mode.DESKTOP) }) {
+                for (original in candidates) {
                     if (Thread.currentThread().isInterrupted) break
                     try {
                         if (original.cloudKey != null && original.cloudKey != cloudKey) throw ProtocolException("이 녹음은 다른 클라우드 폴더에 연결되어 있습니다. 원래 연결로 돌아가세요.")
@@ -77,24 +82,28 @@ class VemoApp : Application() {
                             val result = engine.result(record)
                             if (result != null) {
                                 store.saveResult(record, result.second)
+                                engine.timeline(record, result.first)?.let { store.saveTimeline(record, it) }
                                 store.update(record.id) { it.copy(status = "PC 전사·노트 수신 완료") }
                             } else store.update(record.id) { it.copy(status = "서버 저장 완료 · PC 결과 대기 중") }
                         }
+                        syncFeedback.complete(original.id)
                         checked++
                     } catch (error: Exception) {
                         failures++
+                        syncFeedback.fail(original.id, SyncProblem.from(error))
                         if (error is AuthException && useGoogle) google.invalidate()
                         store.update(original.id) { it.copy(status = safeError(error)) }
                     }
                     changed()
                 }
                 message = "동기화 확인: ${checked}개 완료" + if (failures > 0) " · ${failures}개 오류 (각 항목에서 확인)" else ""
-            } catch (error: Exception) { if (error is AuthException && preferences.getString("provider", "nextcloud") == "google") google.invalidate(); message = safeError(error) }
+            } catch (error: Exception) { syncFeedback.failAttempt(SyncProblem.from(error)); if (error is AuthException && preferences.getString("provider", "nextcloud") == "google") google.invalidate(); message = safeError(error) }
             finally {
-                syncing = false; gate.endSync(); changed(); done?.invoke()
+                syncFeedback.finish(); syncing = false; gate.endSync(); changed(); done?.invoke()
             }
         }
     }
+    fun automaticCopyEnabled(): Boolean = preferences.getBoolean("auto_copy", true) && preferences.getString("folder", null) != null
     fun export(id: String, done: (() -> Unit)? = null) {
         if (!gate.beginSync()) { notify("녹음 또는 동기화가 끝나면 폴더에 복사하세요."); return }
         io.execute {
