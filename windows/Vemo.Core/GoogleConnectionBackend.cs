@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -267,7 +268,25 @@ public sealed partial class GoogleConnectionService
                 finally { if (File.Exists(temp)) File.Delete(temp); }
             }
         }
-        foreach (var job in store.Jobs.Where(x => x.State == JobState.Completed && !x.Trashed && x.Mobile?.SyncRoot == Cache)) { await Publish(job, token); published++; }
+        ExceptionDispatchInfo? publicationFailure = null;
+        foreach (var job in store.Jobs.Where(x => x.State == JobState.Completed && !x.Trashed && x.Mobile?.SyncRoot == Cache))
+        {
+            token.ThrowIfCancellationRequested();
+            try { await Publish(job, token); published++; }
+            // Only known recording-specific failures may be deferred. Authentication, binding,
+            // root, transport, and unknown failures still abort the operation immediately.
+            catch (GoogleConnectionException e) when (e.Code is
+                "conditional_update_unavailable" or "remote_conflict" or "result_conflict" or
+                "recording_changed" or "request_missing" or "audio_missing" or
+                "audio_size_mismatch" or "audio_hash_mismatch" or "artifacts_missing" or
+                "foreign_empty_file" or "recovery_required" or "upload_mismatch" or "stale_job")
+            {
+                token.ThrowIfCancellationRequested();
+                publicationFailure ??= ExceptionDispatchInfo.Capture(e);
+            }
+        }
+        // Preserve the exception/LastError contract, and never report a partial batch as success.
+        token.ThrowIfCancellationRequested(); publicationFailure?.Throw();
         token.ThrowIfCancellationRequested(); Status = Status with { LastSync = DateTimeOffset.UtcNow }; return new GoogleSyncResult(imported, published, skipped);
     }, ct);
     void Live(RecordingJob job, CancellationToken ct)

@@ -203,6 +203,79 @@ public sealed class GoogleDriveTests
         f.Store.Rename(job.Id, "Renamed"); var ex = await Assert.ThrowsAsync<GoogleConnectionException>(() => f.Service.SyncAsync());
         Assert.Equal("conditional_update_unavailable", ex.Code); Assert.Equal(original, result.Bytes); Assert.Equal(0, f.Cloud.Patches);
     }
+    [Fact] public async Task ConflictingFirstPublicationDoesNotBlockNextAndRetriesDoNotDuplicate()
+    {
+        using var f = new Fixture(); f.Cloud.OmitETag = true;
+        var root = f.Cloud.Root(); f.Cloud.Recording(root); f.Cloud.Recording(root);
+        await f.Service.SelectFolderAsync(root); await f.Service.SyncAsync();
+        var jobs = f.Store.Jobs.ToArray(); Assert.Equal(2, jobs.Length);
+        foreach (var job in jobs) { Assert.True(f.Store.TryStart(job.Id)); f.Store.SaveTranscript(job.Id, "live transcript"); f.Store.Complete(job.Id, "live notes"); }
+        // Seed only the first job's old fixture result; the second job is still eligible for its first publication.
+        var first = jobs[0]; var mobile = first.Mobile!;
+        var results = f.Cloud.Add(root, "results", GoogleDriveClient.FolderMime);
+        var recording = f.Cloud.Add(results, "results/" + mobile.RecordingId, GoogleDriveClient.FolderMime);
+        var path = "results/" + mobile.RecordingId + "/" + mobile.AudioSha256;
+        var revision = f.Cloud.Add(recording, path, GoogleDriveClient.FolderMime);
+        var oldBytes = JsonSerializer.SerializeToUtf8Bytes(new { schema_version = 1, recording_id = mobile.RecordingId, audio_sha256 = mobile.AudioSha256, processor_id = f.Store.ProcessorId, title = first.Title, recorded_at = mobile.RecordedAt, transcript = "old fixture transcript", notes_markdown = "old fixture notes" });
+        var oldResult = f.Cloud.Add(revision, path + "/result.json", "application/json", oldBytes);
+        var ex = await Assert.ThrowsAsync<GoogleConnectionException>(() => f.Service.SyncAsync());
+        Assert.Equal("conditional_update_unavailable", ex.Code); Assert.Equal(ex.Code, f.Service.Status.LastError); Assert.False(f.Service.Status.Busy);
+        Assert.Equal(oldBytes, f.Cloud.Files[oldResult].Bytes); Assert.Equal(0, f.Cloud.Patches);
+        var fresh = Assert.Single(f.Cloud.Files.Values, x => x.Name == "result.json" && x.Id != oldResult);
+        using (var doc = JsonDocument.Parse(fresh.Bytes))
+        {
+            Assert.Equal(jobs[1].Mobile!.RecordingId, doc.RootElement.GetProperty("recording_id").GetString());
+            Assert.Equal("live transcript", doc.RootElement.GetProperty("transcript").GetString());
+        }
+        var writes = f.Cloud.Writes;
+        ex = await Assert.ThrowsAsync<GoogleConnectionException>(() => f.Service.SyncAsync());
+        Assert.Equal("conditional_update_unavailable", ex.Code); Assert.Equal(writes, f.Cloud.Writes);
+        Assert.Equal(2, f.Store.Jobs.Count); Assert.Equal(2, f.Cloud.Files.Values.Count(x => x.Name == "result.json"));
+        Assert.Equal(oldBytes, f.Cloud.Files[oldResult].Bytes);
+        // Cancellation in the next publication must take precedence over the deferred conflict.
+        using var cancellation = new CancellationTokenSource(); var reachedSecond = false;
+        var secondAudio = f.Cloud.Files.Values.Single(x => x.Name == "audio.m4a" && x.Properties.GetValueOrDefault("vemoKey") == GoogleDriveClient.PathKey("recordings/" + jobs[1].Mobile!.RecordingId + "/" + jobs[1].Mobile!.AudioSha256 + "/audio.m4a"));
+        f.Cloud.Before = (request, _) =>
+        {
+            if (request.RequestUri!.AbsolutePath.EndsWith("/" + secondAudio.Id) && request.RequestUri.Query.Contains("alt=media", StringComparison.Ordinal))
+            { reachedSecond = true; cancellation.Cancel(); }
+            return Task.CompletedTask;
+        };
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => f.Service.SyncAsync(cancellation.Token));
+        Assert.True(reachedSecond); Assert.Equal("cancelled", f.Service.Status.LastError);
+        Assert.Equal(writes, f.Cloud.Writes); Assert.False(f.Service.Status.Busy);
+    }
+    [Theory]
+    [InlineData("cancelled")]
+    [InlineData("reauthorization_required")]
+    [InlineData("account_mismatch")]
+    [InlineData("invalid_root")]
+    [InlineData("transport_failed")]
+    public async Task GlobalPublicationFailureStopsBatchImmediately(string code)
+    {
+        using var f = new Fixture(); var root = f.Cloud.Root(); f.Cloud.Recording(root); f.Cloud.Recording(root);
+        await f.Service.SelectFolderAsync(root); await f.Service.SyncAsync();
+        foreach (var job in f.Store.Jobs) { Assert.True(f.Store.TryStart(job.Id)); f.Store.SaveTranscript(job.Id, "transcript"); f.Store.Complete(job.Id, "notes"); }
+        using var cancellation = new CancellationTokenSource(); var attempts = 0;
+        f.Cloud.Before = (request, _) =>
+        {
+            if (request.Content is MultipartContent multipart)
+            {
+                using var doc = JsonDocument.Parse(multipart.First().ReadAsByteArrayAsync().GetAwaiter().GetResult());
+                if (doc.RootElement.GetProperty("name").GetString() == "result.json")
+                {
+                    attempts++;
+                    if (code == "cancelled") { cancellation.Cancel(); cancellation.Token.ThrowIfCancellationRequested(); }
+                    throw new GoogleConnectionException(code);
+                }
+            }
+            return Task.CompletedTask;
+        };
+        if (code == "cancelled") await Assert.ThrowsAnyAsync<OperationCanceledException>(() => f.Service.SyncAsync(cancellation.Token));
+        else Assert.Equal(code, (await Assert.ThrowsAsync<GoogleConnectionException>(() => f.Service.SyncAsync())).Code);
+        Assert.Equal(1, attempts); Assert.Equal(code, f.Service.Status.LastError); Assert.False(f.Service.Status.Busy);
+        Assert.DoesNotContain(f.Cloud.Files.Values, x => x.Name == "result.json");
+    }
     [Fact] public async Task ListsOnlyOwnProcessorAndMultipartLostAcknowledgmentReusesReservation()
     {
         using var f = new Fixture(); f.Cloud.OmitETag = true; var foreign = f.Cloud.Root("Vemo 테스트", Guid.NewGuid().ToString());
