@@ -31,6 +31,7 @@ class LibraryUiTest : InstrumentationTestCase() {
     private val ownedFolders = linkedSetOf<String>()
     private lateinit var app: VemoApp
     private var captureId: String? = null
+    private var ownsFixtureSyncGate = false
     @Volatile private var activity: Activity? = null
     private val lifecycle = object : Application.ActivityLifecycleCallbacks {
         override fun onActivityResumed(value: Activity) { if (value is MainActivity) activity = value }
@@ -45,7 +46,14 @@ class LibraryUiTest : InstrumentationTestCase() {
     override fun setUp() {
         super.setUp()
         app = instrumentation.targetContext.applicationContext as VemoApp
-        assertFalse("Validation requires an idle app; do not interrupt another capture", app.gate.busy())
+        if (name in setOf("testTimelineRowsKeepSelectionAndTabStateWithoutInventedTimes", "testTimestampStartsPreparedFixturePlayerAndSeeks")) {
+            assertFalse("Do not interrupt an existing capture", app.gate.isRecording())
+            // Harness-only isolation: wait for existing sync, then reserve the normal gate.
+            // Scheduled jobs and Activity polling cannot upload synthetic recordings or refresh UI.
+            await("Existing sync did not finish before fixture isolation", timeoutMs = 60_000) {
+                app.gate.beginSync().also { if (it) ownsFixtureSyncGate = true }
+            }
+        } else assertFalse("Validation requires an idle app; do not interrupt another capture", app.gate.busy())
         app.registerActivityLifecycleCallbacks(lifecycle)
     }
 
@@ -70,6 +78,7 @@ class LibraryUiTest : InstrumentationTestCase() {
                 if (app.library.snapshot().folders.any { it.id == id }) app.library.deleteFolder(id)
             }
         } finally {
+            if (ownsFixtureSyncGate) { app.gate.endSync(); ownsFixtureSyncGate = false }
             app.unregisterActivityLifecycleCallbacks(lifecycle)
             super.tearDown()
         }
@@ -183,6 +192,77 @@ class LibraryUiTest : InstrumentationTestCase() {
         click("설정"); assertText("기본 모드"); back(); assertLibrary()
         click("새 녹음"); assertText("녹음 시작"); back(); assertLibrary()
         captureDisplayVariants()
+    }
+
+    /** Synthetic result fixture only; no microphone, player, screenshots, or injected input. */
+    fun testTimelineRowsKeepSelectionAndTabStateWithoutInventedTimes() {
+        val record = fixture("$prefix-timeline", withResult = true)
+        val transcript = "첫 번째 문장입니다. 다음 문장입니다!"
+        app.store.saveResult(record, Json.bytes(mapOf(
+            "schema_version" to 1, "recording_id" to record.id, "audio_sha256" to record.hash,
+            "processor_id" to record.targetProcessor, "title" to record.title, "recorded_at" to record.recordedAt,
+            "transcript" to transcript, "notes_markdown" to "노트 fixture"
+        )))
+        app.store.saveTimeline(record, Json.bytes(mapOf(
+            "schema_version" to 1, "recording_id" to record.id, "audio_sha256" to record.hash,
+            "processor_id" to record.targetProcessor,
+            "transcript_sha256" to digest(java.io.ByteArrayInputStream(transcript.toByteArray(Charsets.UTF_8))),
+            "segments" to listOf(mapOf("start" to 0.25, "end" to 1.0, "text" to "첫 번째 문장입니다. "),
+                mapOf("start" to null, "end" to null, "text" to "다음 문장입니다!"))
+        )))
+        launch()
+        openFixture(record)
+        assertText("00:00"); assertText("첫 번째 문장입니다."); assertText("다음 문장입니다!")
+        onMain {
+            val texts = currentViews().filterIsInstance<TextView>()
+            val time = texts.single { it.contentDescription?.toString() == "00:00 위치로 이동" }
+            val body = texts.single { it.text.toString() == "첫 번째 문장입니다." }
+            assertSame(time.parent, body.parent)
+            assertTrue(time.isClickable); assertTrue(time.isFocusable)
+            assertEquals(activity!!.getColor(R.color.vemo_design_accent), time.currentTextColor)
+            assertTrue(body.isTextSelectable)
+            assertTrue(texts.single { it.text.toString() == "다음 문장입니다!" }.isTextSelectable)
+            texts.single { it.text.toString() == "노트" }.performClick()
+        }
+        assertText("노트 fixture"); assertNoText("00:00")
+        recreate(); assertText("노트 fixture")
+        File(app.store.audio(record.id).parentFile, TranscriptTimeline.FILE_NAME).writeText("malformed optional sidecar")
+        onMain { currentViews().filterIsInstance<TextView>().single { it.text.toString() == "전사" }.performClick() }
+        assertText("첫 번째 문장입니다."); assertText("다음 문장입니다!"); assertNoText("00:00")
+    }
+
+    fun testTimestampStartsPreparedFixturePlayerAndSeeks() {
+        // Eight seconds of silent PCM WAV, sniffed by MediaPlayer; no device capture.
+        val pcmSize = 8 * 8000 * 2
+        val wav = java.nio.ByteBuffer.allocate(44 + pcmSize).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        wav.put("RIFF".toByteArray()).putInt(36 + pcmSize).put("WAVEfmt ".toByteArray())
+            .putInt(16).putShort(1.toShort()).putShort(1.toShort()).putInt(8000).putInt(16000)
+            .putShort(2.toShort()).putShort(16.toShort()).put("data".toByteArray()).putInt(pcmSize)
+        val record = fixture("$prefix-timeline-player", withResult = true, audio = wav.array(), durationMs = 8000)
+        val result = app.store.result(record)!!
+        app.store.saveTimeline(record, Json.bytes(mapOf(
+            "schema_version" to 1, "recording_id" to record.id, "audio_sha256" to record.hash,
+            "processor_id" to record.targetProcessor,
+            "transcript_sha256" to digest(java.io.ByteArrayInputStream(result.transcript.toByteArray(Charsets.UTF_8))),
+            "segments" to listOf(mapOf("start" to 3.0, "end" to 5.0, "text" to result.transcript))
+        )))
+        launch()
+        openFixture(record)
+        assertText("00:03")
+        onMain { currentViews().filterIsInstance<TextView>().single { it.contentDescription?.toString() == "00:03 위치로 이동" }.performClick() }
+        await("Timestamp did not start and seek the prepared player") {
+            var sought = false
+            onMain {
+                val media = MainActivity::class.java.getDeclaredField("player").apply { isAccessible = true }
+                    .get(activity) as? android.media.MediaPlayer
+                sought = media != null && media.isPlaying && media.currentPosition in 2800..6000
+            }
+            sought
+        }
+        onMain {
+            currentViews().filterIsInstance<android.widget.ImageButton>()
+                .single { it.contentDescription?.toString() == "일시정지" }.performClick()
+        }
     }
 
     fun testActualCaptureNavigationFolderAssignmentPlaybackAndStaleFolder() {
@@ -319,6 +399,17 @@ class LibraryUiTest : InstrumentationTestCase() {
         var label: String? = null
         onMain { label = currentViews().filterIsInstance<TextView>().firstOrNull { it.isClickable && it.text.contains("열기") && (it.text.contains("녹음 중") || it.text.contains("일시정지")) }?.text?.toString() }
         click(label ?: error("Active capture entry is missing"))
+    }
+
+    private fun openFixture(record: Recording) {
+        onMain {
+            val title = currentViews().filterIsInstance<TextView>().single { it.text.toString() == record.title }
+            var target: View? = title
+            while (target != null && !target.isClickable) target = target.parent as? View
+            assertNotNull("Fixture recording has no clickable row", target)
+            assertTrue("Fixture recording row did not open", target!!.performClick())
+        }
+        instrumentation.waitForIdleSync()
     }
 
     private fun launch() {
@@ -517,13 +608,14 @@ class LibraryUiTest : InstrumentationTestCase() {
         return correct
     }
 
-    private fun fixture(suffix: String, withResult: Boolean = false): Recording {
+    private fun fixture(suffix: String, withResult: Boolean = false, audio: ByteArray? = null, durationMs: Long = 1500): Recording {
         val processor = if (withResult) UUID.randomUUID().toString() else null
         val record = app.store.create(suffix, if (withResult) Mode.DESKTOP else Mode.RECORD_ONLY, processor)
         ownedRecordings += record.id
-        app.store.partial(record.id).writeText("Synthetic instrumentation fixture: $prefix-$suffix")
+        if (audio == null) app.store.partial(record.id).writeText("Synthetic instrumentation fixture: $prefix-$suffix")
+        else app.store.partial(record.id).writeBytes(audio)
         app.store.transition(record.id, CaptureState.FINALIZING)
-        val complete = app.store.finish(record.id, 1500)
+        val complete = app.store.finish(record.id, durationMs)
         if (withResult) app.store.saveResult(complete, Json.bytes(linkedMapOf(
             "schema_version" to 1, "recording_id" to complete.id, "audio_sha256" to complete.hash,
             "processor_id" to processor, "title" to complete.title, "recorded_at" to complete.recordedAt,

@@ -266,7 +266,10 @@ public actor GoogleDriveMirror {
         let parts = relative.split(separator: "/").map(String.init)
         guard parts.count == 4, parts[0] == "results", parts[3] == "result.json" else { throw GoogleDriveError.invalidMetadata }
         try MobileSyncValidation.uuid(parts[1]); try MobileSyncValidation.hash(parts[2])
-        let bytes = try local.child(parts[0]).child(parts[1]).child(parts[2]).read(parts[3])
+        let output = try local.child(parts[0]).child(parts[1]).child(parts[2])
+        let bytes = try output.read(parts[3])
+        let timelineBytes = try output.read(TranscriptTimeline.filename)
+        try MobileSyncValidation.object(timelineBytes, keys: TranscriptTimeline.keys)
         try MobileSyncValidation.object(bytes, keys: ["schema_version", "recording_id", "audio_sha256", "processor_id", "title", "recorded_at", "transcript", "notes_markdown"])
         let object = try JSONSerialization.jsonObject(with: bytes) as? [String: Any]
         guard object?["processor_id"] as? String == binding.processorID, object?["recording_id"] as? String == parts[1],
@@ -285,25 +288,31 @@ public actor GoogleDriveMirror {
             path = path.isEmpty ? component : path + "/" + component
             parent = try await ensure(parent: parent, path: path, mime: GoogleDriveClient.folderMIME, journal: &journal, shouldPublish: shouldPublish).id
         }
-        let result = try await ensure(parent: parent, path: relative, mime: GoogleDriveClient.jsonMIME, journal: &journal, shouldPublish: shouldPublish)
-        if let size = result.size, size != "0" {
-            let previous = try await client.json(result)
-            if previous == bytes {
-                try await GoogleDriveClient.checkPublication(shouldPublish)
-                return
-            }
-            try MobileSyncValidation.object(previous, keys: ["schema_version", "recording_id", "audio_sha256", "processor_id", "title", "recorded_at", "transcript", "notes_markdown"])
-            let old = try JSONSerialization.jsonObject(with: previous) as? [String: Any]
-            guard old?["processor_id"] as? String == binding.processorID, old?["recording_id"] as? String == parts[1],
-                  old?["audio_sha256"] as? String == parts[2] else { throw GoogleDriveError.conflict }
-        } else if journal.ids[relative] != result.id { throw GoogleDriveError.conflict }
-        _ = try await checked(journal)
-        try await GoogleDriveClient.checkPublication(shouldPublish)
-        try await client.upload(id: result.id, data: bytes, shouldPublish: shouldPublish)
-        let confirmed = try await client.file(result.id)
-        try GoogleDriveClient.validate(confirmed, parent: parent, path: relative, mime: GoogleDriveClient.jsonMIME)
-        guard try await client.json(confirmed) == bytes else { throw GoogleDriveError.conflict }
-        try await GoogleDriveClient.checkPublication(shouldPublish)
+        let resultKeys: Set<String> = ["schema_version", "recording_id", "audio_sha256", "processor_id", "title", "recorded_at", "transcript", "notes_markdown"]
+        let timelinePath = parts.prefix(3).joined(separator: "/") + "/" + TranscriptTimeline.filename
+        for (filePath, payload, keys) in [(relative, bytes, resultKeys), (timelinePath, timelineBytes, TranscriptTimeline.keys)] {
+            let remote = try await ensure(parent: parent, path: filePath, mime: GoogleDriveClient.jsonMIME, journal: &journal, shouldPublish: shouldPublish)
+            if let size = remote.size, size != "0" {
+                let previous = try await client.json(remote)
+                if previous == payload {
+                    try await GoogleDriveClient.checkPublication(shouldPublish)
+                    continue
+                }
+                try MobileSyncValidation.object(previous, keys: keys)
+                let old = try JSONSerialization.jsonObject(with: previous) as? [String: Any]
+                guard old?["processor_id"] as? String == binding.processorID, old?["recording_id"] as? String == parts[1],
+                      old?["audio_sha256"] as? String == parts[2] else { throw GoogleDriveError.conflict }
+            } else if journal.ids[filePath] != remote.id { throw GoogleDriveError.conflict }
+            _ = try await checked(journal)
+            try await GoogleDriveClient.checkPublication(shouldPublish)
+            try await owner(binding, local: local)
+            try await GoogleDriveClient.checkPublication(shouldPublish)
+            try await client.upload(id: remote.id, data: payload, shouldPublish: shouldPublish)
+            let confirmed = try await client.file(remote.id)
+            try GoogleDriveClient.validate(confirmed, parent: parent, path: filePath, mime: GoogleDriveClient.jsonMIME)
+            guard try await client.json(confirmed) == payload else { throw GoogleDriveError.conflict }
+            try await GoogleDriveClient.checkPublication(shouldPublish)
+        }
     }
 }
 

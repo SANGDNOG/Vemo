@@ -260,20 +260,34 @@ public actor MobileSyncBroker {
         guard try MobileSyncRecording.decode(requestFolder.read("recording.json")) == entry.recording else { throw BrokerFailure("mobile_identity_conflict", "모바일 녹음의 완료 정보가 변경되었습니다.") }
         let result = Result(recording_id: entry.recording.recording_id, audio_sha256: entry.recording.audio_sha256, processor_id: config.processorID, title: job.title, recorded_at: entry.recording.recorded_at, transcript: transcript.text, notes_markdown: NotesDisplay.markdown(notes, title: job.title))
         let data = try BrokerFiles.json(result)
-        guard data.count <= WireCodec.limit else { throw BrokerFailure("oversize_file", "모바일 결과 JSON이 8 MiB 제한을 초과했습니다.") }
+        let timeline = try BrokerFiles.json(TranscriptTimeline(recordingID: result.recording_id,
+            audioSHA256: result.audio_sha256, processorID: config.processorID, transcript: transcript))
+        guard data.count <= WireCodec.limit, timeline.count <= WireCodec.limit else { throw BrokerFailure("oversize_file", "모바일 결과 JSON이 8 MiB 제한을 초과했습니다.") }
         guard audioStamp == (try BrokerFiles.stamp(audio)), artifactStamp == (try BrokerFiles.stamp(artifact)), notesStamp == (try BrokerFiles.stamp(notesPathURL)) else { throw BrokerFailure("source_changing", "처리 결과가 변경 중입니다. 다음 검사에서 다시 시도합니다.") }
         try current(config); try owner(cloud, config: config); try Task.checkCancellation()
         let output = try cloud.child("results", create: true).child(entry.recording.recording_id, create: true).child(entry.recording.audio_sha256, create: true)
-        if try output.exists("result.json") {
-            let previous = try output.read("result.json")
-            if previous == data { return output.url.appendingPathComponent("result.json") }
-            // Do not replace an unrelated processor's or recording's result.
-            let object = try JSONSerialization.jsonObject(with: previous) as? [String: Any]
-            guard object?["recording_id"] as? String == result.recording_id, object?["audio_sha256"] as? String == result.audio_sha256,
-                  object?["processor_id"] as? String == config.processorID else { throw BrokerFailure("mobile_result_conflict", "기존 모바일 결과의 식별자가 다릅니다. 기존 파일을 보존했습니다.") }
+        var pending: [(String, Data)] = []
+        // Preflight both identities before replacing either file.
+        for (name, bytes) in [("result.json", data), (TranscriptTimeline.filename, timeline)] {
+            if try output.exists(name) {
+                let previous = try output.read(name)
+                if previous == bytes { continue }
+                let object = try JSONSerialization.jsonObject(with: previous) as? [String: Any]
+                guard object?["recording_id"] as? String == result.recording_id,
+                      object?["audio_sha256"] as? String == result.audio_sha256,
+                      object?["processor_id"] as? String == config.processorID else {
+                    throw BrokerFailure("mobile_result_conflict", "기존 모바일 결과의 식별자가 다릅니다. 기존 파일을 보존했습니다.")
+                }
+            }
+            pending.append((name, bytes))
         }
-        try current(config); try owner(cloud, config: config)
-        try output.atomic(data, name: "result.json", replace: true)
+        for (name, bytes) in pending {
+            try current(config); try owner(cloud, config: config); try Task.checkCancellation()
+            guard try MobileSyncRecording.decode(requestFolder.read("recording.json")) == entry.recording else {
+                throw BrokerFailure("mobile_identity_conflict", "모바일 녹음의 완료 정보가 변경되었습니다.")
+            }
+            try output.atomic(bytes, name: name, replace: true)
+        }
         return output.url.appendingPathComponent("result.json")
     }
 }

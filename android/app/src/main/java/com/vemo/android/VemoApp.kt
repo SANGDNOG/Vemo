@@ -82,6 +82,7 @@ class VemoApp : Application() {
                             val result = engine.result(record)
                             if (result != null) {
                                 store.saveResult(record, result.second)
+                                engine.timeline(record, result.first)?.let { store.saveTimeline(record, it) }
                                 store.update(record.id) { it.copy(status = "PC 전사·노트 수신 완료") }
                             } else store.update(record.id) { it.copy(status = "서버 저장 완료 · PC 결과 대기 중") }
                         }

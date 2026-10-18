@@ -131,9 +131,20 @@ class MainActivity : Activity() {
             handler.postDelayed(this, 1000)
         }
     }
+    private var lastTimelinePoll = -300_000L
     private val poll = object : Runnable {
         override fun run() {
-            if (!vemo().gate.busy() && vemo().cloudConfigured() && vemo().store.list().any { it.mode == Mode.DESKTOP && it.uploaded && vemo().store.result(it) == null }) vemo().sync()
+            if (!vemo().gate.busy() && vemo().cloudConfigured()) {
+                val results = vemo().store.list().filter { it.mode == Mode.DESKTOP && it.uploaded }
+                    .map { try { vemo().store.result(it) } catch (_: Exception) { null } }
+                val now = SystemClock.elapsedRealtime()
+                val waitingForResult = results.any { it == null }
+                val waitingForTimeline = results.any { it != null && it.needsTimelineEnrichment }
+                if (waitingForResult || (waitingForTimeline && now - lastTimelinePoll >= 300_000L)) {
+                    lastTimelinePoll = now
+                    vemo().sync()
+                }
+            }
             handler.postDelayed(this, 30_000)
         }
     }
@@ -1102,13 +1113,7 @@ class MainActivity : Activity() {
             if (body.isBlank()) content.addView(emptyState(if (detailTab == "notes") R.drawable.ic_notes else R.drawable.ic_transcript,
                 if (detailTab == "notes") "아직 노트가 없어요" else "아직 전사가 없어요", "연결된 PC의 처리 결과를 확인해 주세요.", "다시 확인", !vemo().gate.busy()) { vemo().sync(true) })
             else if (detailTab == "notes") renderNotes(body)
-            else body.split(Regex("\\n[ \t]*\\n")).forEach { paragraph ->
-                divider(content)
-                content.addView(text(paragraph, 16f).apply {
-                    setTextIsSelectable(true); setLineSpacing(dp(4).toFloat(), 1.3f)
-                    setPadding(0, dp(18), 0, dp(18))
-                })
-            }
+            else renderTranscript(item, result)
         } else {
             when {
                 syncProblem != null -> content.addView(syncProblemPanel(syncProblem, compact = false))
@@ -1140,6 +1145,44 @@ class MainActivity : Activity() {
                 }
             }, LinearLayout.LayoutParams(-2, -2).apply { gravity = Gravity.CENTER_HORIZONTAL })
             content.addView(diagnostic, LinearLayout.LayoutParams(-1, -2))
+        }
+    }
+
+    private fun renderTranscript(item: Recording, result: Result) {
+        val sentences = result.timeline ?: TranscriptTimeline.plain(result.transcript)
+        val timestampPaint = text("", 12f, purple).paint
+        val timestampWidth = maxOf(dp(48), (sentences.mapNotNull { it.timestamp }
+            .maxOfOrNull { timestampPaint.measureText(it) } ?: 0f).toInt() + dp(12))
+        for (sentence in sentences) {
+            if (sentence.text.isBlank()) continue
+            divider(content)
+            val line = row().apply {
+                gravity = Gravity.TOP
+                setPadding(0, dp(16), 0, dp(16))
+            }
+            sentence.timestamp?.let { timestamp ->
+                line.addView(text(timestamp, 12f, purple).apply {
+                    gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                    minWidth = dp(48); minHeight = dp(48)
+                    setPadding(0, dp(4), dp(10), dp(4))
+                    contentDescription = "$timestamp 위치로 이동"
+                    isFocusable = true
+                    isEnabled = !vemo().gate.isRecording()
+                    background = android.graphics.drawable.RippleDrawable(ripple, null, surface(Color.WHITE))
+                    setOnClickListener {
+                        if (!vemo().gate.isRecording()) {
+                            if (playerId != item.id) play(item)
+                            // play() prepares synchronously; failed setup leaves no matching player.
+                            if (playerId == item.id) seekPlayback(sentence.startMs!!)
+                        }
+                    }
+                }, LinearLayout.LayoutParams(timestampWidth, -2))
+            }
+            line.addView(text(sentence.text.trim(), 16f).apply {
+                setTextIsSelectable(true)
+                setLineSpacing(dp(4).toFloat(), 1.3f)
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            content.addView(line, LinearLayout.LayoutParams(-1, -2))
         }
     }
 
