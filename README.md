@@ -6,17 +6,13 @@
 
 Vemo는 Apple Silicon Mac에서 한국어 중심의 음성을 전사하는 로컬 앱입니다. 영어가 섞인 녹음도 처리하며, 문장·문단으로 정리한 전사문, **내용 기반 제목 + 녹음일**, **핵심 요약·강조 문장·키워드별 노트**를 제공합니다. iPhone에서는 기본 **음성 메모와 파일 앱**을 사용합니다.
 
-> **공개 프리뷰 preview.5는 0.2.0 build 24**입니다. 상세 학습 노트, Nextcloud 등 동기화 폴더로 ZIP 내보내기, 폴더 드래그 이동과 하위 폴더 관리, 보라색 선택 표시, 인라인 제목 편집, 이어 녹음 갱신, 다중 선택·일괄 정리, 휴지통 복원·영구 삭제, 폴더·녹음 목록을 나눈 3열 화면과 폴더 구조에 맞춘 녹음별 자동 ZIP을 포함합니다. 새 라벤더 V 파형 아이콘을 적용했으며, 창을 닫은 뒤 Dock에서 다시 열리지 않던 문제를 수정했습니다.
+> **현재 공개 버전은 v0.2.1-preview.6입니다.** Mac 0.2.1 build36, Windows x64 0.1.20, Android 0.1.19를 함께 제공합니다. 로컬 화자 분리·이름 편집, Google Drive 연결과 Android 결과 수신, Windows GPU 자동 선택, 긴 전사의 반복 오류 개선을 포함합니다.
 
-**[현재 공개 프리뷰 DMG 다운로드](https://github.com/SANGDNOG/Vemo/releases/tag/v0.2.0-preview.5)** · [설치 안내](docs/INSTALL.txt) · [라이선스](LICENSE)
+**[Mac DMG · Windows ZIP · Android APK 다운로드](https://github.com/SANGDNOG/Vemo/releases/tag/v0.2.1-preview.6)** · [플랫폼별 설치와 검증 범위](docs/RELEASE_PREVIEW6.md) · [라이선스](LICENSE)
 
-> 현재 배포는 Developer ID 서명·Apple 공증이 없는 프리뷰입니다. macOS의 최초 실행 허용이 필요할 수 있습니다. 다른 실제 Mac에서의 검증은 아직 진행하지 않았습니다.
+> Mac은 Developer ID 서명·Apple 공증이 없으며 Windows도 코드 서명이 없는 프리뷰입니다. Android APK는 개발용 서명입니다. Google 프로젝트가 테스트 모드인 동안에는 등록된 테스트 사용자만 연결할 수 있습니다. 일반 사용자용 Google 로그인 공개 검증은 완료되지 않았습니다.
 
-## 개발 중인 모바일 연결
-
-별도 개발 브랜치에는 Android 녹음·Google 연결, Mac 모델 선택·모바일 연결, Windows 기능 프리뷰가 있습니다. 공개 Mac DMG에는 아직 포함되지 않습니다. [Android·Mac 설정과 검증 범위](docs/MOBILE_PREVIEW.md), [Windows 실행·모델 설정 안내](windows/README.md)를 참고하세요. Windows는 서명 없는 x64·ARM64 포터블 빌드이며, 직접 Google OAuth와 폰 자체 AI 처리는 후속 단계입니다.
-
-실제 모델 처리와 Windows VM 검사 결과, 아직 확인하지 못한 항목은 [기능 프리뷰 검증 기록](docs/FUNCTIONAL_PREVIEW.md)에 정리했습니다.
+Mac은 iPhone 음성 메모와 파일 가져오기를, Windows는 파일 가져오기와 Android의 클라우드 녹음을 처리합니다. Android는 녹음과 데스크톱 결과 확인을 지원하며 폰 자체 전사·노트 생성은 아직 지원하지 않습니다. 기존 화면 예시와 상세 Mac 사용법은 아래에 있습니다.
 
 ## 화면 예시
 
@@ -47,7 +43,7 @@ Vemo는 Apple Silicon Mac에서 한국어 중심의 음성을 전사하는 로�
 
 ## 설치와 첫 실행
 
-1. [Releases](https://github.com/SANGDNOG/Vemo/releases)에서 `Vemo-0.2.0-preview.5-arm64.dmg`를 내려받습니다.
+1. [Releases](https://github.com/SANGDNOG/Vemo/releases)에서 `Vemo-0.2.1-preview.6-mac-arm64.dmg`를 내려받습니다.
 2. DMG를 열고 **Vemo.app → Applications**로 드래그합니다.
 3. Vemo를 실행합니다. macOS가 차단하면 **시스템 설정 → 개인정보 보호 및 보안 → 차단된 Vemo의 ‘확인 없이 열기’**에서 실행을 허용합니다. 이후 표시되는 열기 확인도 승인합니다. Gatekeeper를 끌 필요는 없습니다.
 4. **Vemo → 설정…**에서 **모델 다운로드 / 재개**를 누릅니다. 다운로드 완료 후 로컬에서 처리합니다.
