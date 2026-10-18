@@ -1258,7 +1258,7 @@ class MainActivity : Activity() {
             addView(headerAction(R.drawable.ic_forward_10, "10초 앞으로") { skipPlayback(10_000) })
         })
         updatePlaybackControls()
-        handler.post(playbackTick)
+        this@MainActivity.handler.post(playbackTick)
         if (revealPlayer) {
             revealPlayer = false
             if (android.animation.ValueAnimator.areAnimatorsEnabled()) {
