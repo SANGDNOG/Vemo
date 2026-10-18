@@ -697,8 +697,9 @@ class MainActivity : Activity() {
         }
     }
 
-    /** All library management surfaces share this scrollable, keyboard-resizing native dialog. */
+    /** App-owned dialogs share a rounded, scrollable, keyboard-resizing native surface. */
     private fun management(title: String, build: (Dialog, LinearLayout, TextView) -> Unit) {
+        val returnFocus = currentFocus
         managementDialog?.dismiss()
         val dialog = Dialog(this)
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
@@ -727,10 +728,32 @@ class MainActivity : Activity() {
             setDimAmount(0.28f)
             setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         }
-        dialog.setOnDismissListener { if (managementDialog === dialog) managementDialog = null }
+        dialog.setOnDismissListener {
+            if (managementDialog === dialog) {
+                managementDialog = null
+                if (returnFocus?.isAttachedToWindow == true) returnFocus.requestFocus()
+            }
+        }
         managementDialog = dialog
         dialog.show()
         dialog.window?.setLayout(minOf(dp(480), dp(resources.configuration.screenWidthDp) - dp(40)), WindowManager.LayoutParams.WRAP_CONTENT)
+    }
+    private fun choiceDialog(title: String, choices: List<String>, selected: Int? = null, choose: (Int) -> Unit) {
+        management(title) { dialog, body, _ ->
+            choices.forEachIndexed { index, caption ->
+                val action = { dialog.dismiss(); choose(index) }
+                if (selected == null) body.addView(button(caption) { action() }.apply {
+                    gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                }) else body.addView(RadioButton(this).apply {
+                    text = caption; textSize = 15f; setTextColor(ink)
+                    buttonTintList = android.content.res.ColorStateList.valueOf(purple)
+                    isChecked = index == selected
+                    minHeight = dp(48); setPadding(dp(8), dp(12), dp(12), dp(12))
+                    background = android.graphics.drawable.RippleDrawable(ripple, surface(Color.WHITE), null)
+                    setOnClickListener { action() }
+                }, LinearLayout.LayoutParams(-1, -2))
+            }
+        }
     }
     private fun libraryAction(errorView: TextView? = null, action: () -> Unit): Boolean = try {
         action(); true
@@ -984,11 +1007,10 @@ class MainActivity : Activity() {
         val mode = settingsGroup("녹음")
         settingRow(mode, "기본 모드", if (vemo().mode() == Mode.DESKTOP) "PC 자동 처리" else "녹음만", "변경") {
             val choices = arrayOf("PC 자동 처리 · 클라우드 연결 시", "녹음만 · 폴더 저장/공유")
-            AlertDialog.Builder(this).setTitle("기본 녹음 모드")
-                .setSingleChoiceItems(choices, if (vemo().mode() == Mode.DESKTOP) 0 else 1) { dialog, which ->
-                    vemo().preferences.edit().putString("mode", if (which == 0) "desktop" else "record_only").apply()
-                    dialog.dismiss(); render()
-                }.setNegativeButton("취소", null).show()
+            choiceDialog("기본 녹음 모드", choices.toList(), if (vemo().mode() == Mode.DESKTOP) 0 else 1) { which ->
+                vemo().preferences.edit().putString("mode", if (which == 0) "desktop" else "record_only").apply()
+                render()
+            }
         }
         val storage = settingsGroup("저장 위치")
         val folderChosen = vemo().preferences.getString("folder", null) != null
@@ -1124,10 +1146,9 @@ class MainActivity : Activity() {
                 runOnUiThread {
                     if (!isFinishing && !isDestroyed && hasWindowFocus()) {
                         if (roots.isEmpty()) vemo().notify("접근 가능한 Vemo root가 없습니다. 같은 Google 계정으로 Mac에서 먼저 등록하세요.")
-                        else AlertDialog.Builder(this).setTitle("Mac 처리기 폴더 선택")
-                            .setItems(roots.map { "${it.name} · ${it.processorId} · ${it.id}" }.toTypedArray()) { _, index ->
-                                selectGoogle(DriveBinding(account, roots[index].id, roots[index].processorId))
-                            }.setNegativeButton("취소", null).show()
+                        else choiceDialog("Mac 처리기 폴더 선택", roots.map { "${it.name} · ${it.processorId} · ${it.id}" }) { index ->
+                            selectGoogle(DriveBinding(account, roots[index].id, roots[index].processorId))
+                        }
                     } else vemo().notify("설정에서 Google 연결을 다시 눌러 폴더를 선택하세요.")
                 }
             } catch (error: Exception) {
