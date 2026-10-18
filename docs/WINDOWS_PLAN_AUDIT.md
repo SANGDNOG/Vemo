@@ -84,3 +84,8 @@ The renderer saved all eight frames, then its synchronous HeadlessUnitTestSessio
 
 NAS 별도 기록은 작성하지 않았다. 작업자용 근거는 이 문서와 로컬 로그/PNG에 있으며 root가 최종 판단과 NAS 작업 기록을 담당한다.
 
+## Final root verification / installation
+
+Final frozen Windows UI run: 77/77 passed, zero failed/skipped, 91.027 seconds. Root parsed native-final-plan.trx Counters. This supersedes the pending final-run statement above. Native Core: 119 passed / 1 platform skip, including native DPAPI success.
+
+Installed 0.1.5-google-native-white side-by-side; Desktop Vemo.lnk target and icon read back. App/Core hashes match final tested binaries. Running 0.1.4-icon and real library preserved; quit old app and reopen desktop shortcut. Real account OAuth / phone roundtrip remains unverified. OAuth publishes result.json, not ZIP. Other parity gaps remain as listed.

@@ -12,13 +12,15 @@ Sources: user-approved START_HERE.txt, IMPLEMENTATION_HANDOFF.md and exports at 
 
 ## Order
 - [x] Read original handoff and current implementation; preserve isolated Windows branch.
-- [ ] Save concrete design/function discrepancy inventory.
-- [ ] Build OAuth/backend and grouped embedded settings independently with fixed interface agreement.
-- [ ] Integrate login/state/folder management/manual+automatic sync and shutdown lifecycle.
-- [ ] Address audit's concrete main-window design and working-control discrepancies; preserve existing functionality.
-- [ ] Independent tests: wrong/duplicate state, denial, timeout, refresh rejection, disconnect races, wrong processor/hash, duplicate imports, network failure, keyboard/focus/selection, settings save/reopen, existing DnD/inference.
-- [ ] Compare rendered app settings and main views with reference; report physical-DPI limits.
-- [ ] Native Windows build/tests and side-by-side install after verification; user OAuth login approval only when concrete app is ready.
+- [x] Save concrete design/function discrepancy inventory.
+- [x] Build OAuth/backend and grouped embedded settings independently with fixed interface agreement.
+- [x] Integrate login/state/folder management/manual+automatic sync and shutdown lifecycle.
+- [x] Address audit's concrete main-window design and working-control discrepancies; preserve existing functionality.
+- [x] Independent tests: wrong/duplicate state, denial, timeout, refresh rejection, disconnect races, wrong processor/hash, duplicate imports, network failure, keyboard/focus/selection, settings save/reopen, existing DnD/inference.
+- [x] Compare rendered app settings and main views with reference; report physical-DPI limits.
+- [x] Native Windows build/tests and side-by-side install after verification; user OAuth login approval only when concrete app is ready.
 - [ ] Record actual evidence and gaps on NAS; do not call mocked or headless results real account verification.
 
 Real Google authorization requires user interaction; credentials must never appear in reports, commits or test fixtures. Existing authorized Desktop client configuration may be imported locally, not published. Mounted G: is not a substitute for OAuth.
+
+This slice is installed and tested; real account authorization/phone roundtrip and full product parity remain pending. See WINDOWS_PLAN_AUDIT.md and WINDOWS_GOOGLE_SETUP.md.
