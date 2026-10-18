@@ -25,6 +25,9 @@ cp "$project_root/assets/Vemo.icns" "$app_path/Contents/Resources/Vemo.icns"
 cp "$project_root/LICENSE" "$project_root/THIRD_PARTY_NOTICES.md" "$app_path/Contents/Resources/"
 if [ "$demo_mode" != 1 ]; then
     ditto "$runtime_path" "$app_path/Contents/Resources/runtime"
+    # Refresh checkout sources in the staged copy only, before signing. Offline
+    # build tools (Python >=3.12, setuptools>=75, wheel) can be selected explicitly.
+    python3 "$project_root/scripts/refresh-app-engine.py" "$app_path/Contents/Resources/runtime"
 fi
 # Only this explicit external path can add public installed-client material to the bundle.
 # The helper strips downloaded metadata and refuses web/service/token or unknown fields.
