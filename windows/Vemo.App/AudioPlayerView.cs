@@ -57,6 +57,11 @@ public sealed class AudioPlayerView : UserControl, IDisposable
         if (source == path) return;
         source = path; playback.SetSource(path); Update();
     }
+    public void Seek(double seconds)
+    {
+        if (disposed || !double.IsFinite(seconds) || seconds < 0) return;
+        playback.Seek(TimeSpan.FromSeconds(seconds)); Update();
+    }
     public void Stop() { playback.Stop(); Update(); }
     void Update()
     {

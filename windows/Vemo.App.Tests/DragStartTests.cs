@@ -26,6 +26,7 @@ public sealed class DragStartTests
     [InlineData("folder")]
     [InlineData("single")]
     [InlineData("multiple")]
+    [InlineData("settings")]
     public async Task Pointer_drag_starts_only_after_threshold_and_sends_actual_selected_payload(string kind)
     {
         await using var ui = new UiFixture();
@@ -34,6 +35,7 @@ public sealed class DragStartTests
         AvaloniaLocator.CurrentMutable.Bind<IPlatformDragSource>().ToConstant(capture);
         if (kind != "folder") ui.SelectJob();
         if (kind == "multiple") ui.SelectJob(1, RawInputModifiers.Control);
+        if (kind == "settings") Click(ui.Window, Button(ui.Window, "설정"));
         var row = kind == "folder" ? Realize(ui.Folders, 0) : Realize(ui.Jobs, 0);
         var point = Center(ui.Window, row);
         ui.Window.MouseDown(point, MouseButton.Left);
@@ -49,5 +51,6 @@ public sealed class DragStartTests
         ui.Window.MouseUp(point + new Vector(40, 0), MouseButton.Left);
         Pump();
         Assert.False(ui.Store.Get(ui.UnfiledId).Trashed);
+        if (kind == "settings") Assert.True(SettingsTestInput.IsOpen(ui));
     }
 }

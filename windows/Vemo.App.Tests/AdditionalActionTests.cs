@@ -173,6 +173,7 @@ public sealed class AdditionalActionTests
         await using var ui = new UiFixture();
         ui.SelectJob();
         var title = Named<TextBox>(ui.Window, "녹음 제목");
+        title.Focus(); Key(ui.Window, Avalonia.Input.Key.Enter);
         title.SelectAll();
         Type(ui.Window, title, "저장하지 않은 제목");
         await Task.Run(() => ui.Store.Rename(ui.UnfiledId, "백그라운드 갱신"));

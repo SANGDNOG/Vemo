@@ -22,4 +22,22 @@ public sealed class EmbeddedSettingsTests
         Assert.Equal(selected, ui.Jobs.SelectedIndex);
         Assert.True(Named<TextBox>(ui.Window, "녹음 제목").IsVisible);
     }
+    [AvaloniaFact]
+    public async Task Same_recording_keyboard_activation_closes_settings_without_selection_change()
+    {
+        await using var ui = new UiFixture(); ui.SelectJob();
+        var id = ui.Jobs.SelectedItem;
+        Click(ui.Window, Button(ui.Window, "설정"));
+        ui.Jobs.Focus(); Key(ui.Window, Avalonia.Input.Key.Enter);
+        Assert.False(SettingsTestInput.IsOpen(ui)); Assert.Equal(id, ui.Jobs.SelectedItem);
+    }
+    [AvaloniaFact]
+    public async Task Ctrl_recording_activation_closes_settings_and_keeps_multiple_selection()
+    {
+        await using var ui = new UiFixture(); ui.SelectJob();
+        Click(ui.Window, Button(ui.Window, "설정"));
+        ui.SelectJob(1, Avalonia.Input.RawInputModifiers.Control);
+        Assert.False(SettingsTestInput.IsOpen(ui)); Assert.Equal(2, ui.Jobs.SelectedItems!.Count);
+    }
+
 }

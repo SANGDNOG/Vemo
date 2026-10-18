@@ -1,0 +1,29 @@
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Layout;
+using Vemo.Core;
+namespace Vemo.App;
+
+public sealed class ProcessingProgressView : UserControl
+{
+    readonly TextBlock stage = NativeWhite.Text("", "secondary"), elapsed = NativeWhite.Text("", "caption");
+    readonly ProgressBar progress = new() { Minimum = 0, Maximum = 100, Height = 3, Foreground = NativeWhite.Accent, Background = NativeWhite.Divider };
+    public ProcessingProgressView()
+    {
+        var body = new StackPanel { Spacing = 8 }; var row = new Grid { ColumnDefinitions = new("*,Auto"), ColumnSpacing = 12 };
+        row.Children.Add(stage); Grid.SetColumn(elapsed, 1); row.Children.Add(elapsed); body.Children.Add(row); body.Children.Add(progress);
+        Content = new Border { Background = NativeWhite.Sidebar, CornerRadius = new CornerRadius(12), Padding = new Thickness(14), Child = body };
+        NativeWhite.Label(stage, "현재 처리 단계"); NativeWhite.Label(elapsed, "처리 경과 시간"); NativeWhite.Label(progress, "실제 처리 진행률"); IsVisible = false;
+    }
+    public void Update(ProcessingProgress? value, JobState state)
+    {
+        IsVisible = value != null && state is JobState.Transcribing or JobState.GeneratingNotes;
+        if (!IsVisible || value == null) return;
+        var label = value.Stage switch { "preparing" => "오디오 준비 중", "transcribing" => "전사 중", "notes" => "노트 생성 중", "saving" => "결과 저장 중", "completed" => "완료", "cancelled" => "취소됨", "failed" => "처리 실패", _ => "처리 중" };
+        var percent = value.Stage == "transcribing" && value.Percent is { } p && double.IsFinite(p) && p is >= 0 and <= 100 ? value.Percent : null;
+        stage.Text = label + (percent is { } number ? $" · {number:0}%" : "");
+        var time = value.Elapsed < TimeSpan.Zero ? TimeSpan.Zero : value.Elapsed;
+        elapsed.Text = $"경과 {(int)time.TotalMinutes}:{time.Seconds:00}";
+        progress.IsIndeterminate = percent == null; progress.Value = percent ?? 0;
+    }
+}

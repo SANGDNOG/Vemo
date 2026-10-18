@@ -16,12 +16,17 @@ public sealed partial class MainWindow : Window
 {
     readonly LibraryStore store; readonly JobRunner runner; readonly MobileFolderAdapter mobile; readonly WatchedFolderImporter watched; readonly GoogleConnectionService google;
     readonly ListBox navigation = new(), folders = new(), jobs = new() { SelectionMode = SelectionMode.Multiple };
-    readonly TextBox search = new() { PlaceholderText = "제목 · 전사 · 노트 검색" }, title = new(), date = new() { PlaceholderText = "ISO 8601 날짜와 시간대 · 모르면 비워 두세요" };
+    readonly TextBox search = new() { PlaceholderText = "제목 · 전사 · 노트 검색" }, title = new() { IsReadOnly = true }, date = new() { PlaceholderText = "녹음 시작일 YYYY-MM-DD" };
     readonly TextBox transcript = new() { IsReadOnly = true, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap }, notes = new() { IsReadOnly = true, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap };
     readonly TextBlock status = NativeWhite.Text("", "secondary"), jobInfo = NativeWhite.Text("", "secondary"), queueInfo = NativeWhite.Text("", "secondary"), listTitle = NativeWhite.Text("전체 녹음"), listCount = NativeWhite.Text("", "secondary"), selectionInfo = NativeWhite.Text("", "caption"), detailPath = NativeWhite.Text("", "secondary"), detailState = NativeWhite.Text("", "secondary");
     readonly Button emptyImport;
     TrayController? tray; bool exitRequested;
     readonly AudioPlayerView player = new();
+    readonly TranscriptView transcriptCards = new();
+    readonly ProcessingProgressView processingProgress = new();
+    readonly TextBlock recordedDate = NativeWhite.Text("", "caption");
+    Grid? dateEditor;
+    bool titleEditing;
     readonly Grid detailHost = new();
     Grid? recordingDetail; SettingsView? settingsView; Control? settingsInvoker;
     readonly TabControl tabs = new(); readonly Grid detailBody = new(); readonly StackPanel emptyDetail = new(); readonly TextBlock emptyList = NativeWhite.Text("", "secondary");
@@ -40,7 +45,7 @@ public sealed partial class MainWindow : Window
         store = new(libraryRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Vemo", "WindowsPreview")); runner = new(store, new LocalCliInferenceEngine()); mobile = new(store); watched = new(store); google = GoogleConnectionService.Shared(store);
         navigation.Classes.Add("navigation"); folders.Classes.Add("navigation"); jobs.Classes.Add("recordings"); search.Classes.Add("search"); title.Classes.Add("title"); transcript.Classes.Add("reading"); notes.Classes.Add("reading");
         NativeWhite.Label(navigation, "라이브러리", "방향키로 전체 녹음, 미분류, 휴지통 선택"); NativeWhite.Label(folders, "폴더", "방향키로 선택, F6으로 다음 영역"); NativeWhite.Label(jobs, "녹음 목록", "Ctrl/Shift 다중 선택, Ctrl+A 전체 선택, Delete 휴지통");
-        NativeWhite.Label(search, "현재 목록의 제목, 전사, 노트 검색", "Ctrl+F 검색, Escape 지우기"); NativeWhite.Label(title, "녹음 제목", "Enter 저장, Escape 변경 취소"); NativeWhite.Label(date, "녹음 날짜", "시간대를 포함한 ISO 8601, 모르면 비워 두세요"); NativeWhite.Label(transcript, "전사 원문"); NativeWhite.Label(notes, "생성된 노트, Markdown 원문");
+        NativeWhite.Label(search, "현재 목록의 제목, 전사, 노트 검색", "Ctrl+F 검색, Escape 지우기"); NativeWhite.Label(title, "녹음 제목", "Enter 저장, Escape 변경 취소"); NativeWhite.Label(date, "녹음 날짜", "실제 녹음 시작일 YYYY-MM-DD, 모르면 비워 두세요"); NativeWhite.Label(transcript, "전사 원문"); NativeWhite.Label(notes, "생성된 노트, Markdown 원문");
         folders.ItemTemplate = new FuncDataTemplate<FolderChoice>((f, _) =>
         {
             // Avalonia clears Content to null when recycling an item container.
@@ -72,8 +77,8 @@ public sealed partial class MainWindow : Window
         {
             if (choice == null) return null;
             var j = choice.Job; var row = new StackPanel { Spacing = 7 };
-            row.Children.Add(new TextBlock { Text = j.Title, FontSize = 13, FontWeight = FontWeight.SemiBold, TextWrapping = TextWrapping.NoWrap, MaxLines = 1, TextTrimming = TextTrimming.CharacterEllipsis });
-            var recorded = NativeWhite.Text(DisplayDate(j.RecordedAt), "caption"); recorded.FontSize = 10; ToolTip.SetTip(recorded, j.RecordedAt ?? "녹음 날짜 미확인"); row.Children.Add(recorded);
+            row.Children.Add(new TextBlock { Text = RecordingTitles.Display(j), FontSize = 13, FontWeight = FontWeight.SemiBold, TextWrapping = TextWrapping.NoWrap, MaxLines = 1, TextTrimming = TextTrimming.CharacterEllipsis });
+            var recorded = NativeWhite.Text(RecordingTitles.Day(j) ?? "녹음 날짜 미확인", "caption"); recorded.FontSize = 10; ToolTip.SetTip(recorded, j.RecordedAt ?? "녹음 날짜 미확인"); row.Children.Add(recorded);
             var rowState = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 }; rowState.Children.Add(new Avalonia.Controls.Shapes.Ellipse { Width = 4, Height = 4, Fill = Brush.Parse("#B9ACD9"), VerticalAlignment = VerticalAlignment.Center });
             var stateText = NativeWhite.Text(StateLabel(j.State) + (j.ExportError != null ? " · ZIP 저장 실패" : ""), j.State == JobState.Failed || j.ExportError != null ? "error" : "caption"); stateText.FontSize = 10; rowState.Children.Add(stateText); row.Children.Add(rowState);
             ToolTip.SetTip(row, j.Title + "\n" + (j.Error ?? j.ExportError ?? StateLabel(j.State)));
@@ -120,10 +125,11 @@ public sealed partial class MainWindow : Window
         detailBody.Height = 600;
         detailScroll.SizeChanged += (_, e) => detailBody.Height = Math.Max(600, e.NewSize.Height);
         detailArea.Children.Add(detailScroll);
+        title.DoubleTapped += (_, e) => { BeginTitleEdit(); e.Handled = true; };
         var titleRow = new Grid { ColumnDefinitions = new("*,Auto"), Margin = new Thickness(0, 24, 0, 4) }; titleRow.Children.Add(title);
         var more = new Button { Content = "⋯", Flyout = new MenuFlyout { ItemsSource = SelectionMenu() } }; NativeWhite.Label(more, "녹음 작업 메뉴"); more.Classes.Add("quiet"); VemoIcons.Decorate(more, "more", iconOnly: true); NativeWhite.Label(more, "녹음 작업 메뉴"); Grid.SetColumn(more, 1); titleRow.Children.Add(more); detailBody.Children.Add(titleRow);
-        var metadata = new StackPanel { Spacing = 8 }; metadata.Children.Add(detailPath); var edit = new Grid { ColumnDefinitions = new("*,Auto") }; edit.Children.Add(date); var save = Button("저장", SaveTitle, "soft"); Grid.SetColumn(save, 1); edit.Children.Add(save); metadata.Children.Add(edit); metadata.Children.Add(detailState); Grid.SetRow(metadata, 1); detailBody.Children.Add(metadata);
-        jobInfo.Margin = new Thickness(0, 10, 0, 12); var infoScroll = new ScrollViewer { Content = jobInfo, MaxHeight = 105 }; Grid.SetRow(infoScroll, 2); detailBody.Children.Add(infoScroll);
+        var metadata = new StackPanel { Spacing = 8 }; metadata.Children.Add(detailPath); var edit = new Grid { ColumnDefinitions = new("*,Auto") }; dateEditor = edit; metadata.Children.Add(recordedDate); NativeWhite.Label(recordedDate, "녹음 날짜 표시"); edit.Children.Add(date); var save = Button("저장", SaveTitle, "soft"); Grid.SetColumn(save, 1); edit.Children.Add(save); metadata.Children.Add(edit); metadata.Children.Add(detailState); Grid.SetRow(metadata, 1); detailBody.Children.Add(metadata);
+        jobInfo.Margin = new Thickness(0, 10, 0, 12); var processingInfo = new StackPanel { Spacing = 8 }; processingInfo.Children.Add(processingProgress); processingInfo.Children.Add(jobInfo); var infoScroll = new ScrollViewer { Content = processingInfo, MaxHeight = 150 }; Grid.SetRow(infoScroll, 2); detailBody.Children.Add(infoScroll);
         tabs.SelectionChanged += (_, _) => UpdateActions();
         TabItem ResultTab(string name, string icon, Control body)
         {
@@ -131,10 +137,14 @@ public sealed partial class MainWindow : Window
             item.HeaderTemplate = new FuncDataTemplate<string>((text, _) => { var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 7 }; row.Children.Add(VemoIcons.Outline(icon, 15)); row.Children.Add(new TextBlock { Text = text }); return row; });
             return item;
         }
-        tabs.ItemsSource = new[] { ResultTab("전사", "text", transcript), ResultTab("노트", "note", new ScrollViewer { Content = renderedNotes }) }; Grid.SetRow(player, 3); detailBody.Children.Add(player); Grid.SetRow(tabs, 4); detailBody.Children.Add(tabs);
+        tabs.ItemsSource = new[] { ResultTab("전사", "text", transcriptCards), ResultTab("노트", "note", new ScrollViewer { Content = renderedNotes }) }; Grid.SetRow(player, 3); detailBody.Children.Add(player); Grid.SetRow(tabs, 4); detailBody.Children.Add(tabs);
         var footer = new WrapPanel { Margin = new Thickness(0, 16, 0, 0) }; var copyResult = Button("복사", CopyResult, "soft", HasResult); VemoIcons.Decorate(copyResult, "copy"); footer.Children.Add(copyResult); var exportResult = Button("내보내기", SaveResult, "soft", HasResult); VemoIcons.Decorate(exportResult, "export"); footer.Children.Add(exportResult); var resultFolder = Button("결과 폴더", OpenResultDirectory, "soft", () => Current()?.ExportPath != null); VemoIcons.Decorate(resultFolder, "folder"); footer.Children.Add(resultFolder); footer.Children.Add(Button("ZIP 내보내기", Export, null, () => HasSelection() && SelectedJobs().All(j => j.State == JobState.Completed))); footer.Children.Add(Button("선택 이동…", Move, null, HasSelection)); Grid.SetRow(footer, 5); detailBody.Children.Add(footer);
         status.Margin = new Thickness(16, 8); var statusBar = new Border { Child = new ScrollViewer { Content = status, MaxHeight = 70 }, Background = NativeWhite.Sidebar, BorderBrush = NativeWhite.Divider, BorderThickness = new Thickness(0, 1, 0, 0) }; Grid.SetRow(statusBar, 1); outer.Children.Add(statusBar); Content = outer;
+        transcriptCards.SeekRequested += seconds => player.Seek(seconds);
+        runner.ProgressChanged += ProgressChanged;
         WireDragDrop(listArea);
+        jobs.AddHandler(PointerPressedEvent, RecordingActivationPressed, RoutingStrategies.Tunnel, handledEventsToo: true);
+        jobs.AddHandler(PointerReleasedEvent, RecordingActivationReleased, RoutingStrategies.Bubble, handledEventsToo: true);
         navigation.SelectionChanged += (_, _) => { if (refreshing || closing) return; if (navigation.SelectedItem is FolderChoice f) { CloseSettings(); selectedFolder = null; view = f.View; RequestRefresh(); } };
         folders.SelectionChanged += (_, _) => { if (refreshing || closing) return; if (folders.SelectedItem is FolderChoice f) { CloseSettings(); selectedFolder = f.Id; view = f.View; RequestRefresh(); } };
         jobs.SelectionChanged += (_, _) => { if (!refreshing) { CloseSettings(); Detail(); } }; search.TextChanged += (_, _) => { if (!closing) RequestRefresh(); };
@@ -154,7 +164,7 @@ public sealed partial class MainWindow : Window
             status.Text = "진행 중인 작업을 취소하고 저장 작업이 끝날 때까지 기다립니다…";
             _ = CloseAfterDrain();
         };
-        Closed += (_, _) => { google.Dispose(); player.Dispose(); store.Dispose(); work.Dispose(); };
+        Closed += (_, _) => { runner.ProgressChanged -= ProgressChanged; google.Dispose(); player.Dispose(); store.Dispose(); work.Dispose(); };
     }
     async Task CloseAfterDrain()
     {
@@ -208,15 +218,24 @@ public sealed partial class MainWindow : Window
         lastSignature = "";
     }
     Task ToggleQueue() { store.UpdateSettings(store.Settings with { QueuePaused = !store.Settings.QueuePaused }); return Task.CompletedTask; }
+    void BeginTitleEdit()
+    {
+        if (Current() is not { } job || closing) return;
+        titleEditing = true; editing = true; refreshing = true; title.Text = RecordingTitles.BaseTitle(job.Title); refreshing = false;
+        title.IsReadOnly = false; title.Focus(); title.SelectAll();
+    }
     void EditKey(object? sender, KeyEventArgs e)
     {
+        if (sender == title && title.IsReadOnly && e.Key == Key.Enter) { BeginTitleEdit(); e.Handled = true; return; }
         if (e.Key == Key.Enter) { e.Handled = true; _ = Execute(SaveTitle); }
-        else if (e.Key == Key.Escape) { editing = false; detailId = null; Detail(); e.Handled = true; }
+        else if (e.Key == Key.Escape) { titleEditing = false; title.IsReadOnly = true; editing = false; detailId = null; Detail(); e.Handled = true; }
     }
     void Shortcut(object? sender, KeyEventArgs e)
     {
         if (closing) return;
         if (settingsView?.IsKeyboardFocusWithin == true) return;
+        if (jobs.IsKeyboardFocusWithin && e.Key is Key.Enter or Key.Space && settingsView != null) { CloseSettings(); Detail(); jobs.Focus(); e.Handled = true; return; }
+        if (jobs.IsKeyboardFocusWithin && e.Key == Key.Enter && Current() != null) { BeginTitleEdit(); e.Handled = true; return; }
         if (e.KeyModifiers.HasFlag(KeyModifiers.Control) && e.Key == Key.F) { search.Focus(); search.SelectAll(); e.Handled = true; }
         else if (e.KeyModifiers.HasFlag(KeyModifiers.Control) && e.Key == Key.O) { _ = Execute(Import); e.Handled = true; }
         else if (e.Key == Key.F6) { focusPane = navigation.IsKeyboardFocusWithin || folders.IsKeyboardFocusWithin ? 0 : jobs.IsKeyboardFocusWithin || search.IsKeyboardFocusWithin ? 1 : 2; focusPane = (focusPane + (e.KeyModifiers.HasFlag(KeyModifiers.Shift) ? 2 : 1)) % 3; (focusPane == 0 ? (Control)(view == "folder" ? folders : navigation) : focusPane == 1 ? search : detailBody.IsVisible ? title : emptyImport).Focus(); e.Handled = true; }
@@ -272,6 +291,7 @@ public sealed partial class MainWindow : Window
         queueInfo.Text = (store.Settings.QueuePaused ? "새 작업 일시중지" : active != null ? StateLabel(active.State) : store.Settings.RequireExternalPower && !WindowsPower.HasExternalPower() ? "전원 연결 대기" : "처리 중인 작업 없음") + (queued > 0 ? $" · 대기 {queued}개" : "");
         var choices = FolderChoices();
         var signature = System.Text.Json.JsonSerializer.Serialize(all) + System.Text.Json.JsonSerializer.Serialize(choices) + view + selectedFolder + search.Text;
+        UpdateProgress();
         if (signature == lastSignature) { UpdateActions(); return; }
         lastSignature = signature;
         var selected = Selected().ToHashSet(); var primary = Current()?.Id; refreshing = true;
@@ -326,28 +346,32 @@ public sealed partial class MainWindow : Window
         if (refreshing || closing) return;
         var j = Current(); var count = Selected().Count(); selectionInfo.Text = count > 0 ? $"{count}개 선택 · Ctrl/Shift" : "최근 녹음순";
         detailBody.IsVisible = j != null; emptyDetail.IsVisible = j == null; UpdateActions();
-        if (j == null) { player.SetSource(null); detailId = null; editing = false; return; }
+        if (j == null) { player.SetSource(null); processingProgress.Update(null, JobState.Queued); detailId = null; editing = titleEditing = false; title.IsReadOnly = true; return; }
         player.SetSource(j.Trashed ? null : store.AudioPath(j.Id));
         if (detailId != j.Id || !editing)
         {
-            refreshing = true; title.Text = j.Title; date.Text = j.RecordedAt ?? ""; refreshing = false; editing = false; detailId = j.Id;
+            refreshing = true; titleEditing = false; title.IsReadOnly = true; title.Text = RecordingTitles.Display(j); date.Text = RecordingTitles.Day(j) ?? ""; refreshing = false; editing = false; detailId = j.Id;
         }
+        recordedDate.Text = RecordingTitles.Day(j) ?? "녹음 날짜 미확인";
+        if (dateEditor != null) dateEditor.IsVisible = RecordingTitles.Day(j) == null && j.Mobile == null;
         date.IsReadOnly = j.Mobile != null;
-        ToolTip.SetTip(date, j.Mobile != null ? "모바일 녹음 날짜는 원본에서 유지되며 수정할 수 없습니다." : "예: 2026-10-18T10:00:00+09:00 · Enter 저장 / Escape 취소");
+        UpdateProgress();
+        ToolTip.SetTip(date, j.Mobile != null ? "모바일 녹음 날짜는 원본에서 유지되며 수정할 수 없습니다." : "예: 2026-10-18 · Enter 저장 / Escape 취소");
         detailPath.Text = FolderPath(j.FolderId) + (j.Trashed ? " · 휴지통" : "");
         detailState.Text = StateLabel(j.State) + " · " + j.Models.WhisperProfile + " / " + j.Models.NotesProfile + " · " + j.Models.Compute;
-        var messages = new List<string>(); if (j.RecordedAt == null) messages.Add("녹음 날짜 미확인 · 파일 수정일로 대신하지 않습니다.");
+        var messages = new List<string>(); if (RecordingTitles.Day(j) == null) messages.Add("녹음 날짜 미확인 · 파일 수정일로 대신하지 않습니다.");
         if (j.Error != null) messages.Add("처리: " + j.Error); if (j.ExportError != null) messages.Add("ZIP 저장: " + j.ExportError); if (j.ExportPath != null) messages.Add("ZIP: " + j.ExportPath);
         if (j.State != JobState.Completed && j.ArtifactRevision != null) messages.Add("이전 완료 결과는 유지됩니다.");
         jobInfo.Text = string.Join("\n", messages); jobInfo.Foreground = j.Error != null || j.ExportError != null ? NativeWhite.Danger : NativeWhite.Secondary;
         try
         {
             var source = store.ReadTranscript(j.Id); var markdown = store.ReadNotes(j.Id);
+            transcriptCards.SetDocument(store.ReadTranscriptDocument(j.Id));
             if (transcript.Text != source) transcript.Text = source; if (notes.Text != markdown) notes.Text = markdown; RenderNotes(markdown);
             transcript.PlaceholderText = "아직 전사가 없습니다. 처리 상태와 로컬 모델 설정을 확인하세요.";
             notes.PlaceholderText = "아직 노트가 없습니다. 전사가 있으면 재시도로 이어서 처리할 수 있습니다.";
         }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException) { transcript.Text = ""; notes.Text = ""; jobInfo.Text += "\n결과 읽기 실패: " + e.Message; jobInfo.Foreground = NativeWhite.Danger; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException) { transcript.Text = ""; transcriptCards.SetDocument(new TranscriptDocument("", [])); notes.Text = ""; jobInfo.Text += "\n결과 읽기 실패: " + e.Message; jobInfo.Foreground = NativeWhite.Danger; }
         UpdateActions();
     }
     async Task Import()
@@ -364,7 +388,14 @@ public sealed partial class MainWindow : Window
     }
     Task SaveTitle()
     {
-        var j = Current(); if (j != null) { SafeFiles.Title(title.Text ?? ""); SafeFiles.RecordedAt(string.IsNullOrWhiteSpace(date.Text) ? null : date.Text); store.Rename(j.Id, title.Text ?? ""); store.SetRecordedAt(j.Id, string.IsNullOrWhiteSpace(date.Text) ? null : date.Text); editing = false; status.Text = "제목과 녹음 날짜를 저장했습니다."; } return Task.CompletedTask;
+        var j = Current();
+        if (j != null)
+        {
+            var draft = titleEditing ? title.Text ?? "" : RecordingTitles.BaseTitle(j.Title);
+            store.UpdateTitleAndDate(j.Id, draft, string.IsNullOrWhiteSpace(date.Text) ? null : date.Text.Trim());
+            editing = titleEditing = false; title.IsReadOnly = true; status.Text = "제목과 녹음 날짜를 저장했습니다.";
+        }
+        return Task.CompletedTask;
     }
     Task Action(Action<string[]> action) { action(Selected().ToArray()); return Task.CompletedTask; }
     async Task<string?> ChooseFolder(string? movingFolder = null)

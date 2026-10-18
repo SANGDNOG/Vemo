@@ -3,7 +3,7 @@ using System.Text;
 using System.Text.Json;
 namespace Vemo.Core;
 
-public sealed record InferenceContext(RecordingJob Job, string AudioPath, string WorkDirectory);
+public sealed record InferenceContext(RecordingJob Job, string AudioPath, string WorkDirectory, IProgress<ProcessingProgress>? Progress = null);
 public interface IInferenceEngine
 {
     Task<string> TranscribeAsync(InferenceContext context, CancellationToken cancellationToken);
@@ -70,7 +70,18 @@ public sealed record NotesDocument(IReadOnlyList<NoteTopic> Topics)
 public sealed class JobRunner(LibraryStore store, IInferenceEngine engine)
 {
     readonly SemaphoreSlim gate = new(1, 1); readonly object cancelGate = new(); CancellationTokenSource? current;
-    public string? ActiveJobId { get; private set; }
+    string? activeJobId; ProcessingProgress? progress; Stopwatch? elapsed;
+    public string? ActiveJobId { get { lock (cancelGate) return activeJobId; } }
+    public ProcessingProgress? Progress { get { lock (cancelGate) return progress == null ? null : progress with { Elapsed = elapsed?.Elapsed ?? progress.Elapsed }; } }
+    public event EventHandler? ProgressChanged;
+    void NotifyProgress() { try { ProgressChanged?.Invoke(this, EventArgs.Empty); } catch (Exception) { /* Observers cannot fail an inference job. */ } }
+    void Stage(string jobId, string stage)
+    {
+        lock (cancelGate) progress = new(jobId, stage, null, elapsed?.Elapsed ?? TimeSpan.Zero);
+        NotifyProgress();
+    }
+    sealed class ReportProgress(Action<ProcessingProgress> report) : IProgress<ProcessingProgress>
+    { public void Report(ProcessingProgress value) => report(value); }
     public void CancelActive() { lock (cancelGate) current?.Cancel(); }
     public async Task<bool> RunNextAsync(CancellationToken cancellationToken = default)
     {
@@ -79,20 +90,38 @@ public sealed class JobRunner(LibraryStore store, IInferenceEngine engine)
         try
         {
             var next = store.Jobs.FirstOrDefault(j => !j.Trashed && j.State == JobState.Queued); if (next == null || !store.TryStart(next.Id)) return false;
-            id = next.Id; ActiveJobId = id; linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken); lock (cancelGate) current = linked;
-            var ct = linked.Token; var context = new InferenceContext(store.Get(id), store.AudioPath(id), store.WorkDirectory(id));
+            id = next.Id; lock (cancelGate) { activeJobId = id; elapsed = Stopwatch.StartNew(); } Stage(id, "preparing"); linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken); lock (cancelGate) current = linked;
+            var ct = linked.Token;
+            var reporter = new ReportProgress(value =>
+            {
+                lock (cancelGate)
+                {
+                    if (activeJobId != id || current != linked || progress?.Stage != "transcribing" || value.JobId != id || value.Stage != "transcribing" || value.Percent is not double percent || !double.IsFinite(percent)) return;
+                    progress = new(id, "transcribing", Math.Max(progress.Percent ?? 0, Math.Clamp(percent, 0, 99)), elapsed?.Elapsed ?? TimeSpan.Zero);
+                }
+                NotifyProgress();
+            });
+            var context = new InferenceContext(store.Get(id), store.AudioPath(id), store.WorkDirectory(id), reporter);
             if (SafeFiles.Hash(context.AudioPath) != context.Job.AudioSha256) throw new IOException("Owned audio hash mismatch.");
             var transcript = store.ReadTranscriptForProcessing(id);
-            if (string.IsNullOrWhiteSpace(transcript)) { transcript = await engine.TranscribeAsync(context, ct); if (string.IsNullOrWhiteSpace(transcript)) throw new InvalidDataException("Transcriber returned empty text."); }
-            ct.ThrowIfCancellationRequested(); store.SaveTranscript(id, transcript);
+            IReadOnlyList<TranscriptSegment> timings;
+            if (string.IsNullOrWhiteSpace(transcript))
+            {
+                Stage(id, "transcribing");
+                var timingPath = Path.Combine(context.WorkDirectory, TranscriptTimingFile.FileName); SafeFiles.NoLinks(timingPath); File.Delete(timingPath);
+                transcript = await engine.TranscribeAsync(context, ct); if (string.IsNullOrWhiteSpace(transcript)) throw new InvalidDataException("Transcriber returned empty text.");
+                timings = TranscriptTimingFile.Read(timingPath, transcript);
+            }
+            else timings = store.ReadProcessingTimings(id, transcript);
+            ct.ThrowIfCancellationRequested(); store.SaveTranscript(id, transcript, timings); Stage(id, "notes");
             var sources = SourceLines(transcript); var json = await engine.GenerateNotesAsync(context, sources, ct); ct.ThrowIfCancellationRequested(); var notes = NotesDocument.Parse(json, sources);
-            SafeFiles.Atomic(Path.Combine(context.WorkDirectory, "notes.json"), notes.ToJson()); store.Complete(id, notes.Markdown(store.Get(id).Title));
+            Stage(id, "saving"); SafeFiles.Atomic(Path.Combine(context.WorkDirectory, "notes.json"), notes.ToJson()); store.Complete(id, notes.Markdown(RecordingTitles.Display(store.Get(id))));
             if (store.Settings.AutoExport) { try { store.Export(id); } catch (Exception e) { store.SetExportError(id, e.Message); } }
-            return true;
+            Stage(id, "completed"); return true;
         }
-        catch (OperationCanceledException) { if (id != null) store.Fail(id, "Processing cancelled; existing transcript is preserved.", true); return id != null; }
-        catch (Exception e) { if (id == null) throw; store.Fail(id, e.Message); return true; }
-        finally { lock (cancelGate) { current = null; linked?.Dispose(); } ActiveJobId = null; gate.Release(); }
+        catch (OperationCanceledException) { if (id != null) { store.Fail(id, "Processing cancelled; existing transcript is preserved.", true); Stage(id, "cancelled"); } return id != null; }
+        catch (Exception e) { if (id == null) throw; store.Fail(id, e.Message); Stage(id, "failed"); return true; }
+        finally { lock (cancelGate) { current = null; linked?.Dispose(); activeJobId = null; elapsed?.Stop(); if (progress != null) progress = progress with { Elapsed = elapsed?.Elapsed ?? progress.Elapsed }; elapsed = null; } gate.Release(); }
     }
     public static IReadOnlyList<string> SourceLines(string text)
     {
@@ -117,10 +146,26 @@ public sealed class LocalCliInferenceEngine : IInferenceEngine
         Required(m.FfmpegExecutable, "FFmpeg executable (audio decoding)", true);
         input = Path.Combine(context.WorkDirectory, "input.wav"); SafeFiles.NoLinks(input);
         await ProcessRunner.RunAsync(m.FfmpegExecutable, ["-nostdin", "-y", "-i", context.AudioPath, "-vn", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", input], context.WorkDirectory, m.TimeoutMinutes, ct);
-        var output = Path.Combine(context.WorkDirectory, "asr"); SafeFiles.NoLinks(output + ".txt"); if (File.Exists(output + ".txt")) File.Delete(output + ".txt");
-        var args = new List<string> { "-m", m.WhisperModel, "-f", input, "-l", "ko", "-otxt", "-of", output }; if (m.Compute == "CPU") args.Add("-ng");
-        await ProcessRunner.RunAsync(m.WhisperExecutable, args, context.WorkDirectory, m.TimeoutMinutes, ct);
-        if (!File.Exists(output + ".txt")) throw new IOException("whisper.cpp did not produce its text output."); return SafeFiles.Read(output + ".txt").Trim();
+        var output = Path.Combine(context.WorkDirectory, "asr");
+        foreach (var path in new[] { output + ".txt", output + ".json", Path.Combine(context.WorkDirectory, TranscriptTimingFile.FileName) }) { SafeFiles.NoLinks(path); File.Delete(path); }
+        var args = new List<string> { "-m", m.WhisperModel, "-f", input, "-l", "ko", "-otxt", "-ojf", "-pp", "-of", output }; if (m.Compute == "CPU") args.Add("-ng");
+        await ProcessRunner.RunAsync(m.WhisperExecutable, args, context.WorkDirectory, m.TimeoutMinutes, ct, line =>
+        {
+            if (WhisperProgress.TryPercent(line, out var percent)) context.Progress?.Report(new(context.Job.Id, "transcribing", percent, TimeSpan.Zero));
+        });
+        if (!File.Exists(output + ".txt")) throw new IOException("whisper.cpp did not produce its text output.");
+        var text = SafeFiles.Read(output + ".txt").Trim();
+        // Optional alignment never destroys valid text. Unavailable/mismatched JSON leaves it untimed.
+        if (File.Exists(output + ".json"))
+        {
+            try
+            {
+                var segments = WhisperTranscript.Parse(SafeFiles.Read(output + ".json"), text);
+                SafeFiles.Atomic(Path.Combine(context.WorkDirectory, TranscriptTimingFile.FileName), TranscriptTimingFile.Serialize(text, segments));
+            }
+            catch (Exception e) when (e is InvalidDataException or JsonException) { }
+        }
+        ct.ThrowIfCancellationRequested(); return text;
     }
     public async Task<string> GenerateNotesAsync(InferenceContext context, IReadOnlyList<string> sources, CancellationToken ct)
     {
@@ -159,7 +204,7 @@ public static class LlamaOutput
 }
 public static class ProcessRunner
 {
-    public static async Task<string> RunAsync(string executable, IEnumerable<string> arguments, string workingDirectory, int timeoutMinutes, CancellationToken ct)
+    public static async Task<string> RunAsync(string executable, IEnumerable<string> arguments, string workingDirectory, int timeoutMinutes, CancellationToken ct, Action<string>? onOutputLine = null)
     {
         SafeFiles.NoLinks(executable); SafeFiles.NoLinks(workingDirectory); ct.ThrowIfCancellationRequested();
         using var process = new Process { StartInfo = new() { FileName = executable, WorkingDirectory = workingDirectory, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, RedirectStandardInput = true, CreateNoWindow = true } };
@@ -169,7 +214,7 @@ public static class ProcessRunner
         {
             if (!process.Start()) throw new IOException("Could not start inference runtime."); process.StandardInput.Close();
             using var registration = deadline.Token.Register(() => Kill(process));
-            var stdout = ReadBounded(process.StandardOutput, process, deadline.Token); var stderr = ReadBounded(process.StandardError, process, deadline.Token);
+            var stdout = ReadBounded(process.StandardOutput, process, deadline.Token, onOutputLine); var stderr = ReadBounded(process.StandardError, process, deadline.Token, onOutputLine);
             await process.WaitForExitAsync(deadline.Token); await Task.WhenAll(stdout, stderr);
             if (process.ExitCode != 0) throw new IOException($"{Path.GetFileName(executable)} exited {process.ExitCode}: " + (stderr.Result.Length > 2000 ? stderr.Result[^2000..] : stderr.Result));
             return stdout.Result;
@@ -178,5 +223,22 @@ public static class ProcessRunner
         finally { Kill(process); }
     }
     static void Kill(Process p) { try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch (InvalidOperationException) { } catch (System.ComponentModel.Win32Exception) { } }
-    static async Task<string> ReadBounded(StreamReader reader, Process p, CancellationToken ct) { var b = new StringBuilder(); var buf = new char[4096]; int n; while ((n = await reader.ReadAsync(buf, ct)) > 0) { if (b.Length + n > 4 * 1024 * 1024) { Kill(p); throw new IOException("Runtime output exceeded 4 MiB; process tree terminated."); } b.Append(buf, 0, n); } return b.ToString(); }
+    static async Task<string> ReadBounded(StreamReader reader, Process p, CancellationToken ct, Action<string>? onLine)
+    {
+        var b = new StringBuilder(); var line = new StringBuilder(); var buf = new char[4096]; int n;
+        while ((n = await reader.ReadAsync(buf, ct)) > 0)
+        {
+            if (b.Length + n > 4 * 1024 * 1024) { Kill(p); throw new IOException("Runtime output exceeded 4 MiB; process tree terminated."); }
+            b.Append(buf, 0, n);
+            if (onLine != null)
+            {
+                for (int i = 0; i < n; i++)
+                {
+                    if (buf[i] is '\r' or '\n') { if (line.Length > 0) { onLine(line.ToString()); line.Clear(); } }
+                    else if (line.Length < 8192) line.Append(buf[i]);
+                }
+            }
+        }
+        if (line.Length > 0) onLine?.Invoke(line.ToString()); return b.ToString();
+    }
 }

@@ -64,6 +64,7 @@ public sealed partial class MainWindow
         var delta = e.GetPosition(this) - dragOrigin;
         var threshold = Application.Current?.PlatformSettings?.GetTapSize(e.Pointer.Type) ?? new Size(4, 4);
         if (Math.Abs(delta.X) <= threshold.Width && Math.Abs(delta.Y) <= threshold.Height) return;
+        recordingPressId = null;
         var press = dragPress; var payload = dragCandidate; dragPress = null; dragCandidate = null;
         dragging = true; e.Handled = true;
         try

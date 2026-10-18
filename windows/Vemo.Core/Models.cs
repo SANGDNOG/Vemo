@@ -37,6 +37,7 @@ public sealed record RecordingJob
     public required string Id { get; init; }
     public required string Title { get; init; }
     public string? RecordedAt { get; init; }
+    public string? RecordingDate { get; init; }
     public string Extension { get; init; } = ".wav";
     public required string AudioSha256 { get; init; }
     public string? FolderId { get; init; }

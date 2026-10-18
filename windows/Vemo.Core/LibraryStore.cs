@@ -16,7 +16,7 @@ public sealed class LibraryStore : IDisposable
             if (File.Exists(p)) { using var doc = JsonFormat.Strict(SafeFiles.Read(p)); data = doc.Deserialize<LibraryData>(JsonFormat.Options) ?? throw new InvalidDataException("Invalid library."); }
             else data = new();
             if (data.SchemaVersion != 1) throw new InvalidDataException("Unsupported library version.");
-            foreach (var j in data.Jobs) { ValidateId(j.Id); SafeFiles.Title(j.Title); SafeFiles.RecordedAt(j.RecordedAt); if (j.ArtifactRevision != null) ValidateId(j.ArtifactRevision); if (j.PendingArtifactRevision != null) { ValidateId(j.PendingArtifactRevision); if (j.PendingArtifactRevision == j.ArtifactRevision) throw new InvalidDataException("Pending artifacts must not overwrite the committed revision."); } }
+            foreach (var j in data.Jobs) { ValidateId(j.Id); SafeFiles.Title(j.Title); SafeFiles.RecordedAt(j.RecordedAt); RecordingTitles.ValidateDay(j.RecordingDate); if (j.Mobile != null && j.RecordingDate != null && j.RecordingDate != j.RecordedAt?[..10]) throw new InvalidDataException("Mobile recording date is immutable."); if (j.ArtifactRevision != null) ValidateId(j.ArtifactRevision); if (j.PendingArtifactRevision != null) { ValidateId(j.PendingArtifactRevision); if (j.PendingArtifactRevision == j.ArtifactRevision) throw new InvalidDataException("Pending artifacts must not overwrite the committed revision."); } }
             foreach (var f in data.Folders) { ValidateId(f.Id); SafeFiles.Name(f.Name); }
             data.Jobs = data.Jobs.Select(j => j.State is JobState.Transcribing or JobState.GeneratingNotes ? j with { State = JobState.Queued, Error = "Recovered interrupted processing." } : j).ToList(); Save();
             foreach (var j in data.Jobs.Where(j => j.State == JobState.Purged))
@@ -78,8 +78,26 @@ public sealed class LibraryStore : IDisposable
     public string AudioPath(string id) { lock (gate) { var j = Get(id); if (j.Extension.Length > 6 || !j.Extension.StartsWith('.') || j.Extension.Any(c => !char.IsAsciiLetterOrDigit(c) && c != '.')) throw new InvalidDataException("Invalid audio extension."); var p = Path.Combine(Item(id), "original" + j.Extension); SafeFiles.NoLinks(p); return p; } }
     public string WorkDirectory(string id) { lock (gate) { var p = Path.Combine(ProcessingDirectory(Get(id)), "work"); SafeFiles.NoLinks(p); Directory.CreateDirectory(p); SafeFiles.NoLinks(p); return p; } }
     void Replace(RecordingJob job) { var i = data.Jobs.FindIndex(j => j.Id == job.Id); var previous = data.Jobs[i]; data.Jobs[i] = job; try { Save(); } catch { data.Jobs[i] = previous; throw; } }
-    public void SetRecordedAt(string id, string? recordedAt) { lock (gate) { SafeFiles.RecordedAt(recordedAt); var j = Get(id); if (j.Mobile != null && j.RecordedAt != recordedAt) throw new InvalidOperationException("Mobile recording date is immutable."); Replace(j with { RecordedAt = recordedAt, ExportPath = null }); } }
-    public void Rename(string id, string title) { lock (gate) { SafeFiles.Title(title); Replace(Get(id) with { Title = title, ExportPath = null }); } }
+    public void SetRecordedAt(string id, string? recordedAt)
+    {
+        lock (gate)
+        {
+            SafeFiles.RecordedAt(recordedAt); var j = Get(id);
+            if (j.Mobile != null && j.RecordedAt != recordedAt) throw new InvalidOperationException("Mobile recording date is immutable.");
+            Replace(j with { Title = RecordingTitles.BaseTitle(j.Title), RecordedAt = recordedAt, RecordingDate = null, ExportPath = null });
+        }
+    }
+    public void Rename(string id, string title)
+    { lock (gate) { var j = Get(id); Replace(j with { Title = RecordingTitles.BaseTitle(title), ExportPath = null }); } }
+    public void UpdateTitleAndDate(string id, string title, string? recordingDate)
+    {
+        lock (gate)
+        {
+            var j = Get(id); var baseTitle = RecordingTitles.BaseTitle(title); RecordingTitles.ValidateDay(recordingDate);
+            if (j.Mobile != null && recordingDate != null && recordingDate != j.RecordedAt?[..10]) throw new InvalidOperationException("Mobile recording date is immutable.");
+            Replace(j with { Title = baseTitle, RecordingDate = recordingDate, ExportPath = null });
+        }
+    }
     public LibraryFolder CreateFolder(string name, string? parentId)
     {
         lock (gate)
@@ -163,14 +181,33 @@ public sealed class LibraryStore : IDisposable
                 if (reuseAsr && j.PendingArtifactRevision == null)
                 {
                     var transcript = ReadTranscriptForProcessing(id);
-                    if (!string.IsNullOrWhiteSpace(transcript)) SafeFiles.Atomic(Path.Combine(ArtifactDirectory(id, pending), "transcript.txt"), transcript);
+                    if (!string.IsNullOrWhiteSpace(transcript))
+                    {
+                        var timings = TranscriptTimingFile.Read(Path.Combine(ProcessingDirectory(j), TranscriptTimingFile.FileName), transcript);
+                        var target = ArtifactDirectory(id, pending);
+                        SafeFiles.Atomic(Path.Combine(target, "transcript.txt"), transcript);
+                        if (timings.Count > 0) SafeFiles.Atomic(Path.Combine(target, TranscriptTimingFile.FileName), TranscriptTimingFile.Serialize(transcript, timings));
+                    }
                 }
                 Replace(j with { State = JobState.Queued, Error = null, Models = models, PendingArtifactRevision = pending, ExportPath = null, ExportError = null });
             }
         }
     }
     public bool TryStart(string id) { lock (gate) { var j = Get(id); if (data.Settings.QueuePaused || j.Trashed || j.State != JobState.Queued) return false; Replace(j with { State = JobState.Transcribing, Error = null }); return true; } }
-    public void SaveTranscript(string id, string text) { lock (gate) { if (string.IsNullOrWhiteSpace(text)) throw new InvalidDataException("Transcript must not be empty."); var j = Get(id); SafeFiles.Atomic(Path.Combine(ProcessingDirectory(j), "transcript.txt"), text); Replace(j with { State = JobState.GeneratingNotes }); } }
+    public void SaveTranscript(string id, string text, IReadOnlyList<TranscriptSegment>? segments = null)
+    {
+        lock (gate)
+        {
+            if (string.IsNullOrWhiteSpace(text)) throw new InvalidDataException("Transcript must not be empty.");
+            var sidecar = segments is { Count: > 0 } ? TranscriptTimingFile.Serialize(text, segments) : null;
+            var j = Get(id); var directory = ProcessingDirectory(j);
+            // Text hash in the sidecar prevents association across an interrupted two-file write.
+            SafeFiles.Atomic(Path.Combine(directory, "transcript.txt"), text);
+            var path = Path.Combine(directory, TranscriptTimingFile.FileName); SafeFiles.NoLinks(path);
+            if (sidecar != null) SafeFiles.Atomic(path, sidecar); else File.Delete(path);
+            Replace(j with { State = JobState.GeneratingNotes });
+        }
+    }
     public void Complete(string id, string markdown)
     {
         lock (gate)
@@ -183,6 +220,16 @@ public sealed class LibraryStore : IDisposable
     public void Fail(string id, string error, bool cancelled = false) { lock (gate) Replace(Get(id) with { State = cancelled ? JobState.Cancelled : JobState.Failed, Error = error }); }
     public void CancelQueued(IEnumerable<string> ids) { lock (gate) { foreach (var id in ids.ToArray()) { var j = Get(id); if (j.State == JobState.Queued) Replace(j with { State = JobState.Cancelled, Error = "Cancelled before processing." }); } } }
     public string ReadTranscript(string id) => ReadArtifact(id, "transcript.txt");
+    public TranscriptDocument ReadTranscriptDocument(string id)
+    {
+        lock (gate)
+        {
+            var j = Get(id); var directory = ArtifactDirectory(id, j.ArtifactRevision); var text = ReadArtifactAt(directory, "transcript.txt");
+            return new(text, TranscriptTimingFile.Read(Path.Combine(directory, TranscriptTimingFile.FileName), text));
+        }
+    }
+    internal IReadOnlyList<TranscriptSegment> ReadProcessingTimings(string id, string text)
+    { lock (gate) return TranscriptTimingFile.Read(Path.Combine(ProcessingDirectory(Get(id)), TranscriptTimingFile.FileName), text); }
     public string ReadTranscriptForProcessing(string id) { lock (gate) return ReadArtifactAt(ProcessingDirectory(Get(id)), "transcript.txt"); }
     public string ReadNotes(string id) => ReadArtifact(id, "notes.md");
     string ReadArtifact(string id, string file) { lock (gate) return ReadArtifactAt(ArtifactDirectory(id, Get(id).ArtifactRevision), file); }
@@ -199,7 +246,7 @@ public sealed class LibraryStore : IDisposable
             foreach (var name in chain) dir = Path.Combine(dir, name);
             SafeFiles.NoLinks(dir); Directory.CreateDirectory(dir);
             if (j.ExportPath != null && Path.GetDirectoryName(j.ExportPath) == dir && File.Exists(j.ExportPath)) { SafeFiles.NoLinks(j.ExportPath); return j.ExportPath; }
-            var stem = SafeFiles.FileTitle(j.Title) + " - " + (j.RecordedAt?[..10] ?? "date-unknown"); var temp = Path.Combine(dir, ".tmp-" + Guid.NewGuid() + ".zip");
+            var stem = SafeFiles.FileTitle(RecordingTitles.BaseTitle(j.Title)) + " - " + (RecordingTitles.Day(j) ?? "date-unknown"); var temp = Path.Combine(dir, ".tmp-" + Guid.NewGuid() + ".zip");
             try
             {
                 using (var zip = ZipFile.Open(temp, ZipArchiveMode.Create))

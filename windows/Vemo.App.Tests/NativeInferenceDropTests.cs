@@ -33,6 +33,9 @@ public sealed class NativeInferenceDropTests(ITestOutputHelper output)
             folderId = store.CreateFolder("음성", parent.Id).Id;
         });
         var timer = Stopwatch.StartNew();
+        var liveRunner = (JobRunner)typeof(Vemo.App.MainWindow).GetField("runner", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(ui.Window)!;
+        var observed = new System.Collections.Concurrent.ConcurrentQueue<ProcessingProgress>();
+        liveRunner.ProgressChanged += (_, _) => { if (liveRunner.Progress is { } progress) observed.Enqueue(progress); };
         using var data = await Files(ui.Window, audio);
         RawDrop(ui.Window, Folder(ui, "음성"), data);
         await Until(() => ui.Store.Jobs.Count == 1, "Actual Drop must import exactly one real input before enabling the queue.");
@@ -55,8 +58,21 @@ public sealed class NativeInferenceDropTests(ITestOutputHelper output)
         output.WriteLine($"Actual background pipeline: state={job.State}; elapsed={timer.Elapsed.TotalSeconds:F2}s; error={job.Error}; exportError={job.ExportError}");
         Assert.True(job.State == JobState.Completed, $"Actual pipeline ended at {job.State}: {job.Error}");
         Assert.Null(job.ExportError);
+        Assert.Contains(observed, p => p.Stage == "transcribing" && p.Percent > 0);
+        Assert.Contains(observed, p => p.Stage == "notes" && p.Percent == null);
+        Assert.All(observed.Where(p => p.Stage == "transcribing" && p.Percent != null), p => Assert.InRange(p.Percent!.Value, 0, 99));
+        output.WriteLine("Native progress stages: " + string.Join(", ", observed.Select(p => p.Stage + (p.Percent is { } value ? $" {value}%" : "")).Distinct()));
         Assert.False(string.IsNullOrWhiteSpace(ui.Store.ReadTranscript(job.Id)));
         Assert.False(string.IsNullOrWhiteSpace(ui.Store.ReadNotes(job.Id)));
+        var document = ui.Store.ReadTranscriptDocument(job.Id);
+        Assert.Equal(ui.Store.ReadTranscript(job.Id), document.Text);
+        Assert.NotEmpty(document.Segments);
+        TranscriptDisplay.Validate(document.Text, document.Segments);
+        var rows = TranscriptDisplay.Rows(document);
+        Assert.NotEmpty(rows);
+        Assert.All(rows.Where(r => !string.IsNullOrWhiteSpace(r.Text)), r => Assert.NotNull(r.StartSeconds));
+        Assert.Equal(document.Text, string.Concat(rows.Select(r => r.Text)));
+        Assert.Equal(title + " — 2026-10-18", RecordingTitles.Display(job));
         Assert.NotNull(job.ExportPath);
         Assert.Equal(Path.Combine(exportRoot, "검증", "음성"), Path.GetDirectoryName(job.ExportPath));
         Assert.Equal(title + " - 2026-10-18.zip", Path.GetFileName(job.ExportPath));
@@ -78,6 +94,9 @@ public sealed class NativeInferenceDropTests(ITestOutputHelper output)
         using var reopened = new LibraryStore(root);
         Assert.Equal(JobState.Completed, reopened.Get(job.Id).State);
         Assert.Equal(job.ExportPath, reopened.Get(job.Id).ExportPath);
+        Assert.Equal(document.Segments, reopened.ReadTranscriptDocument(job.Id).Segments);
+        Assert.Equal(title + " — 2026-10-18", RecordingTitles.Display(reopened.Get(job.Id)));
+        output.WriteLine($"Verified {document.Segments.Count} real timestamp segments, {rows.Count} readable rows and unchanged raw transcript after reopen.");
         output.WriteLine($"Verified unchanged input hash {originalHash}; three ZIP entries; nested logical folder; title/date filename; completed library survives reopen.");
     }
 }

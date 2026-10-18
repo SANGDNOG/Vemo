@@ -259,12 +259,14 @@ public sealed class MainWindowTests
         ui.SelectJob();
         var title = Named<TextBox>(ui.Window, "녹음 제목");
         Assert.Equal("미분류 녹음", title.Text);
+        title.Focus(); Key(ui.Window, Avalonia.Input.Key.Enter);
         title.SelectAll();
         Type(ui.Window, title, "수정한 제목");
-        Type(ui.Window, Named<TextBox>(ui.Window, "녹음 날짜"), "2026-10-18T10:00:00+09:00");
+        Type(ui.Window, Named<TextBox>(ui.Window, "녹음 날짜"), "2026-10-18");
         Click(ui.Window, Button(ui.Window, "저장"));
         await Until(() => ui.Store.Get(ui.UnfiledId).Title == "수정한 제목", "Save must update the selected recording.");
-        Assert.Equal("2026-10-18T10:00:00+09:00", ui.Store.Get(ui.UnfiledId).RecordedAt);
+        Assert.Equal("2026-10-18", ui.Store.Get(ui.UnfiledId).RecordingDate);
+        Assert.Null(ui.Store.Get(ui.UnfiledId).RecordedAt);
         Assert.Equal(new[] { "수정한 제목", "회의 녹음" }, ui.VisibleTitles());
     }
 
