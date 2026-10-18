@@ -9,8 +9,8 @@ android {
         applicationId = "com.vemo.android"
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.1.2"
+        versionCode = 17
+        versionName = "0.1.15-native-white"
         testInstrumentationRunner = "android.test.InstrumentationTestRunner"
     }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }

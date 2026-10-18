@@ -19,7 +19,9 @@ enum class Mode { RECORD_ONLY, DESKTOP }
 enum class CaptureState { RECORDING, PAUSED, FINALIZING, COMPLETE, INTERRUPTED, FAILED }
 data class Binding(val id: String, val hash: String, val processor: String)
 data class Processor(val id: String, val displayName: String)
-data class Result(val title: String, val recordedAt: String, val transcript: String, val notes: String)
+data class Result(val title: String, val recordedAt: String, val transcript: String, val notes: String, val timeline: List<TranscriptRow>? = null) {
+    val needsTimelineEnrichment: Boolean get() = timeline.orEmpty().none { it.startMs != null }
+}
 data class Recording(
     val id: String, val title: String, val recordedAt: String, val mode: Mode,
     val targetProcessor: String?, val state: CaptureState, val hash: String? = null,
@@ -185,6 +187,17 @@ class SyncEngine(private val cloud: CloudStorage) {
         cloud.putImmutable("$directory/audio.m4a", record.bytes, "audio/mp4") { file.inputStream() }
         cloud.putImmutable("$directory/recording.json", marker.size.toLong(), "application/json; charset=utf-8") { ByteArrayInputStream(marker) }
     }
+    /** Optional enrichment never blocks a valid v1 result. Cancellation still propagates. */
+    fun timeline(record: Recording, result: Result): ByteArray? {
+        if (!record.uploadable || record.mode != Mode.DESKTOP || record.targetProcessor == null) return null
+        return try {
+            val bytes = cloud.read("results/${record.id}/${record.hash}/${TranscriptTimeline.FILE_NAME}", Wire.MAX_JSON) ?: return null
+            TranscriptTimeline.parse(bytes, Binding(record.id, record.hash!!, record.targetProcessor), result.transcript, record.durationMs)
+            bytes
+        } catch (cancelled: InterruptedIOException) { throw cancelled }
+        catch (_: IOException) { null }
+    }
+
     fun result(record: Recording): Pair<Result, ByteArray>? {
         if (!record.uploadable || record.mode != Mode.DESKTOP || record.targetProcessor == null) return null
         val bytes = cloud.read("results/${record.id}/${record.hash}/result.json", Wire.MAX_JSON) ?: return null

@@ -37,7 +37,7 @@ struct SettingsView: View {
                 Text(model.mobileSyncStatus).font(.caption).foregroundStyle(.secondary)
                 Text("클라우드 데스크톱 앱으로 동기화한 Vemo 전용 폴더를 선택하세요. 일반 입력·결과·ZIP 폴더와 분리합니다. 폰에서 녹음 완료 후 전사와 노트를 만들고 결과를 같은 폴더로 돌려보냅니다.")
                     .font(.caption).foregroundStyle(.secondary)
-                Text("Nextcloud 등 데스크톱 동기화 앱을 사용하는 연결입니다. Google 직접 연결은 위의 별도 설정을 사용하며, 실제 폰과의 왕복은 검증 중입니다.")
+                Text("Nextcloud 등 데스크톱 동기화 앱용 연결입니다. Galaxy의 Google Drive 자동 왕복은 위의 ‘Galaxy · Google Drive 연결’을 사용하세요. Drive 앱으로 만든 파일은 Android Vemo의 접근 권한에 포함된다고 보장할 수 없습니다.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("ZIP 내보내기") {

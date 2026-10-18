@@ -1,6 +1,7 @@
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Themes.Fluent;
+using Avalonia.Styling;
 namespace Vemo.App;
 
 internal static class Program
@@ -9,6 +10,11 @@ internal static class Program
 }
 public sealed class VemoApplication : Application
 {
-    public override void Initialize() => Styles.Add(new FluentTheme());
+    public override void Initialize()
+    {
+        RequestedThemeVariant = ThemeVariant.Light;
+        Styles.Add(new FluentTheme());
+        Styles.Add(new Avalonia.Markup.Xaml.Styling.StyleInclude(new Uri("avares://Vemo.App/")) { Source = new Uri("avares://Vemo.App/NativeWhite.axaml") });
+    }
     public override void OnFrameworkInitializationCompleted() { if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop) desktop.MainWindow = new MainWindow(); base.OnFrameworkInitializationCompleted(); }
 }

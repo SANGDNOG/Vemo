@@ -1,0 +1,4 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:pathData="M17,3 L21,7 L17,11 M21,7 H12 A8,8 0,1 0,19.5,17" android:strokeColor="@color/vemo_design_secondary" android:strokeWidth="1.6" android:strokeLineCap="round" android:strokeLineJoin="round" android:fillColor="@android:color/transparent" />
+    <path android:pathData="M8,11 V17 M11,11 H15 V17 H11 Z" android:strokeColor="@color/vemo_design_secondary" android:strokeWidth="1.2" android:strokeLineCap="round" android:strokeLineJoin="round" android:fillColor="@android:color/transparent" />
+</vector>

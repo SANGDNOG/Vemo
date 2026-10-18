@@ -49,6 +49,62 @@ private struct FailingVault: GoogleOAuthTokenVault {
     func deleteRefreshToken() throws { throw CheckFailure.failed("sensitive vault error") }
 }
 
+// Deliberately ignores task cancellation, like a system completion handler that never fires.
+private actor BrowserCompletionGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var released = false
+    private(set) var entered = false
+    private(set) var finished = false
+    func wait() async {
+        entered = true
+        guard !released else { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+    func release() { released = true; continuation?.resume(); continuation = nil }
+    func markFinished() { finished = true }
+}
+
+private func browserCompletionRegression(_ configuration: GoogleOAuthClientConfiguration) async throws {
+    var failures: [String] = []
+    for mode in ["receiver timeout", "client cancel", "caller cancellation"] {
+        let gate = BrowserCompletionGate(), vault = MemoryVault("preserved-synthetic-refresh"), http = MockHTTP()
+        let client = GoogleOAuthClient(configuration: configuration, vault: vault, http: http)
+        let connecting = Task { () -> GoogleOAuthError? in
+            let outcome: GoogleOAuthError?
+            do {
+                try await client.connect(timeout: mode == "receiver timeout" ? 0.05 : 2) { _ in await gate.wait() }
+                outcome = nil
+            } catch { outcome = error as? GoogleOAuthError ?? .transport }
+            await gate.markFinished()
+            return outcome
+        }
+        let entryDeadline = ContinuousClock.now + .seconds(1)
+        while !(await gate.entered), !(await gate.finished), ContinuousClock.now < entryDeadline {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        let entered = await gate.entered
+        if mode == "client cancel" { await client.cancel() }
+        if mode == "caller cancellation" { connecting.cancel() }
+        let completionDeadline = ContinuousClock.now + .milliseconds(500)
+        while !(await gate.finished), ContinuousClock.now < completionDeadline {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        let completedBeforeRelease = await gate.finished
+        // Always release the synthetic callback before asserting, including the failing implementation.
+        await gate.release()
+        let outcome = await connecting.value
+        await client.cancel()
+        let requests = await http.captured()
+        let expected: GoogleOAuthError = mode == "receiver timeout" ? .expired : .cancelled
+        let preserved = try vault.loadRefreshToken() == "preserved-synthetic-refresh"
+        print("BROWSER REGRESSION: \(mode); entered=\(entered); completedBeforeRelease=\(completedBeforeRelease); outcome=\(outcome?.rawValue ?? "success"); requests=\(requests.count); tokenPreserved=\(preserved)")
+        if !entered || !completedBeforeRelease || outcome != expected || !requests.isEmpty || !preserved {
+            failures.append(mode)
+        }
+    }
+    try check(failures.isEmpty, "noncooperating browser callback settles on timeout/cancel: " + failures.joined(separator: ", "))
+}
+
 @main struct GoogleOAuthChecks {
     static func main() async {
         do { try await run(); print("All Google OAuth checks passed") }
@@ -60,8 +116,32 @@ private struct FailingVault: GoogleOAuthTokenVault {
         do {
             try await rejects(.invalidConfiguration) { _ = try GoogleOAuthClientConfiguration.loadInstalledJSON(Data(#"{"web":{"client_id":"x"}}"#.utf8)) }
         }
+        for json in [
+            #"{"installed":{"client_id":"synthetic.apps.googleusercontent.com","refresh_token":"forbidden"}}"#,
+            #"{"installed":{"client_id":"synthetic.apps.googleusercontent.com"},"web":{}}"#,
+            #"{"installed":{"client_id":"synthetic.apps.googleusercontent.com"},"access_token":"forbidden"}"#,
+            #"{"installed":{"client_id":"synthetic.apps.googleusercontent.com","private_key":"forbidden"}}"#,
+            #"{"installed":{"client_id":"synthetic.apps.googleusercontent.com","unknown":"forbidden"}}"#
+        ] {
+            try await rejects(.invalidConfiguration) { _ = try GoogleOAuthClientConfiguration.loadInstalledJSON(Data(json.utf8)) }
+        }
         try await rejects(.invalidConfiguration) { _ = try GoogleOAuthClientConfiguration(clientID: "evil.invalid") }
         try check(GoogleOAuthPKCE.challenge(for: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk") == "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", "RFC7636 S256 vector")
+        let normalized = try JSONSerialization.jsonObject(with: config.normalizedInstalledJSON()) as! [String: [String: String]]
+        try check(normalized == ["installed": ["client_id": "synthetic.apps.googleusercontent.com", "client_secret": "synthetic-secret"]], "normalized client strips metadata and endpoints")
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        try FileManager.default.createDirectory(at: scratch.appendingPathComponent("Fixture.bundle/Contents/Resources"), withIntermediateDirectories: true)
+        let bundleURL = scratch.appendingPathComponent("Fixture.bundle")
+        try Data("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>synthetic.oauth</string></dict></plist>".utf8).write(to: bundleURL.appendingPathComponent("Contents/Info.plist"))
+        let resource = bundleURL.appendingPathComponent("Contents/Resources/GoogleOAuthClient.json")
+        try config.normalizedInstalledJSON().write(to: resource)
+        let bundle = Bundle(url: bundleURL)!
+        try check(try GoogleOAuthClientConfiguration.loadBundled(in: bundle)?.clientID == config.clientID, "real bundle resource loads normalized desktop identity")
+        for bytes in [Data("{invalid".utf8), Data(repeating: 32, count: 65537), Data(#"{"web":{"client_id":"synthetic.apps.googleusercontent.com"}}"#.utf8), Data(#"{"installed":{"client_id":"synthetic.apps.googleusercontent.com","access_token":"forbidden"}}"#.utf8)] {
+            try bytes.write(to: resource)
+            try await rejects(.invalidConfiguration) { _ = try GoogleOAuthClientConfiguration.loadBundled(in: bundle) }
+        }
         let pkce = try GoogleOAuthPKCE(), other = try GoogleOAuthPKCE()
         try check(pkce.state != other.state && pkce.verifier != other.verifier && pkce.verifier.count == 43, "independent secure random state and verifier")
         let url = pkce.authorizationURL(configuration: config, redirectURI: URL(string: "http://127.0.0.1:12345/oauth/callback")!)
@@ -160,5 +240,6 @@ private struct FailingVault: GoogleOAuthTokenVault {
         try await rejects(.cancelled) { _ = try await refreshing.value }
         try check(try cancelledVault.loadRefreshToken() == "keep-refresh", "cancel preserves stored credential")
         try check(!GoogleOAuthError.transport.localizedDescription.contains("SECRET"), "diagnostics contain stable codes only")
+        try await browserCompletionRegression(config)
     }
 }

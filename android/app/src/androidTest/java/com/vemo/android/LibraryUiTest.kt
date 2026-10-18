@@ -1,6 +1,7 @@
 package com.vemo.android
 
 import android.app.Activity
+import android.app.Dialog
 import android.app.Application
 import android.content.Intent
 import android.content.pm.ActivityInfo
@@ -17,6 +18,7 @@ import android.view.ViewGroup
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.EditText
 import android.widget.TextView
+import android.widget.Spinner
 import com.vemo.android.core.*
 import java.io.File
 import java.util.UUID
@@ -29,6 +31,7 @@ class LibraryUiTest : InstrumentationTestCase() {
     private val ownedFolders = linkedSetOf<String>()
     private lateinit var app: VemoApp
     private var captureId: String? = null
+    private var ownsFixtureSyncGate = false
     @Volatile private var activity: Activity? = null
     private val lifecycle = object : Application.ActivityLifecycleCallbacks {
         override fun onActivityResumed(value: Activity) { if (value is MainActivity) activity = value }
@@ -43,7 +46,14 @@ class LibraryUiTest : InstrumentationTestCase() {
     override fun setUp() {
         super.setUp()
         app = instrumentation.targetContext.applicationContext as VemoApp
-        assertFalse("Validation requires an idle app; do not interrupt another capture", app.gate.busy())
+        if (name in setOf("testTimelineRowsKeepSelectionAndTabStateWithoutInventedTimes", "testTimestampStartsPreparedFixturePlayerAndSeeks")) {
+            assertFalse("Do not interrupt an existing capture", app.gate.isRecording())
+            // Harness-only isolation: wait for existing sync, then reserve the normal gate.
+            // Scheduled jobs and Activity polling cannot upload synthetic recordings or refresh UI.
+            await("Existing sync did not finish before fixture isolation", timeoutMs = 60_000) {
+                app.gate.beginSync().also { if (it) ownsFixtureSyncGate = true }
+            }
+        } else assertFalse("Validation requires an idle app; do not interrupt another capture", app.gate.busy())
         app.registerActivityLifecycleCallbacks(lifecycle)
     }
 
@@ -68,6 +78,7 @@ class LibraryUiTest : InstrumentationTestCase() {
                 if (app.library.snapshot().folders.any { it.id == id }) app.library.deleteFolder(id)
             }
         } finally {
+            if (ownsFixtureSyncGate) { app.gate.endSync(); ownsFixtureSyncGate = false }
             app.unregisterActivityLifecycleCallbacks(lifecycle)
             super.tearDown()
         }
@@ -102,10 +113,10 @@ class LibraryUiTest : InstrumentationTestCase() {
         manageFolder(child.id); click("이름 변경"); setDialogText("설계 회의"); click("저장")
         assertEquals("설계 회의", LibraryStore(File(app.filesDir, "library.json")).snapshot().folders.single { it.id == child.id }.name)
         selectFolder("전체 녹음")
-        click(first.title); click("폴더 이동"); click("${parent.name} / 설계 회의")
+        click(first.title); click("녹음 더보기"); click("폴더 이동"); selectMoveDestination("${parent.name} / 설계 회의"); click("이동")
         assertEquals(child.id, app.library.folderFor(first.id))
         back()
-        click(second.title); click("폴더 이동"); click(parent.name); back()
+        click(second.title); click("녹음 더보기"); click("폴더 이동"); selectMoveDestination(parent.name); click("이동"); back()
         selectFolder(parent.name)
         assertText(second.title); assertNoText(first.title); assertNoText(third.title)
         selectFolder("설계 회의")
@@ -178,9 +189,80 @@ class LibraryUiTest : InstrumentationTestCase() {
         recreate(); assertText(notes)
         screenshot("detail-notes")
         back(); assertLibrary(); assertText(design.title)
-        click("설정"); assertText("기본 녹음 모드"); back(); assertLibrary()
-        click("＋ 새 녹음"); assertText("녹음 시작"); back(); assertLibrary()
+        click("설정"); assertText("기본 모드"); back(); assertLibrary()
+        click("새 녹음"); assertText("녹음 시작"); back(); assertLibrary()
         captureDisplayVariants()
+    }
+
+    /** Synthetic result fixture only; no microphone, player, screenshots, or injected input. */
+    fun testTimelineRowsKeepSelectionAndTabStateWithoutInventedTimes() {
+        val record = fixture("$prefix-timeline", withResult = true)
+        val transcript = "첫 번째 문장입니다. 다음 문장입니다!"
+        app.store.saveResult(record, Json.bytes(mapOf(
+            "schema_version" to 1, "recording_id" to record.id, "audio_sha256" to record.hash,
+            "processor_id" to record.targetProcessor, "title" to record.title, "recorded_at" to record.recordedAt,
+            "transcript" to transcript, "notes_markdown" to "노트 fixture"
+        )))
+        app.store.saveTimeline(record, Json.bytes(mapOf(
+            "schema_version" to 1, "recording_id" to record.id, "audio_sha256" to record.hash,
+            "processor_id" to record.targetProcessor,
+            "transcript_sha256" to digest(java.io.ByteArrayInputStream(transcript.toByteArray(Charsets.UTF_8))),
+            "segments" to listOf(mapOf("start" to 0.25, "end" to 1.0, "text" to "첫 번째 문장입니다. "),
+                mapOf("start" to null, "end" to null, "text" to "다음 문장입니다!"))
+        )))
+        launch()
+        openFixture(record)
+        assertText("00:00"); assertText("첫 번째 문장입니다."); assertText("다음 문장입니다!")
+        onMain {
+            val texts = currentViews().filterIsInstance<TextView>()
+            val time = texts.single { it.contentDescription?.toString() == "00:00 위치로 이동" }
+            val body = texts.single { it.text.toString() == "첫 번째 문장입니다." }
+            assertSame(time.parent, body.parent)
+            assertTrue(time.isClickable); assertTrue(time.isFocusable)
+            assertEquals(activity!!.getColor(R.color.vemo_design_accent), time.currentTextColor)
+            assertTrue(body.isTextSelectable)
+            assertTrue(texts.single { it.text.toString() == "다음 문장입니다!" }.isTextSelectable)
+            texts.single { it.text.toString() == "노트" }.performClick()
+        }
+        assertText("노트 fixture"); assertNoText("00:00")
+        recreate(); assertText("노트 fixture")
+        File(app.store.audio(record.id).parentFile, TranscriptTimeline.FILE_NAME).writeText("malformed optional sidecar")
+        onMain { currentViews().filterIsInstance<TextView>().single { it.text.toString() == "전사" }.performClick() }
+        assertText("첫 번째 문장입니다."); assertText("다음 문장입니다!"); assertNoText("00:00")
+    }
+
+    fun testTimestampStartsPreparedFixturePlayerAndSeeks() {
+        // Eight seconds of silent PCM WAV, sniffed by MediaPlayer; no device capture.
+        val pcmSize = 8 * 8000 * 2
+        val wav = java.nio.ByteBuffer.allocate(44 + pcmSize).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        wav.put("RIFF".toByteArray()).putInt(36 + pcmSize).put("WAVEfmt ".toByteArray())
+            .putInt(16).putShort(1.toShort()).putShort(1.toShort()).putInt(8000).putInt(16000)
+            .putShort(2.toShort()).putShort(16.toShort()).put("data".toByteArray()).putInt(pcmSize)
+        val record = fixture("$prefix-timeline-player", withResult = true, audio = wav.array(), durationMs = 8000)
+        val result = app.store.result(record)!!
+        app.store.saveTimeline(record, Json.bytes(mapOf(
+            "schema_version" to 1, "recording_id" to record.id, "audio_sha256" to record.hash,
+            "processor_id" to record.targetProcessor,
+            "transcript_sha256" to digest(java.io.ByteArrayInputStream(result.transcript.toByteArray(Charsets.UTF_8))),
+            "segments" to listOf(mapOf("start" to 3.0, "end" to 5.0, "text" to result.transcript))
+        )))
+        launch()
+        openFixture(record)
+        assertText("00:03")
+        onMain { currentViews().filterIsInstance<TextView>().single { it.contentDescription?.toString() == "00:03 위치로 이동" }.performClick() }
+        await("Timestamp did not start and seek the prepared player") {
+            var sought = false
+            onMain {
+                val media = MainActivity::class.java.getDeclaredField("player").apply { isAccessible = true }
+                    .get(activity) as? android.media.MediaPlayer
+                sought = media != null && media.isPlaying && media.currentPosition in 2800..6000
+            }
+            sought
+        }
+        onMain {
+            currentViews().filterIsInstance<android.widget.ImageButton>()
+                .single { it.contentDescription?.toString() == "일시정지" }.performClick()
+        }
     }
 
     fun testActualCaptureNavigationFolderAssignmentPlaybackAndStaleFolder() {
@@ -193,7 +275,7 @@ class LibraryUiTest : InstrumentationTestCase() {
             val folder = app.library.createFolder("검증 녹음").also { ownedFolders += it.id }
             launch(); selectFolder(folder.name)
             val existingIds = app.store.list().map { it.id }.toSet()
-            click("＋ 새 녹음"); click("녹음 시작")
+            click("새 녹음"); click("녹음 시작")
             await("No new capture") {
                 app.store.list().firstOrNull { it.id !in existingIds }?.let {
                     captureId = it.id; ownedRecordings += it.id; true
@@ -205,13 +287,15 @@ class LibraryUiTest : InstrumentationTestCase() {
             screenshot("recording-active")
             back(); assertLibrary()
             openActiveCapture(); assertText("일시정지")
-            click("설정"); assertText("기본 녹음 모드"); back(); assertLibrary()
+            back(); assertLibrary()
+            click("설정"); assertText("기본 모드"); back(); assertLibrary()
+            assertEquals("Navigation must preserve the owned active capture", CaptureState.RECORDING, app.store.get(id).state)
             openActiveCapture(); recreate(); assertText("일시정지")
             click("일시정지"); awaitCapture(CaptureState.PAUSED)
             assertFalse(app.store.get(id).uploadable)
-            back(); openActiveCapture(); click("녹음 재개"); awaitCapture(CaptureState.RECORDING)
+            back(); openActiveCapture(); click("재개"); awaitCapture(CaptureState.RECORDING)
             SystemClock.sleep(3000)
-            click("녹음 완료")
+            click("완료")
             val complete = awaitCapture(CaptureState.COMPLETE)
             await("Capture gate not released") { !app.gate.isRecording() }
             assertTrue(complete.bytes > 0); assertTrue(complete.durationMs > 0)
@@ -219,8 +303,9 @@ class LibraryUiTest : InstrumentationTestCase() {
             assertEquals(folder.id, LibraryStore(File(app.filesDir, "library.json")).folderFor(id))
             back(); click(complete.title)
             screenshot("detail-real-capture")
-            click("녹음 재생"); assertText("재생 중지")
-            click("재생 중지"); assertText("녹음 재생")
+            click("녹음 듣기"); assertPlaybackControl("일시정지")
+            click("일시정지"); assertPlaybackControl("재생")
+            click("재생"); assertPlaybackControl("일시정지")
             assertEquals(complete.hash, sha256(app.store.audio(id)))
             back()
             val stale = app.library.createFolder("검증 임시 폴더").also { ownedFolders += it.id }
@@ -257,9 +342,9 @@ class LibraryUiTest : InstrumentationTestCase() {
             shell("cmd overlay enable-exclusive --category com.android.internal.systemui.navbar.gestural")
             await("Gesture navigation did not activate") { shell("settings get secure navigation_mode") == "2" }
             launch()
-            click(record.title); assertText("폴더 이동")
+            click(record.title); assertText("녹음 듣기")
             gestureBack(); await("Native Back did not return detail to library") { hasSearchField() }
-            click("설정"); assertText("기본 녹음 모드")
+            click("설정"); assertText("기본 모드")
             gestureBack(); await("Native Back did not return settings to library") { hasSearchField() }
             assertFalse("Native Back closed the activity", activity!!.isFinishing)
         } finally {
@@ -299,7 +384,7 @@ class LibraryUiTest : InstrumentationTestCase() {
     }
     private fun selectFolder(name: String) {
         var label: String? = null
-        onMain { label = currentViews().firstOrNull { it.isClickable && it.contentDescription?.toString()?.substringBefore(",")?.let { path -> path == name || path.endsWith(" / $name") || path.endsWith("/$name") } == true }?.contentDescription?.toString() }
+        onMain { label = currentViews().firstOrNull { it is ViewGroup && it.isClickable && it.contentDescription?.toString()?.substringBefore(",")?.let { path -> path == name || path.endsWith(" / $name") || path.endsWith("/$name") } == true }?.contentDescription?.toString() }
         click(label ?: error("Missing folder filter: $name"))
     }
     private fun manageFolder(id: String) {
@@ -316,6 +401,17 @@ class LibraryUiTest : InstrumentationTestCase() {
         click(label ?: error("Active capture entry is missing"))
     }
 
+    private fun openFixture(record: Recording) {
+        onMain {
+            val title = currentViews().filterIsInstance<TextView>().single { it.text.toString() == record.title }
+            var target: View? = title
+            while (target != null && !target.isClickable) target = target.parent as? View
+            assertNotNull("Fixture recording has no clickable row", target)
+            assertTrue("Fixture recording row did not open", target!!.performClick())
+        }
+        instrumentation.waitForIdleSync()
+    }
+
     private fun launch() {
         activity = instrumentation.startActivitySync(
             Intent(instrumentation.targetContext, MainActivity::class.java)
@@ -325,6 +421,22 @@ class LibraryUiTest : InstrumentationTestCase() {
     }
 
     private fun onMain(block: () -> Unit) = instrumentation.runOnMainSync(block)
+    private fun movePicker(): Spinner {
+        // The picker lives in the app-owned dialog window, not the Activity decor tree.
+        val field = MainActivity::class.java.getDeclaredField("managementDialog").apply { isAccessible = true }
+        val dialog = field.get(activity) as? Dialog ?: error("Move dialog not open")
+        return views(dialog.window!!.decorView).filterIsInstance<Spinner>()
+            .single { it.contentDescription?.toString() == "이동할 위치" }
+    }
+    private fun selectMoveDestination(label: String) {
+        onMain {
+            val picker = movePicker()
+            val index = (0 until picker.adapter.count).singleOrNull { picker.adapter.getItem(it).toString() == label }
+            assertNotNull("Move destination unavailable: $label", index)
+            picker.setSelection(index!!)
+        }
+        instrumentation.waitForIdleSync()
+    }
     private fun views(root: View): List<View> = listOf(root) +
         if (root is ViewGroup) (0 until root.childCount).flatMap { views(root.getChildAt(it)) } else emptyList()
 
@@ -347,6 +459,16 @@ class LibraryUiTest : InstrumentationTestCase() {
 
     private fun assertText(value: String) = await("Expected visible text: $value") { visibleText(value) }
     private fun assertNoText(value: String) { instrumentation.waitForIdleSync(); assertFalse("Unexpected text: $value", visibleText(value)) }
+
+    private fun assertPlaybackControl(description: String) = await("Expected playback control: $description") {
+        var found = false
+        onMain {
+            found = currentViews().any {
+                it is android.widget.ImageButton && it.isShown && it.isEnabled && it.contentDescription?.toString() == description
+            }
+        }
+        found
+    }
 
     private fun click(value: String) {
         var clicked = false
@@ -486,13 +608,14 @@ class LibraryUiTest : InstrumentationTestCase() {
         return correct
     }
 
-    private fun fixture(suffix: String, withResult: Boolean = false): Recording {
+    private fun fixture(suffix: String, withResult: Boolean = false, audio: ByteArray? = null, durationMs: Long = 1500): Recording {
         val processor = if (withResult) UUID.randomUUID().toString() else null
         val record = app.store.create(suffix, if (withResult) Mode.DESKTOP else Mode.RECORD_ONLY, processor)
         ownedRecordings += record.id
-        app.store.partial(record.id).writeText("Synthetic instrumentation fixture: $prefix-$suffix")
+        if (audio == null) app.store.partial(record.id).writeText("Synthetic instrumentation fixture: $prefix-$suffix")
+        else app.store.partial(record.id).writeBytes(audio)
         app.store.transition(record.id, CaptureState.FINALIZING)
-        val complete = app.store.finish(record.id, 1500)
+        val complete = app.store.finish(record.id, durationMs)
         if (withResult) app.store.saveResult(complete, Json.bytes(linkedMapOf(
             "schema_version" to 1, "recording_id" to complete.id, "audio_sha256" to complete.hash,
             "processor_id" to processor, "title" to complete.title, "recorded_at" to complete.recordedAt,

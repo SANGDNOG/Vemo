@@ -9,10 +9,12 @@ import Darwin
 @MainActor
 final class GoogleConnectionModel: ObservableObject {
     @Published private(set) var isBusy = false
-    @Published private(set) var status = "Google 연결 전 · Desktop OAuth JSON을 선택하세요."
+    @Published private(set) var status = "Google 연결 전 · Google로 연결을 눌러 계정을 승인하세요."
     @Published private(set) var isConnected = false
     @Published private(set) var hasClientConfiguration = false
     @Published private(set) var hasBinding = false
+    @Published private(set) var boundRootDisplayName: String?
+    var canCompleteFolderConnection: Bool { hasAuthorization && !isConnected }
     @Published private(set) var needsKeychainRecovery = false
     var canDisconnect: Bool { hasAuthorization || isConnected }
     var canSelectClient: Bool { !isBusy && !isConnected && !hasBinding && !hasAuthorization && !closing }
@@ -27,8 +29,11 @@ final class GoogleConnectionModel: ObservableObject {
     private var panel: NSOpenPanel?
     private var cancellation: Task<Void, Never>?
     private var restored = false
+    private var nextRestoreAttemptAt: Date?
     private var closing = false
     private var hasAuthorization = false
+    private var usingBundledConfiguration = false
+    private var clientConfiguration: GoogleOAuthClientConfiguration?
     private let displayName = "Vemo 테스트"
 
     init(root: URL) {
@@ -41,7 +46,7 @@ final class GoogleConnectionModel: ObservableObject {
     func selectClientJSON() {
         guard canSelectClient else { return }
         do {
-            try loadLocalConfiguration()
+            try loadLocalConfiguration(allowBundled: false)
             guard canSelectClient else { return }
         } catch { status = message(error); return }
         let chooser = NSOpenPanel()
@@ -57,7 +62,7 @@ final class GoogleConnectionModel: ObservableObject {
                 guard !self.closing, response == .OK, let url = chooser.url else { return }
                 do {
                     // Recheck durable binding after the asynchronous picker completes.
-                    try self.loadLocalConfiguration()
+                    try self.loadLocalConfiguration(allowBundled: false)
                     guard !self.hasBinding, !self.hasAuthorization, !self.isConnected else { throw GoogleConnectionFailure.binding }
                     let scoped = url.startAccessingSecurityScopedResource()
                     defer { if scoped { url.stopAccessingSecurityScopedResource() } }
@@ -65,30 +70,48 @@ final class GoogleConnectionModel: ObservableObject {
                     let configuration = try GoogleOAuthClientConfiguration.loadInstalledJSON(bytes)
                     try self.store.save(bytes)
                     self.install(configuration)
-                    self.status = "OAuth 설정을 이 Mac에 저장했습니다. Google 연결을 눌러 승인하세요."
+                    self.status = "OAuth 설정을 이 Mac에 저장했습니다. Google로 연결을 눌러 승인하세요."
                 } catch { self.status = self.message(error) }
             }
         }
     }
 
-    func connect() {
+    func connect(forceReauthorization: Bool = false) {
         guard !isBusy, !closing, !needsKeychainRecovery else { return }
+        stopAutomaticRestore()
         start { [self] in
             do {
+                status = "Google 연결을 준비하고 있습니다."
                 try loadLocalConfiguration()
                 guard let oauth, let mirror else { throw GoogleConnectionFailure.configuration }
+                if usingBundledConfiguration, let configuration = clientConfiguration {
+                    // Pin identity before the first token can exist; never overwrite an imported client.
+                    try store.save(configuration.normalizedInstalledJSON(), replacingExisting: false)
+                    usingBundledConfiguration = false
+                }
+                let completingFolder = hasAuthorization && !isConnected && !forceReauthorization
                 isConnected = false
-                status = "브라우저에서 Google 계정과 drive.file 권한을 승인하세요."
-                try await oauth.connect { url in try await Self.openAuthorization(url) }
+                if completingFolder {
+                    // Explicit completion reuses the grant. Errors never silently start consent.
+                    do { _ = try await oauth.accessToken() }
+                    catch GoogleOAuthError.notConnected {
+                        hasAuthorization = false
+                        throw GoogleOAuthError.notConnected
+                    }
+                } else {
+                    try await oauth.connect { [self] url in try await requestAuthorization(url) }
+                }
                 hasAuthorization = true
                 try Task.checkCancellation()
+                status = "Google 승인을 확인했습니다. 전용 폴더를 준비하고 있습니다."
                 let processor = try await broker.processorIdentity()
                 _ = try await mirror.createRoot(displayName: displayName, processorID: processor)
                 hasBinding = true
                 _ = try await mirror.prepare(broker: broker, displayName: displayName)
+                boundRootDisplayName = try await mirror.boundRootDisplayName()
                 try Task.checkCancellation()
                 isConnected = true
-                status = "Google 연결됨 · Vemo 테스트 전용 폴더의 원격 준비를 확인했습니다."
+                status = "Google 연결됨 · 전용 폴더의 원격 준비를 확인했습니다."
             } catch {
                 hasBinding = hasBinding || ((try? store.hasJournal()) ?? true)
                 status = message(error)
@@ -100,6 +123,7 @@ final class GoogleConnectionModel: ObservableObject {
     /// User-button-only path; startup restore and sync never call this method.
     func recoverKeychainAccess() {
         guard needsKeychainRecovery, !isBusy, !closing else { return }
+        stopAutomaticRestore()
         start { [self] in
             do {
                 status = "macOS에서 기존 Keychain 항목 접근을 승인하세요. Google 재동의와는 별개입니다."
@@ -122,13 +146,14 @@ final class GoogleConnectionModel: ObservableObject {
                 guard let oauth, let mirror else { throw GoogleConnectionFailure.configuration }
                 guard let binding = try await mirror.restore() else {
                     isConnected = false
-                    status = "Keychain 접근 복구됨 · Google 연결을 눌러 전용 폴더 연결을 준비하세요."
+                    status = "Keychain 접근 복구됨 · ‘폴더 연결 완료’를 눌러 전용 폴더 연결을 준비하세요."
                     return false
                 }
                 guard binding.processorID == (try await broker.processorIdentity()) else { throw GoogleConnectionFailure.binding }
                 _ = try await oauth.accessToken()
                 hasAuthorization = true
                 _ = try await mirror.prepare(broker: broker, displayName: displayName)
+                boundRootDisplayName = try await mirror.boundRootDisplayName()
                 try Task.checkCancellation()
                 guard !closing else { throw CancellationError() }
                 needsKeychainRecovery = false; isConnected = true
@@ -143,6 +168,7 @@ final class GoogleConnectionModel: ObservableObject {
 
     func disconnect() {
         guard !isBusy, !closing else { return }
+        stopAutomaticRestore()
         start { [self] in
             do {
                 try loadLocalConfiguration()
@@ -157,6 +183,7 @@ final class GoogleConnectionModel: ObservableObject {
 
     func cancel() {
         guard isBusy else { return }
+        stopAutomaticRestore()
         if let panel { panel.cancel(nil); return }
         operation?.cancel()
         let current = oauth
@@ -165,15 +192,19 @@ final class GoogleConnectionModel: ObservableObject {
         status = "취소 중 · 완료된 로컬 저장과 원격 작업은 보존됩니다."
     }
 
-    func restoreIfNeeded() async {
+    func restoreIfNeeded(now: Date = Date()) async {
         guard !restored, !isBusy, !closing else { return }
+        if let nextRestoreAttemptAt, now < nextRestoreAttemptAt { return }
         restored = true
+        nextRestoreAttemptAt = nil
         start { [self] in
             do {
                 try loadLocalConfiguration()
                 guard let oauth, let mirror else { return false }
                 guard let binding = try await mirror.restore() else {
-                    status = "OAuth 설정이 준비되었습니다. Google 연결을 눌러 전용 폴더를 준비하세요."
+                    status = hasAuthorization
+                        ? "Google 승인 유지됨 · ‘폴더 연결 완료’를 눌러 전용 폴더를 준비하세요."
+                        : "Google로 연결을 눌러 계정을 승인하고 전용 폴더를 준비하세요."
                     return false
                 }
                 hasBinding = true
@@ -181,13 +212,41 @@ final class GoogleConnectionModel: ObservableObject {
                 _ = try await oauth.accessToken()
                 hasAuthorization = true
                 _ = try await mirror.prepare(broker: broker, displayName: displayName)
+                boundRootDisplayName = try await mirror.boundRootDisplayName()
                 try Task.checkCancellation()
                 isConnected = true
                 status = "Google 연결 복원됨 · 기존 계정과 전용 폴더를 확인했습니다."
-            } catch { status = message(error) }
+            } catch {
+                status = message(error)
+                if !Task.isCancelled, !closing, Self.isTransientRestoreFailure(error) {
+                    restored = false
+                    nextRestoreAttemptAt = now.addingTimeInterval(30)
+                    status += " · 다음 자동 확인에서 연결을 다시 시도합니다."
+                }
+            }
             return false
         }
         _ = await operation?.value
+    }
+
+    private func stopAutomaticRestore() {
+        restored = true
+        nextRestoreAttemptAt = nil
+    }
+
+    private static func isTransientRestoreFailure(_ error: any Error) -> Bool {
+        if (error as? GoogleOAuthError) == .transport { return true }
+        if case .http(let code) = error as? GoogleDriveError {
+            return code == 429 || (500...599).contains(code)
+        }
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .timedOut, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed,
+                 .networkConnectionLost, .notConnectedToInternet: return true
+            default: return false
+            }
+        }
+        return false
     }
 
     func synchronize(imports: ImportBroker, jobs: @escaping @MainActor @Sendable () -> [Job]) async -> Bool {
@@ -277,26 +336,45 @@ final class GoogleConnectionModel: ObservableObject {
     }
     /// Pure identity derivation: stable across updates and isolated by state root and OAuth client.
     static func keychainAccount(root: URL, clientID: String) -> String {
+        keychainAccountPrefix(root: root) + clientID
+    }
+    private static func keychainAccountPrefix(root: URL) -> String {
         let rootHash = SHA256.hash(data: Data(root.path.utf8)).map { String(format: "%02x", $0) }.joined()
-        return "root-sha256:\(rootHash):client:\(clientID)"
+        return "root-sha256:\(rootHash):client:"
     }
 
     private func install(_ configuration: GoogleOAuthClientConfiguration) {
         let client = GoogleOAuthClient(configuration: configuration, vault: GoogleOAuthKeychainVault(account: Self.keychainAccount(root: root, clientID: configuration.clientID)))
+        clientConfiguration = configuration
         oauth = client
         mirror = GoogleDriveMirror(stateDirectory: stateDirectory, client: GoogleDriveClient(accessToken: { try await client.accessToken() }))
         hasClientConfiguration = true
     }
-    private func loadLocalConfiguration() throws {
+    private func loadLocalConfiguration(allowBundled: Bool = true) throws {
         hasBinding = try store.hasJournal()
-        guard !hasClientConfiguration else { return }
-        guard let bytes = try store.load() else {
-            if hasBinding { throw GoogleConnectionFailure.binding }
-            return
+        let configuration: GoogleOAuthClientConfiguration
+        if let bytes = try store.load() {
+            configuration = try GoogleOAuthClientConfiguration.loadInstalledJSON(bytes)
+            usingBundledConfiguration = false
+        } else {
+            guard !hasBinding, !hasAuthorization,
+                  try !GoogleOAuthKeychainVault.hasAuthorization(accountPrefix: Self.keychainAccountPrefix(root: root)) else {
+                throw GoogleConnectionFailure.binding
+            }
+            guard allowBundled else { return }
+            guard let bundled = try GoogleOAuthClientConfiguration.loadBundled(in: Bundle.main) else {
+                throw GoogleConnectionFailure.configuration
+            }
+            configuration = bundled
+            usingBundledConfiguration = true
         }
-        let configuration = try GoogleOAuthClientConfiguration.loadInstalledJSON(bytes)
-        install(configuration)
+        // Complete the probe before marking configuration usable; a denied read stays recoverable.
         hasAuthorization = try GoogleOAuthKeychainVault(account: Self.keychainAccount(root: root, clientID: configuration.clientID)).loadRefreshToken() != nil
+        if usingBundledConfiguration && hasAuthorization { throw GoogleConnectionFailure.binding }
+        if !hasClientConfiguration { install(configuration) }
+        else if clientConfiguration?.clientID != configuration.clientID || clientConfiguration?.clientSecret != configuration.clientSecret {
+            throw GoogleConnectionFailure.binding
+        }
     }
     private static func isConnectionFailure(_ error: any Error) -> Bool {
         if let oauth = error as? GoogleOAuthError { return oauth == .reauthorizationRequired || oauth == .notConnected }
@@ -364,7 +442,7 @@ final class GoogleConnectionModel: ObservableObject {
             default: return "Google 연결을 완료하지 못했습니다. 기존 파일을 보존했습니다. 다시 시도하세요."
             }
         }
-        if (error as? GoogleConnectionFailure) == .configuration { return "먼저 Desktop 앱용 OAuth JSON을 선택하세요." }
+        if (error as? GoogleConnectionFailure) == .configuration { return "이 빌드에는 Google 연결 설정이 포함되지 않았습니다. Google 연결이 포함된 배포본을 사용하거나 고급 설정에서 Desktop OAuth JSON을 선택하세요." }
         if (error as? GoogleConnectionFailure) == .browser { return "설치된 브라우저를 열지 못했습니다. 브라우저 상태를 확인하고 다시 연결하세요." }
         if (error as? GoogleConnectionFailure) == .binding || (error as? GoogleDriveError) == .conflict {
             isConnected = false
@@ -395,19 +473,22 @@ final class GoogleConnectionModel: ObservableObject {
         if (error as? GoogleConnectionFailure) == .storage { return "이 Mac의 OAuth 설정 파일을 안전하게 읽거나 저장하지 못했습니다. 파일 권한과 경로를 확인하세요." }
         return "Google 작업을 완료하지 못했습니다. 기존 데이터는 보존되며 다음 확인에서 다시 시도합니다."
     }
+    private func requestAuthorization(_ url: URL) async throws {
+        try Task.checkCancellation()
+        guard !closing else { throw GoogleOAuthError.cancelled }
+        status = "기본 브라우저에 Google 승인 페이지 열기를 요청하고 있습니다."
+        try await Self.openAuthorization(url)
+        try Task.checkCancellation()
+        guard !closing else { throw GoogleOAuthError.cancelled }
+        status = "Google 승인 완료를 기다리고 있습니다. 기본 브라우저에서 계정과 권한을 승인하세요. 페이지가 보이지 않으면 취소한 뒤 기본 브라우저 설정을 확인하세요."
+    }
+
     private static func openAuthorization(_ url: URL) async throws {
         try Task.checkCancellation()
-        let workspace = NSWorkspace.shared
-        if let chrome = workspace.urlForApplication(withBundleIdentifier: "com.google.Chrome") {
-            let configuration = NSWorkspace.OpenConfiguration()
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-                workspace.open([url], withApplicationAt: chrome, configuration: configuration) { application, _ in
-                    if application != nil { continuation.resume() }
-                    else { continuation.resume(throwing: GoogleConnectionFailure.browser) }
-                }
-            }
-        } else if !workspace.open(url) { throw GoogleConnectionFailure.browser }
+        guard NSWorkspace.shared.open(url) else { throw GoogleConnectionFailure.browser }
+        try Task.checkCancellation()
     }
+
 }
 
 private enum GoogleConnectionFailure: Error { case configuration, storage, binding, browser }
@@ -481,7 +562,7 @@ private struct GoogleClientConfigurationFile {
         guard errno == ENOENT else { throw GoogleConnectionFailure.storage }
         return false
     }
-    func save(_ bytes: Data) throws {
+    func save(_ bytes: Data, replacingExisting: Bool = true) throws {
         guard !bytes.isEmpty, bytes.count <= Self.limit, let fd = try Self.openDirectory(directory, create: true) else { throw GoogleConnectionFailure.storage }
         defer { close(fd) }
         var info = stat()
@@ -494,7 +575,8 @@ private struct GoogleClientConfigurationFile {
         defer { flock(lock, LOCK_UN) }
         // Refuse replacement once any root journal/intent exists, including a failed remote creation.
         guard fstatat(fd, "drive.json", &info, AT_SYMLINK_NOFOLLOW) != 0, errno == ENOENT else { throw GoogleConnectionFailure.binding }
-        _ = try Self.read(filename, directory: fd, privateFile: true)
+        let existing = try Self.read(filename, directory: fd, privateFile: true)
+        guard replacingExisting || existing == nil else { throw GoogleConnectionFailure.binding }
         let temporary = ".client-" + UUID().uuidString
         let file = openat(fd, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard file >= 0 else { throw GoogleConnectionFailure.storage }

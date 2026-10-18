@@ -14,7 +14,7 @@ Vemo는 Apple Silicon Mac에서 한국어 중심의 음성을 전사하는 로�
 
 ## 개발 중인 모바일 연결
 
-별도 개발 브랜치에는 Android 녹음·Google 연결, Mac 모델 선택·모바일 연결, Windows 기능 프리뷰가 있습니다. 공개 Mac DMG에는 아직 포함되지 않습니다. [Android·Mac 설정과 검증 범위](docs/MOBILE_PREVIEW.md), [Windows 실행·모델 설정 안내](windows/README.md)를 참고하세요. Windows는 서명 없는 x64·ARM64 포터블 빌드이며, 직접 Google OAuth와 폰 자체 AI 처리는 후속 단계입니다.
+별도 개발 브랜치에는 Android 녹음·Google 연결, Mac 모델 선택·모바일 연결, Windows 기능 프리뷰가 있습니다. 공개 Mac DMG에는 아직 포함되지 않습니다. [Android·Mac 설정과 검증 범위](docs/MOBILE_PREVIEW.md), [Windows 실행·모델 설정 안내](windows/README.md)를 참고하세요. Windows는 서명 없는 x64·ARM64 포터블 개발판입니다. 최신 Windows 검증 브랜치는 직접 Google OAuth 연결을 포함하며, 폰 자체 AI 처리는 후속 단계입니다.
 
 실제 모델 처리와 Windows VM 검사 결과, 아직 확인하지 못한 항목은 [기능 프리뷰 검증 기록](docs/FUNCTIONAL_PREVIEW.md)에 정리했습니다.
 
@@ -215,3 +215,7 @@ swift scripts/build-icon.swift assets
 [JSONL 프로토콜](docs/protocol.md) · [아이콘 소스와 재생성](assets/README.md) · [외부 구성요소 고지](THIRD_PARTY_NOTICES.md)
 
 Vemo의 코드와 직접 작성한 벡터 아이콘은 MIT 라이선스입니다. 포함된 Python 라이브러리와 별도로 내려받는 모델에는 각각의 라이선스가 적용됩니다.
+
+### Google 연결 개발판
+
+OAuth 구성이 포함된 Mac·Windows 배포 빌드는 **Google로 연결 → 로그인 → 권한 승인**으로 연결합니다. Android도 Google 계정 선택 화면을 사용하며 사용자에게 JSON 파일을 요구하지 않습니다. 프로젝트 등록과 배포 서명 설정은 개발자가 담당합니다. 현재 테스트 사용자 제한 및 실제 AI 왕복 검증 범위는 [Galaxy·Mac 연결 안내](docs/GALAXY_MAC_GOOGLE.md)를 참고하세요. 공개 DMG에 포함된 기능과 개발 브랜치의 기능은 구분합니다.

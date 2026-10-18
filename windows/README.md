@@ -1,6 +1,6 @@
 # Vemo Windows functional preview
 
-.NET 10 core and a thin Avalonia shell using default controls and the approved icon. This is a functional preview, not Windows/GPU/model-quality certification. No credentials, cloud API connection, automatic download, or generic shell-command setting is included.
+.NET 10 core and an Avalonia shell applying the approved A Native White design and icon. Existing local processing remains a functional preview. See [design scope and verification](../docs/design/NATIVE_WHITE.md) for supported behavior and remaining visual checks.
 
 최종 실제 실행 범위와 알려진 제한은 [기능 프리뷰 검증 기록](../docs/FUNCTIONAL_PREVIEW.md)을 참고하세요. 아래 빌드 절차와 과거 실패 분석을 실제 Windows 실행 결과로 해석하지 마세요.
 
@@ -9,7 +9,7 @@
 x64(일반 Intel/AMD PC) 또는 ARM64 빌드의 전체 폴더를 풀고 `Vemo.App.exe`를 실행합니다. .NET 설치는 필요하지 않습니다. 모델과 음성 런타임은 아래 설치 도구로 별도 받으며, 개인 Google 인증정보나 모델 가중치는 배포 파일에 포함하지 않습니다.
 
 1. 먼저 [Microsoft Visual C++ v14 재배포 패키지](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)를 설치합니다. x64 PC는 [공식 x64 설치 파일](https://aka.ms/vc14/vc_redist.x64.exe), ARM64 PC는 공식 문서의 ARM64 패키지를 선택하세요. 별도 음성·노트 런타임이 사용하는 구성 요소이며, Vemo의 .NET 포함과 별개입니다. 이어서 `Vemo.Provision.exe --destination C:\VemoModels --arch x64 --whisper turbo --notes 9b --download-ffmpeg`로 CPU용 기본 모델을 준비합니다. 크기와 SHA-256이 일치해야 설치됩니다. 27B 모델은 메모리와 시간이 더 필요합니다. ARM64는 `--arch arm64`와 별도 ARM64 FFmpeg 경로를 지정합니다.
-2. **Settings → Import preset settings…**에서 생성된 `C:\VemoModels\settings.json`을 고르고 ZIP 저장 폴더를 지정한 뒤 **Save settings**를 누릅니다. Nextcloud·Drive 데스크톱 동기화 폴더도 ZIP 위치로 선택할 수 있습니다.
+2. **설정 → 프리셋 설정 가져오기…**에서 생성된 `C:\VemoModels\settings.json`을 고르고 ZIP 저장 폴더를 지정한 뒤 **설정 저장**를 누릅니다. Nextcloud·Drive 데스크톱 동기화 폴더도 ZIP 위치로 선택할 수 있습니다.
 3. 완료된 녹음을 가져옵니다. 원본은 복사하며, 녹음일을 모르면 `date-unknown`으로 표시합니다. 알고 있는 경우 시간대가 포함된 ISO 날짜를 직접 입력합니다. 전사·노트가 끝나면 폴더 구조에 맞춰 녹음별 ZIP이 만들어집니다. ZIP에는 녹음·전사·노트 3개만 들어갑니다.
 4. Ctrl/Shift 다중 선택, 폴더·하위 폴더 이동, 휴지통·복원·Vemo 소유 사본 영구 삭제를 지원합니다. 제목은 상세 화면에서 편집합니다. 원본과 이미 내보낸 ZIP은 유지합니다.
 
@@ -117,7 +117,7 @@ Use `--whisper turbo`, `--notes 27b`, or `--arch arm64` as appropriate. The pres
 
 Select existing installations with `--existing-whisper <exe>`, `--existing-llama <exe>`, `--existing-asr-model <file>`, and `--existing-notes-model <file>`. Model files must match the chosen preset pin. Existing executable architecture is checked and its observed hash is recorded as unpinned. No executable is launched by setup. Runtimes and models stay at the exact generated paths; do not move the preset/cache afterward.
 
-For x64, select the pinned LGPL BtbN n8.1.3 archive with `--download-ffmpeg`. Alternatively supply `--ffmpeg <existing native exe>` or explicitly use `--wav-only`. ARM64 requires an existing native executable or WAV-only mode. WAV-only writes a `test-wav.ps1` direct whisper smoke test for finished 16 kHz mono PCM WAV; it is **not a full app pipeline**, since the current app still requires FFmpeg. Setup does not claim runtime/inference success. Pass generated `settings.json` to the validator's `--infer` mode for actual validation. In the existing Settings window, use **Import preset settings…** and choose the generated settings.json. Import fills the visible local paths/model selection/output fields for review; **Save settings** applies them. It does not execute a runtime, import mobile registration/queue state, or accept CUDA confirmation. Unknown JSON properties, script/command-line executable paths, missing files and non-CPU presets are rejected. Imported .exe paths remain user-selected executables, not a code-signing trust claim.
+For x64, select the pinned LGPL BtbN n8.1.3 archive with `--download-ffmpeg`. Alternatively supply `--ffmpeg <existing native exe>` or explicitly use `--wav-only`. ARM64 requires an existing native executable or WAV-only mode. WAV-only writes a `test-wav.ps1` direct whisper smoke test for finished 16 kHz mono PCM WAV; it is **not a full app pipeline**, since the current app still requires FFmpeg. Setup does not claim runtime/inference success. Pass generated `settings.json` to the validator's `--infer` mode for actual validation. In the existing Settings window, use **프리셋 설정 가져오기…** and choose the generated settings.json. Import fills the visible local paths/model selection/output fields for review; **설정 저장** applies them. It does not execute a runtime, import mobile registration/queue state, or accept CUDA confirmation. Unknown JSON properties, script/command-line executable paths, missing files and non-CPU presets are rejected. Imported .exe paths remain user-selected executables, not a code-signing trust claim.
 
 See `THIRD-PARTY-NOTICES.md`. Models are downloaded on user selection, never redistributed in the publication. The x64 FFmpeg archive pin comes from root-verified fixed-release metadata. Downloaded bytes still require setup verification. No CUDA availability is implied.
 

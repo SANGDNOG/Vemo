@@ -251,6 +251,36 @@ final class MobileSyncBrokerTests: XCTestCase, @unchecked Sendable {
         let retry = try await broker.publish(job: job)
         XCTAssertEqual(retry, output)
         let resultBytes = try Data(contentsOf: output)
+        let timelineURL = output.deletingLastPathComponent().appendingPathComponent("transcript-timeline.json")
+        if FileManager.default.fileExists(atPath: timelineURL.path) { try FileManager.default.removeItem(at: timelineURL) }
+        _ = try await broker.publish(job: job)
+        let timeline = try JSONSerialization.jsonObject(with: Data(contentsOf: timelineURL)) as! [String: Any]
+        XCTAssertEqual(Set(timeline.keys), Set(["schema_version", "recording_id", "audio_sha256", "processor_id", "transcript_sha256", "segments"]))
+        XCTAssertEqual(timeline["schema_version"] as? Int, 1)
+        for key in ["recording_id", "audio_sha256", "processor_id"] {
+            XCTAssertEqual(timeline[key] as? String, object[key] as? String)
+        }
+        XCTAssertEqual(timeline["transcript_sha256"] as? String, MobileSyncValidation.digest(Data(text.utf8)))
+        let rows = try XCTUnwrap(timeline["segments"] as? [[String: Any]])
+        XCTAssertEqual(rows.map { $0["text"] as! String }.joined(), text)
+        XCTAssertTrue(rows.allSatisfy { $0["start"] is NSNull && $0["end"] is NSNull })
+        // Alignment can arrive later without changing result.json.
+        try JSONSerialization.data(withJSONObject: ["text": text,
+            "segments": [["start_s": 1.25, "end_s": 2.75, "text": text]], "alignment_status": "completed"]).write(to: artifact)
+        _ = try await broker.publish(job: job)
+        let aligned = try JSONSerialization.jsonObject(with: Data(contentsOf: timelineURL)) as! [String: Any]
+        let timed = try XCTUnwrap((aligned["segments"] as? [[String: Any]])?.first)
+        XCTAssertEqual(timed["start"] as? Double, 1.25)
+        XCTAssertEqual(timed["end"] as? Double, 2.75)
+        XCTAssertEqual(try Data(contentsOf: output), resultBytes)
+        var foreign = aligned
+        foreign["processor_id"] = UUID().uuidString.lowercased()
+        let foreignBytes = try JSONSerialization.data(withJSONObject: foreign)
+        try foreignBytes.write(to: timelineURL)
+        do { _ = try await broker.publish(job: job); XCTFail("foreign timeline") }
+        catch { XCTAssertEqual((error as? BrokerFailure)?.code, "mobile_result_conflict") }
+        XCTAssertEqual(try Data(contentsOf: timelineURL), foreignBytes)
+        try FileManager.default.removeItem(at: timelineURL)
         let wrongAudio = f.state.appendingPathComponent("wrong.m4a")
         try Data(repeating: 0, count: Int(try BrokerFiles.stamp(URL(fileURLWithPath: snapshot.owned_path)).size)).write(to: wrongAudio)
         job.audio_path = wrongAudio.path

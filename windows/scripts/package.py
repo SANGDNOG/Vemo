@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package the frozen 0.1.0 Windows preview; no builds, downloads or inference.
+"""Package the frozen Native White Windows preview; no builds, downloads or inference.
 
 Run from any directory with Python 3.9+: python3 windows/scripts/package.py
 Use --verify-only to check inputs without replacing distributions. Root may rerun
@@ -20,8 +20,8 @@ import tempfile
 import urllib.parse
 import zipfile
 
-PUBLICATION = 'windows/artifacts/publication-20261018-native'
-PUBLICATION_SHA256 = '5941f231e20e820ba3f0499e029dadf92a093a559639c58567867b9687dfa29f'
+PUBLICATION = 'windows/artifacts/publication-20261018-native-white'
+PUBLICATION_SHA256 = 'aa6412dd1342e15d88bfa39e9448bdab890423eab26f690d5fe4bb6a538f62bb'
 ARCHES = ('x64', 'arm64')
 BUNDLES = {prefix + 'win-' + arch for arch in ARCHES
            for prefix in ('', 'provision-', 'validation-')}
@@ -239,7 +239,9 @@ def quickstart(arch):
         extra = ('Windows ARM64 PC용입니다. 위 FFmpeg 경로는 직접 준비한 네이티브 ARM64 실행 파일로 바꾸세요. '
                  '검증된 ARM64 FFmpeg 다운로드 핀이 없어 자동 설치나 x64 에뮬레이션을 선택하지 않습니다. '
                  '`--wav-only`는 별도 음성 테스트용이며 앱 전체 처리에는 FFmpeg가 필요합니다.')
-    return f'''# Vemo Windows 0.1.0 기능 프리뷰 — {arch}
+    return f'''# Vemo Windows 0.1.1 Native White 프리뷰 — {arch}
+
+[A Native White 적용 범위](docs/design/NATIVE_WHITE.md)를 확인하세요. 이 빌드는 승인 디자인을 기존 기능에 연결한 프리뷰이며 새 엔진 이식 검증을 뜻하지 않습니다.
 
 ZIP 전체를 쓰기 가능한 로컬 폴더에 풀어 주세요. 파일을 ZIP 안에서 바로 실행하거나 DLL을 따로 옮기지 마세요.
 이 배포에는 앱·CPU 설치 도구·검증 도구와 .NET 런타임이 들어 있습니다. .NET 별도 설치는 필요하지 않습니다.
@@ -258,7 +260,7 @@ ZIP 전체를 쓰기 가능한 로컬 폴더에 풀어 주세요. 파일을 ZIP 
 {extra}
 
 2. `windows/win-{arch}/Vemo.App.exe`를 실행하세요.
-3. **Settings → Import preset settings…**에서 `C:\\VemoModels\\settings.json`을 선택하고 ZIP 저장 폴더를 지정한 뒤 **Save settings**를 누르세요.
+3. **설정 → 프리셋 설정 가져오기…**에서 `C:\\VemoModels\\settings.json`을 선택하고 ZIP 저장 폴더를 지정한 뒤 **설정 저장**를 누르세요.
 4. 녹음이 끝난 파일을 가져오세요. 처리가 완료되면 원본 녹음·전사·노트 세 파일을 담은 ZIP이 저장됩니다. 원본 파일은 유지합니다.
 
 작은 음성 모델은 `--whisper small`, 큰 노트 모델은 `--notes 27b`로 선택할 수 있습니다. 27B에는 더 많은 메모리와 시간이 필요합니다.
@@ -283,6 +285,8 @@ def snapshots(repo, publication, index):
     inputs = {
         'windows/README.md': 'windows/README.md',
         'docs/FUNCTIONAL_PREVIEW.md': 'docs/FUNCTIONAL_PREVIEW.md',
+        'docs/design/NATIVE_WHITE.md': 'docs/design/NATIVE_WHITE.md',
+        'docs/design/native-white-tokens.json': 'docs/design/native-white-tokens.json',
         'windows/THIRD-PARTY-NOTICES.md': 'windows/THIRD-PARTY-NOTICES.md',
         'windows/model-catalogue.json': 'windows/model-catalogue.json',
         'windows/runtime-catalogue.json': 'windows/runtime-catalogue.json',
@@ -332,7 +336,7 @@ def write_distribution(path, arch, publication, manifest, shared):
             expected[target] = {k: entry[k] for k in ('bytes', 'sha256')}
     validate_paths(payload)
     package_manifest = json_bytes({
-        'schema_version': 1, 'name': 'Vemo-Windows', 'version': '0.1.0-preview',
+        'schema_version': 1, 'name': 'Vemo-Windows', 'version': '0.1.1-native-white-preview',
         'architecture': arch, 'publication_manifest_sha256': PUBLICATION_SHA256,
         'bundles': bundles, 'scope': 'File integrity only; no new runtime or model tests.',
         'files': [{'path': name, **expected[name]} for name in sorted(expected)],
@@ -385,7 +389,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='package-', dir=evidence) as temp:
         staging = pathlib.Path(temp)
         for arch in ARCHES:
-            name = 'Vemo-Windows-0.1.0-preview-' + arch + '.zip'
+            name = 'Vemo-Windows-0.1.1-native-white-preview-' + arch + '.zip'
             destination = dist / name
             if destination.exists() or destination.is_symlink():
                 check_node(destination)
