@@ -19,8 +19,10 @@ enum class Mode { RECORD_ONLY, DESKTOP }
 enum class CaptureState { RECORDING, PAUSED, FINALIZING, COMPLETE, INTERRUPTED, FAILED }
 data class Binding(val id: String, val hash: String, val processor: String)
 data class Processor(val id: String, val displayName: String)
-data class Result(val title: String, val recordedAt: String, val transcript: String, val notes: String, val timeline: List<TranscriptRow>? = null) {
+data class Result(val title: String, val recordedAt: String, val transcript: String, val notes: String, val timeline: List<TranscriptRow>? = null,
+    val speakers: List<TranscriptRow>? = null) {
     val needsTimelineEnrichment: Boolean get() = timeline.orEmpty().none { it.startMs != null }
+    val needsSpeakerEnrichment: Boolean get() = speakers == null
 }
 data class Recording(
     val id: String, val title: String, val recordedAt: String, val mode: Mode,
@@ -193,6 +195,17 @@ class SyncEngine(private val cloud: CloudStorage) {
         return try {
             val bytes = cloud.read("results/${record.id}/${record.hash}/${TranscriptTimeline.FILE_NAME}", Wire.MAX_JSON) ?: return null
             TranscriptTimeline.parse(bytes, Binding(record.id, record.hash!!, record.targetProcessor), result.transcript, record.durationMs)
+            bytes
+        } catch (cancelled: InterruptedIOException) { throw cancelled }
+        catch (_: IOException) { null }
+    }
+
+    /** Called only after a valid result; optional failures leave that result usable. */
+    fun speakers(record: Recording, result: Result): ByteArray? {
+        if (!record.uploadable || record.mode != Mode.DESKTOP || record.targetProcessor == null) return null
+        return try {
+            val bytes = cloud.read("results/${record.id}/${record.hash}/${TranscriptSpeakers.FILE_NAME}", Wire.MAX_JSON) ?: return null
+            TranscriptSpeakers.parse(bytes, record.hash!!, result.transcript, record.durationMs)
             bytes
         } catch (cancelled: InterruptedIOException) { throw cancelled }
         catch (_: IOException) { null }

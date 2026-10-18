@@ -99,6 +99,11 @@ class RecordingStore(private val dir: File) {
         TranscriptTimeline.parse(bytes, Binding(record.id, record.hash!!, record.targetProcessor!!), result.transcript, record.durationMs)
         atomicWrite(File(folder(record.id), TranscriptTimeline.FILE_NAME), bytes)
     }
+    @Synchronized fun saveSpeakers(record: Recording, bytes: ByteArray) {
+        val result = result(record) ?: throw ProtocolException("Speakers require a result")
+        TranscriptSpeakers.parse(bytes, record.hash!!, result.transcript, record.durationMs)
+        atomicWrite(File(folder(record.id), TranscriptSpeakers.FILE_NAME), bytes)
+    }
     @Synchronized fun result(record: Recording): Result? {
         if (!record.uploadable || record.targetProcessor == null) return null
         val file = File(folder(record.id), "result.json")
@@ -113,7 +118,14 @@ class RecordingStore(private val dir: File) {
                 TranscriptTimeline.parse(readBounded(it, Wire.MAX_JSON), binding, result.transcript, record.durationMs)
             }
         } catch (_: java.io.IOException) { null }
-        return result.copy(timeline = timeline)
+        val speakers = try {
+            val sidecar = File(folder(record.id), TranscriptSpeakers.FILE_NAME)
+            rejectLink(sidecar)
+            if (!sidecar.exists()) null else sidecar.inputStream().use {
+                TranscriptSpeakers.parse(readBounded(it, Wire.MAX_JSON), record.hash!!, result.transcript, record.durationMs)
+            }
+        } catch (_: java.io.IOException) { null }
+        return result.copy(timeline = timeline, speakers = speakers)
     }
 }
 fun atomicWrite(file: File, bytes: ByteArray) {

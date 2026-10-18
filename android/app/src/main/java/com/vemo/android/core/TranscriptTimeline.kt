@@ -5,7 +5,7 @@ import java.text.BreakIterator
 import java.util.Locale
 
 /** Presentation only: raw v1 result text and exports remain untouched. */
-data class TranscriptRow(val text: String, val startMs: Long? = null) {
+data class TranscriptRow(val text: String, val startMs: Long? = null, val speakerName: String? = null) {
     val timestamp: String? get() = startMs?.let {
         val seconds = it / 1000
         if (seconds >= 3600) String.format(Locale.ROOT, "%d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60)

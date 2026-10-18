@@ -131,7 +131,7 @@ class MainActivity : Activity() {
             handler.postDelayed(this, 1000)
         }
     }
-    private var lastTimelinePoll = -300_000L
+    private var lastEnrichmentPoll = -300_000L
     private val poll = object : Runnable {
         override fun run() {
             if (!vemo().gate.busy() && vemo().cloudConfigured()) {
@@ -139,9 +139,9 @@ class MainActivity : Activity() {
                     .map { try { vemo().store.result(it) } catch (_: Exception) { null } }
                 val now = SystemClock.elapsedRealtime()
                 val waitingForResult = results.any { it == null }
-                val waitingForTimeline = results.any { it != null && it.needsTimelineEnrichment }
-                if (waitingForResult || (waitingForTimeline && now - lastTimelinePoll >= 300_000L)) {
-                    lastTimelinePoll = now
+                val waitingForEnrichment = results.any { it != null && (it.needsTimelineEnrichment || it.needsSpeakerEnrichment) }
+                if (waitingForResult || (waitingForEnrichment && now - lastEnrichmentPoll >= 300_000L)) {
+                    lastEnrichmentPoll = now
                     vemo().sync()
                 }
             }
@@ -1156,7 +1156,7 @@ class MainActivity : Activity() {
     }
 
     private fun renderTranscript(item: Recording, result: Result) {
-        val sentences = result.timeline ?: TranscriptTimeline.plain(result.transcript)
+        val sentences = result.speakers ?: result.timeline ?: TranscriptTimeline.plain(result.transcript)
         val timestampPaint = text("", 12f, purple).paint
         val timestampWidth = maxOf(dp(48), (sentences.mapNotNull { it.timestamp }
             .maxOfOrNull { timestampPaint.measureText(it) } ?: 0f).toInt() + dp(12))
@@ -1185,10 +1185,17 @@ class MainActivity : Activity() {
                     }
                 }, LinearLayout.LayoutParams(timestampWidth, -2))
             }
-            line.addView(text(sentence.text.trim(), 16f).apply {
+            val textColumn = column()
+            sentence.speakerName?.let { name ->
+                textColumn.addView(text(name, 12f, purple).apply {
+                    setPadding(0, 0, 0, dp(6))
+                }, LinearLayout.LayoutParams(-1, -2))
+            }
+            textColumn.addView(text(sentence.text.trim(), 16f).apply {
                 setTextIsSelectable(true)
                 setLineSpacing(dp(4).toFloat(), 1.3f)
-            }, LinearLayout.LayoutParams(0, -2, 1f))
+            }, LinearLayout.LayoutParams(-1, -2))
+            line.addView(textColumn, LinearLayout.LayoutParams(0, -2, 1f))
             content.addView(line, LinearLayout.LayoutParams(-1, -2))
         }
     }
