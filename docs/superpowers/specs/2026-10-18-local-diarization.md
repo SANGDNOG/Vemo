@@ -1,0 +1,17 @@
+# Vemo local speaker diarization
+
+User approved Mac and Windows speaker separation, editable names, Android display/sync, sequential low-load processing. Existing design work remains untouched except the controls required for this feature.
+
+## Architecture and acceptance
+Use sherpa-onnx 1.13.8 with official pyannote segmentation-3.0 ONNX (MIT) and 3D-Speaker eres2net base zh-cn 16k embedding (Apache-2.0). Python on Mac, C# helper process on Windows. Start CPU, 2 threads, maximum 3600 seconds and minimum 4 GiB available memory before starting; one analysis process, never concurrent with ASR/notes. Optional failure must preserve completed transcript/notes. Existing recordings have an explicit speaker-analysis action; installing a model cannot silently change originals. Cancellation terminates helper, no partial result publication. Progress shows analysis stage, percentage only when runtime supplies measured progress.
+
+Results are recording-scoped; labels start 화자 1, 화자 2 in first-onset order. Unknown or ambiguous/overlapping speech remains unassigned. Names editable without inference; rerunning resets names rather than silently reattaching names to changed clusters. No automatic identity recognition or cross-recording voice profiles.
+
+Canonical optional speaker document `speakers.json`: schema_version=1; audio_sha256=64 lowercase hex of original owned audio; transcript_sha256=SHA256 of exact UTF-8 transcript; generation=UUID; speakers=array of {id: speaker_1, name: 화자 1}; turns=array {start_s,end_s,speaker_id}; segments=array {start_s,end_s,text,speaker_id:null|string}. Speaker ids unique, all references valid, finite times in [0,3600], start<=end, names trimmed 1..80 Unicode scalars without control chars, maximum 100000 segments/turns, JSON <=8MiB. Segment concatenation must match transcript after existing platform normalization; do not fabricate words or boundaries. Assign a segment only when one speaker uniquely covers >50% duration with no competing overlap; otherwise null. Raw transcript/notes stay unchanged, no ZIP fourth entry. Speaker metadata not embedded into signed/hash-checked original ASR.
+
+Cloud result.json v1 stays unchanged to preserve existing Android clients. Publish optional speakers.json beside result.json through existing ownership/hash/conditional-update protection. Android validates recording audio and exact transcript hashes before accepting optional metadata; absence/failure preserves ordinary result. Desktop is name-edit authority initially. Existing Google/Nextcloud folder behavior maintained.
+
+Mac stores sidecar with current transcript artifact, uses existing command bridge for analyze and rename, NativeCore optional decoding; Windows LibraryStore owns sidecar commits and helper lifecycle. No live LibraryStore opened by probes. Models installed from pinned public URLs with hashes, explicit model notices; never arbitrary code from model repositories.
+
+## Evidence and limits
+Official docs: https://k2-fsa.github.io/sherpa/onnx/speaker-diarization/python.html ; https://k2-fsa.github.io/sherpa/onnx/speaker-diarization/models.html ; https://github.com/k2-fsa/sherpa-onnx/tree/v1.13.8/dotnet-examples/offline-speaker-diarization . Runtime platform compatibility and Korean speaker quality need actual validation. Full-recording clustering has quadratic memory costs; no naive per-chunk speaker IDs. Memory/duration guards are conservative, not proof of a peak-memory bound.
