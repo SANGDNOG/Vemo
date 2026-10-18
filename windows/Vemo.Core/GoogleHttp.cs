@@ -16,7 +16,7 @@ public sealed class GoogleHttpTransport : IGoogleHttpTransport, IDisposable
         var u = request.RequestUri ?? throw new GoogleConnectionException("invalid_endpoint");
         if (maximumBytes is <= 0 or > 2147483648 || u.Scheme != "https" || u.Port != 443 || u.UserInfo != "" || u.Fragment != "" ||
             !(u.Host == "oauth2.googleapis.com" && u.AbsolutePath == "/token" && u.Query == "" && request.Method == HttpMethod.Post ||
-              u.Host == "www.googleapis.com" && (u.AbsolutePath.StartsWith("/drive/v3/", StringComparison.Ordinal) && request.Method is var m && (m == HttpMethod.Get || m == HttpMethod.Post) || u.AbsolutePath.StartsWith("/upload/drive/v3/files/", StringComparison.Ordinal) && request.Method == HttpMethod.Patch)))
+              u.Host == "www.googleapis.com" && (u.AbsolutePath.StartsWith("/drive/v3/", StringComparison.Ordinal) && request.Method is var m && (m == HttpMethod.Get || m == HttpMethod.Post) || (u.AbsolutePath.StartsWith("/upload/drive/v3/files/", StringComparison.Ordinal) && request.Method == HttpMethod.Patch || u.AbsolutePath == "/upload/drive/v3/files" && request.Method == HttpMethod.Post))))
             throw new GoogleConnectionException("invalid_endpoint");
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct); timeout.CancelAfter(maximumBytes > GoogleWire.JsonLimit ? TimeSpan.FromHours(1) : TimeSpan.FromSeconds(60));
         try

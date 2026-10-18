@@ -91,7 +91,7 @@ public sealed partial class SettingsView : UserControl
         {
             var box = new ComboBox { ItemsSource = options.Contains(selected) ? options : options.Append(selected).ToArray(), SelectedItem = selected, MinWidth = 125, MaxWidth = 220, HorizontalAlignment = HorizontalAlignment.Right }; NativeWhite.Label(box, label); Row(label, box); return box;
         }
-        content.Children.Add(BuildGoogleSettings(google ?? GoogleConnectionService.Shared(store), message));
+        content.Children.Add(BuildGoogleSettings(google ?? GoogleConnectionService.Shared(store), message, store.ProcessorId));
         Section("입력 폴더", "");
         var input = Field("오디오 입력 폴더", s.InputDirectory, true);
         var legacyFields = new StackPanel(); group = legacyFields;

@@ -70,13 +70,73 @@ public sealed class SettingsConnectionStateTests
             else Click(host, Named<Button>(host, "Google 작업 취소"));
             await Until(() => !service.Status.Busy && Named<Button>(host, "Drive 폴더 선택…").IsEnabled, "Cancelled or failed request must release busy state.");
             Assert.Equal(fail ? "fixture_failure" : "cancelled", service.Status.LastError);
-            Assert.Contains(fail ? "fixture_failure" : "cancelled", Named<TextBlock>(host, "Google 연결 상태").Text);
+            Assert.Contains(fail ? "Google 작업을 완료하지 못했습니다." : "작업을 취소했습니다.", Named<TextBlock>(host, "Google 연결 상태").Text);
+            Assert.DoesNotContain("fixture_failure", Named<TextBlock>(host, "Google 연결 상태").Text);
             Assert.False(Named<Button>(host, "Google 작업 취소").IsVisible);
             Assert.True(Button(host, "설정 저장").IsEnabled);
-            Assert.Equal(fail ? "Google connection: fixture_failure" : "작업을 취소했습니다.", Named<TextBlock>(host, "설정 저장 상태").Text);
+            Assert.Equal(fail ? "Google 작업을 완료하지 못했습니다. 다시 시도해 주세요." : "작업을 취소했습니다.", Named<TextBlock>(host, "설정 저장 상태").Text);
             Assert.Equal("synthetic-test-refresh", vault.Load("refresh"));
         }
         finally { await pane.StopAsync(); host.Close(); Pump(); }
+    }
+
+    [AvaloniaFact]
+    public async Task Foreign_folder_is_not_offered_and_creation_requires_user_click()
+    {
+        await using var ui = new UiFixture();
+        var vault = new MemoryVault(); vault.Save("configuration", Configuration); vault.Save("refresh", "synthetic-test-refresh");
+        var transport = new FolderTransport(Guid.NewGuid().ToString());
+        using var service = new GoogleConnectionService(ui.Store, vault, transport, () => null);
+        var pane = new SettingsView(ui.Store, new MobileFolderAdapter(ui.Store), google: service);
+        var host = new Window { Content = pane, Width = 900, Height = 800 }; host.Show(); Pump();
+        try
+        {
+            Click(host, Named<Button>(host, "Drive 폴더 선택…"));
+            await Until(() => !service.Status.Busy && Named<Button>(host, "Drive 폴더 선택…").IsEnabled, "Folder request must finish.");
+            var choices = Named<ComboBox>(host, "Vemo에서 접근 가능한 폴더 목록");
+            Assert.Empty(choices.Items); Assert.False(choices.IsVisible);
+            Assert.Equal("Vemo Windows", Named<TextBox>(host, "새 Google Drive 폴더 이름").Text);
+            Assert.Equal("이 PC에 연결할 폴더를 만들어 주세요.", Named<TextBlock>(host, "설정 저장 상태").Text);
+            Assert.True(Button(host, "Drive 폴더 만들기").IsEnabled);
+            Assert.Contains("primary", Button(host, "Drive 폴더 만들기").Classes);
+            Assert.Null(service.Status.FolderId); Assert.Equal(0, transport.Writes);
+        }
+        finally { await pane.StopAsync(); host.Close(); Pump(); }
+    }
+
+    [AvaloniaFact]
+    public async Task Bound_folder_has_no_change_or_create_actions()
+    {
+        await using var ui = new UiFixture();
+        var directory = Path.Combine(ui.Store.Root, "google"); Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "binding.json"), System.Text.Json.JsonSerializer.Serialize(new { AccountId = "test-account", FolderId = "test-folder", FolderName = "Vemo Windows", ProcessorId = ui.Store.ProcessorId }));
+        var vault = new MemoryVault(); vault.Save("configuration", Configuration); vault.Save("refresh", "synthetic-test-refresh");
+        var transport = new ControlledTransport();
+        using var service = new GoogleConnectionService(ui.Store, vault, transport, () => null);
+        var pane = new SettingsView(ui.Store, new MobileFolderAdapter(ui.Store), google: service);
+        var host = new Window { Content = pane, Width = 900, Height = 800 }; host.Show(); Pump();
+        try
+        {
+            Assert.False(Named<Button>(host, "Drive 폴더 선택…").IsVisible);
+            Assert.False(Button(host, "Drive 폴더 만들기").IsEffectivelyVisible);
+            Assert.Contains("Vemo Windows", Named<TextBlock>(host, "Google 선택한 폴더").Text);
+            Assert.True(Named<Button>(host, "지금 동기화").IsEnabled);
+            Assert.Equal(0, transport.Requests);
+        }
+        finally { await pane.StopAsync(); host.Close(); Pump(); }
+    }
+
+    sealed class FolderTransport(string owner) : IGoogleHttpTransport
+    {
+        public int Writes;
+        public async Task<int> SendAsync(HttpRequestMessage request, long maximumBytes, Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> receive, CancellationToken ct)
+        {
+            if (request.Method != HttpMethod.Get && request.RequestUri!.Host != "oauth2.googleapis.com") Interlocked.Increment(ref Writes);
+            var payload = request.RequestUri!.Host == "oauth2.googleapis.com"
+                ? System.Text.Json.JsonSerializer.Serialize(new { access_token = "synthetic-access", expires_in = 3600, token_type = "Bearer" })
+                : System.Text.Json.JsonSerializer.Serialize(new { files = new[] { new { id = "foreign-folder", name = "Mac folder", mimeType = GoogleDriveClient.FolderMime, trashed = false, properties = new { vemoProtocol = "1", vemoKind = "root", vemoProcessor = owner } } } });
+            await receive(System.Text.Encoding.UTF8.GetBytes(payload), ct); return 200;
+        }
     }
 
     sealed class MemoryVault : IGoogleCredentialVault

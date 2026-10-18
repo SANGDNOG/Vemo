@@ -106,6 +106,24 @@ public sealed class GoogleDriveClient(GoogleOAuthClient oauth, IGoogleHttpTransp
         using var doc = GoogleWire.Strict(await Call(HttpMethod.Post, "/drive/v3/files", new() { ["fields"] = Fields }, JsonSerializer.SerializeToUtf8Bytes(obj), ct)); var file = Parse(doc.RootElement);
         if (file.Id != id) throw new GoogleConnectionException("identity_mismatch"); return file;
     }
+    /// One create request commits metadata and JSON content under a durably reserved ID.
+    /// Duplicate IDs never update content; an unknown response is resolved by identity and exact readback.
+    public async Task<GoogleDriveFile> CreateJsonAsync(string id, string parent, string path, byte[] bytes, CancellationToken ct = default)
+    {
+        Identifier(id); Identifier(parent);
+        if (bytes.Length is <= 0 or > GoogleWire.JsonLimit) throw new GoogleConnectionException("response_limit");
+        using var request = await Request(HttpMethod.Post, "/upload/drive/v3/files", new() { ["uploadType"] = "multipart", ["fields"] = Fields }, ct);
+        var metadata = JsonSerializer.SerializeToUtf8Bytes(new { id, name = path.Split('/')[^1], parents = new[] { parent }, mimeType = "application/json", properties = PropertiesFor(path) });
+        var multipart = new MultipartContent("related");
+        var meta = new ByteArrayContent(metadata); meta.Headers.ContentType = new MediaTypeHeaderValue("application/json"); multipart.Add(meta);
+        var media = new ByteArrayContent(bytes); media.Headers.ContentType = new MediaTypeHeaderValue("application/json"); multipart.Add(media); request.Content = multipart;
+        var reply = await GoogleWire.BufferAsync(transport, request, GoogleWire.JsonLimit, ct);
+        if (reply.Status is 401 or 403) throw new GoogleConnectionException("reauthorization_required");
+        if (reply.Status is not (200 or 201 or 409)) throw new GoogleConnectionException("drive_request_failed");
+        var confirmed = await FileAsync(id, ct); Validate(confirmed, parent, path, "application/json");
+        if (!(await JsonAsync(confirmed, ct)).AsSpan().SequenceEqual(bytes)) throw new GoogleConnectionException("result_conflict");
+        return confirmed;
+    }
     public async Task UploadAsync(string id, byte[] bytes, string expectedETag, CancellationToken ct = default)
     {
         if (!GoogleWire.StrongETag(expectedETag)) throw new GoogleConnectionException("conditional_update_unavailable");

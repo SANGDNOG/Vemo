@@ -37,6 +37,9 @@ public sealed class GoogleDriveTests
         public int Writes;
         public bool LoseCreateAcknowledgment;
         public bool OmitETag;
+        public bool LoseMultipartAcknowledgment;
+        public int MultipartCreates;
+        public int Patches;
         public string Account = "account-fixture";
         public Func<HttpRequestMessage, CancellationToken, Task>? Before;
         public string Root(string name = "Vemo", string? owner = null)
@@ -68,14 +71,24 @@ public sealed class GoogleDriveTests
                 var q = query["q"]; var candidates = q.StartsWith("'", StringComparison.Ordinal) ? Files.Values.Where(x => x.Parent == q.Split('\'')[1]) : Files.Values.Where(x => x.Properties.GetValueOrDefault("vemoKind") == "root");
                 result = new { files = candidates.Select(x => x.Metadata()).ToArray(), incompleteSearch = false };
             }
-            else if (uri.AbsolutePath == "/drive/v3/files" && request.Method == HttpMethod.Post)
+            else if ((uri.AbsolutePath == "/drive/v3/files" || uri.AbsolutePath == "/upload/drive/v3/files") && request.Method == HttpMethod.Post)
             {
-                using var doc = JsonDocument.Parse(await request.Content!.ReadAsByteArrayAsync(ct)); var p = doc.RootElement;
+                byte[]? media = null; byte[] metadata;
+                if (request.Content is MultipartContent multipart)
+                {
+                    Assert.Equal("related", multipart.Headers.ContentType!.MediaType!.Split('/')[1]); Assert.Equal("multipart", query["uploadType"]);
+                    var parts = multipart.ToArray(); Assert.Equal(2, parts.Length);
+                    Assert.Equal("application/json", parts[0].Headers.ContentType!.MediaType); Assert.Equal("application/json", parts[1].Headers.ContentType!.MediaType);
+                    metadata = await parts[0].ReadAsByteArrayAsync(ct); media = await parts[1].ReadAsByteArrayAsync(ct); MultipartCreates++;
+                }
+                else metadata = await request.Content!.ReadAsByteArrayAsync(ct);
+                using var doc = JsonDocument.Parse(metadata); var p = doc.RootElement;
                 var id = p.GetProperty("id").GetString()!;
                 if (Files.ContainsKey(id)) { status = 409; result = new { error = "exists" }; }
                 else
                 {
-                    var entry = new Entry(id, p.GetProperty("name").GetString()!, p.TryGetProperty("parents", out var parents) ? parents[0].GetString() : null, p.GetProperty("mimeType").GetString()!, p.GetProperty("properties").EnumerateObject().ToDictionary(x => x.Name, x => x.Value.GetString()!)); Files.Add(id, entry); Writes++; result = entry.Metadata();
+                    var entry = new Entry(id, p.GetProperty("name").GetString()!, p.TryGetProperty("parents", out var parents) ? parents[0].GetString() : null, p.GetProperty("mimeType").GetString()!, p.GetProperty("properties").EnumerateObject().ToDictionary(x => x.Name, x => x.Value.GetString()!)); entry.Bytes = media ?? []; Files.Add(id, entry); Writes++; result = entry.Metadata();
+                    if (media != null && LoseMultipartAcknowledgment) { LoseMultipartAcknowledgment = false; throw new GoogleConnectionException("transport_failed"); }
                     if (LoseCreateAcknowledgment) { LoseCreateAcknowledgment = false; throw new GoogleConnectionException("transport_failed"); }
                 }
             }
@@ -84,7 +97,7 @@ public sealed class GoogleDriveTests
                 var id = uri.AbsolutePath.Split('/')[^1];
                 if (!Files.TryGetValue(id, out var entry)) { status = 404; result = new { error = "missing" }; }
                 else if (request.Headers.IfMatch.Count != 0 && (request.Headers.IfMatch.Count != 1 || request.Headers.IfMatch.Single().ToString() != entry.ETag)) { status = 412; result = new { error = "precondition_failed" }; }
-                else if (request.Method == HttpMethod.Patch) { entry.Bytes = await request.Content!.ReadAsByteArrayAsync(ct); Writes++; result = entry.Metadata(); }
+                else if (request.Method == HttpMethod.Patch) { entry.Bytes = await request.Content!.ReadAsByteArrayAsync(ct); Writes++; Patches++; result = entry.Metadata(); }
                 else if (query.GetValueOrDefault("alt") == "media") raw = entry.Bytes;
                 else
                 {
@@ -163,16 +176,68 @@ public sealed class GoogleDriveTests
             {
                 Assert.Single(request.Headers.IfMatch); entry.Bytes = foreign;
             }
+            if (!existingResult && request.Content is MultipartContent multipart)
+            {
+                using var doc = JsonDocument.Parse(multipart.First().ReadAsByteArrayAsync().GetAwaiter().GetResult()); var p = doc.RootElement;
+                if (p.GetProperty("name").GetString() == "result.json")
+                {
+                    var id = p.GetProperty("id").GetString()!;
+                    f.Cloud.Files[id] = new Cloud.Entry(id, "result.json", p.GetProperty("parents")[0].GetString(), "application/json", p.GetProperty("properties").EnumerateObject().ToDictionary(x => x.Name, x => x.Value.GetString()!), foreign);
+                }
+            }
             return Task.CompletedTask;
         };
-        var ex = await Assert.ThrowsAsync<GoogleConnectionException>(() => f.Service.SyncAsync()); Assert.Equal("remote_conflict", ex.Code);
+        var ex = await Assert.ThrowsAsync<GoogleConnectionException>(() => f.Service.SyncAsync()); Assert.Equal(existingResult ? "remote_conflict" : "result_conflict", ex.Code);
         Assert.Equal(foreign, Assert.Single(f.Cloud.Files.Values, x => x.Name == "result.json").Bytes);
     }
-    [Fact] public async Task MissingETagPreventsEvenInitialEmptyFileUpload()
+    [Fact] public async Task NoETagFreshRootAndFirstResultUseAtomicMultipartAndUpdatesFailClosed()
     {
-        using var f = new Fixture(); var root = f.Cloud.Root(); f.Cloud.OmitETag = true;
-        var ex = await Assert.ThrowsAsync<GoogleConnectionException>(() => f.Service.SelectFolderAsync(root)); Assert.Equal("conditional_update_unavailable", ex.Code);
-        Assert.Empty(Assert.Single(f.Cloud.Files.Values, x => x.Name == "processor.json").Bytes);
+        using var f = new Fixture(); f.Cloud.OmitETag = true;
+        var root = await f.Service.CreateFolderAsync(""); Assert.Equal("Vemo Windows", root.Name);
+        Assert.NotEmpty(Assert.Single(f.Cloud.Files.Values, x => x.Name == "processor.json").Bytes);
+        f.Cloud.Recording(root.Id); await f.Service.SyncAsync(); var job = Assert.Single(f.Store.Jobs);
+        f.Store.TryStart(job.Id); f.Store.SaveTranscript(job.Id, "transcript"); f.Store.Complete(job.Id, "notes");
+        await f.Service.SyncAsync(); Assert.Equal(2, f.Cloud.MultipartCreates); Assert.Equal(0, f.Cloud.Patches);
+        var result = Assert.Single(f.Cloud.Files.Values, x => x.Name == "result.json"); var original = result.Bytes.ToArray();
+        await f.Service.SyncAsync(); Assert.Equal(2, f.Cloud.MultipartCreates);
+        f.Store.Rename(job.Id, "Renamed"); var ex = await Assert.ThrowsAsync<GoogleConnectionException>(() => f.Service.SyncAsync());
+        Assert.Equal("conditional_update_unavailable", ex.Code); Assert.Equal(original, result.Bytes); Assert.Equal(0, f.Cloud.Patches);
+    }
+    [Fact] public async Task ListsOnlyOwnProcessorAndMultipartLostAcknowledgmentReusesReservation()
+    {
+        using var f = new Fixture(); f.Cloud.OmitETag = true; var foreign = f.Cloud.Root("Vemo 테스트", Guid.NewGuid().ToString());
+        Assert.Empty(await f.Service.ListFoldersAsync()); Assert.Null(f.Service.Status.FolderId);
+        f.Cloud.LoseMultipartAcknowledgment = true;
+        await Assert.ThrowsAsync<GoogleConnectionException>(() => f.Service.CreateFolderAsync(""));
+        var folder = await f.Service.CreateFolderAsync(""); Assert.Equal(folder.Id, Assert.Single(await f.Service.ListFoldersAsync()).Id);
+        Assert.Single(f.Cloud.Files.Values, x => x.Name == "processor.json"); Assert.Equal(0, f.Cloud.Patches);
+        Assert.NotEqual(f.Store.ProcessorId, f.Cloud.Files[foreign].Properties["vemoProcessor"]);
+    }
+    [Fact] public async Task DefaultNamesEnumerateCollisionsAndRetryKeepsReservedName()
+    {
+        using var f = new Fixture(); f.Cloud.OmitETag = true;
+        f.Cloud.Root("Vemo Windows", Guid.NewGuid().ToString()); f.Cloud.Root("Vemo Windows (2)", Guid.NewGuid().ToString());
+        f.Cloud.LoseCreateAcknowledgment = true;
+        await Assert.ThrowsAsync<GoogleConnectionException>(() => f.Service.CreateFolderAsync("Vemo Windows"));
+        var folder = await f.Service.CreateFolderAsync(""); Assert.Equal("Vemo Windows (3)", folder.Name);
+        Assert.Equal(folder.Id, Assert.Single(await f.Service.ListFoldersAsync()).Id);
+        Assert.Single(f.Cloud.Files.Values, x => x.Name == "Vemo Windows (3)");
+    }
+    [Fact] public async Task MultipartDuplicateIdConfirmsExactBytesAndPreservesConflictingContent()
+    {
+        using var f = new Fixture(); f.Cloud.OmitETag = true; var root = f.Cloud.Root();
+        using var oauth = new GoogleOAuthClient(GoogleOAuthConfiguration.ParseInstalledJson(GoogleOAuthTests.Configuration), f.Vault, f.Cloud);
+        var drive = new GoogleDriveClient(oauth, f.Cloud); var id = await drive.AllocateIdAsync(); var bytes = Encoding.UTF8.GetBytes("{\"fixture\":true}");
+        await drive.CreateJsonAsync(id, root, "fixture.json", bytes); var writes = f.Cloud.Writes;
+        await drive.CreateJsonAsync(id, root, "fixture.json", bytes); Assert.Equal(writes, f.Cloud.Writes);
+        var ex = await Assert.ThrowsAsync<GoogleConnectionException>(() => drive.CreateJsonAsync(id, root, "fixture.json", Encoding.UTF8.GetBytes("{}")));
+        Assert.Equal("result_conflict", ex.Code); Assert.Equal(bytes, f.Cloud.Files[id].Bytes); Assert.Equal(writes, f.Cloud.Writes);
+    }
+    [Fact] public async Task PriorEmptyProcessorWithoutETagIsPreserved()
+    {
+        using var f = new Fixture(); f.Cloud.OmitETag = true; var root = f.Cloud.Root(); f.Cloud.Add(root, "processor.json", "application/json");
+        var ex = await Assert.ThrowsAsync<GoogleConnectionException>(() => f.Service.SelectFolderAsync(root));
+        Assert.Equal("foreign_empty_file", ex.Code); Assert.Empty(Assert.Single(f.Cloud.Files.Values, x => x.Name == "processor.json").Bytes); Assert.Equal(0, f.Cloud.Patches);
     }
     [Fact] public async Task WrongTargetIsSkippedAndBadAudioHashNeverImports()
     {

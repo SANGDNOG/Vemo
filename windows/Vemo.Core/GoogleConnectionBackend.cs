@@ -97,7 +97,7 @@ public sealed partial class GoogleConnectionService
         await StopAsync();
         await Run(token => { token.ThrowIfCancellationRequested(); oauth?.Disconnect(); vault.Delete("refresh"); return Task.FromResult(true); }, ct);
     }
-    private partial Task<IReadOnlyList<GoogleDriveFolder>> ListCoreAsync(CancellationToken ct) => Run(token => Drive.RootsAsync(token), ct);
+    private partial Task<IReadOnlyList<GoogleDriveFolder>> ListCoreAsync(CancellationToken ct) => Run<IReadOnlyList<GoogleDriveFolder>>(async token => (await Drive.RootsAsync(token)).Where(x => x.ProcessorId == store.ProcessorId).ToArray(), ct);
     async Task Checked(CancellationToken ct)
     {
         if (journal.FolderId == null || journal.AccountId == null || journal.ProcessorId != store.ProcessorId) throw new GoogleConnectionException("folder_required");
@@ -119,10 +119,21 @@ public sealed partial class GoogleConnectionService
     }, ct);
     private partial Task<GoogleDriveFolder> CreateCoreAsync(string name, CancellationToken ct) => Run(async token =>
     {
+        var defaultName = string.IsNullOrWhiteSpace(name) || name.Trim() == "Vemo Windows";
+        if (defaultName) name = "Vemo Windows";
         SafeFiles.Title(name); var account = await Drive.AccountIdAsync(token);
         if (journal.FolderId != null) { await Checked(token); return GoogleDriveClient.Root(await Drive.FileAsync(journal.FolderId, token)); }
         if (journal.AccountId != null && journal.AccountId != account) throw new GoogleConnectionException("account_mismatch");
         var roots = await Drive.RootsAsync(token);
+        if (defaultName)
+        {
+            if (journal.RootIntentId != null) name = journal.RootIntentName ?? throw new GoogleConnectionException("binding_conflict");
+            else
+            {
+                var names = roots.Select(x => x.Name).ToHashSet(StringComparer.Ordinal);
+                for (var n = 2; names.Contains(name); n++) name = "Vemo Windows (" + n + ")";
+            }
+        }
         if (journal.RootIntentId == null)
         {
             if (roots.Any(x => x.Name == name || x.ProcessorId == store.ProcessorId)) throw new GoogleConnectionException("duplicate_roots");
@@ -144,6 +155,28 @@ public sealed partial class GoogleConnectionService
         catch (GoogleConnectionException e) when (e.Code == "not_found") { file = await Drive.CreateAsync(id, path.Split('/')[^1], parent, mime, GoogleDriveClient.PropertiesFor(path), ct); }
         GoogleDriveClient.Validate(file, parent, path, mime); return file;
     }
+    async Task<GoogleDriveFile> EnsureJson(string parent, string path, byte[] bytes, CancellationToken ct)
+    {
+        var existing = await Drive.ChildAsync(parent, path, "application/json", ct);
+        if (existing != null)
+        {
+            if (journal.Ids.TryGetValue(path, out var reserved) && reserved != existing.Id) throw new GoogleConnectionException("binding_conflict");
+            return existing;
+        }
+        if (!journal.Ids.TryGetValue(path, out var id))
+        { id = await Drive.AllocateIdAsync(ct); ct.ThrowIfCancellationRequested(); journal.Ids.Add(path, id); SaveJournal(); }
+        // Resolve lost acknowledgments by reserved ID before another create attempt.
+        try
+        {
+            var file = await Drive.FileAsync(id, ct); GoogleDriveClient.Validate(file, parent, path, "application/json"); return file;
+        }
+        catch (GoogleConnectionException e) when (e.Code == "not_found") { }
+        ct.ThrowIfCancellationRequested();
+        var created = await Drive.CreateJsonAsync(id, parent, path, bytes, ct);
+        var listed = await Drive.ChildAsync(parent, path, "application/json", ct);
+        if (listed != null && listed.Id != id) throw new GoogleConnectionException("binding_conflict");
+        return created;
+    }
     string Local(string path)
     {
         var components = path.Split('/'); if (components.Any(x => x is "" or "." or ".." || x.Contains('\\') || x.Contains(':'))) throw new GoogleConnectionException("invalid_path");
@@ -158,7 +191,8 @@ public sealed partial class GoogleConnectionService
     async Task Prepare(CancellationToken ct)
     {
         await Checked(ct);
-        var ensured = await Ensure(journal.FolderId!, "processor.json", "application/json", ct);
+        var initialBytes = JsonSerializer.SerializeToUtf8Bytes(new { schema_version = 1, processor_id = store.ProcessorId, display_name = "Vemo Windows" });
+        var ensured = await EnsureJson(journal.FolderId!, "processor.json", initialBytes, ct);
         var file = await Drive.FileAsync(ensured.Id, ct);
         GoogleDriveClient.Validate(file, journal.FolderId!, "processor.json", "application/json");
         byte[] bytes;
@@ -166,7 +200,8 @@ public sealed partial class GoogleConnectionService
         else
         {
             if (journal.Ids.GetValueOrDefault("processor.json") != file.Id) throw new GoogleConnectionException("foreign_empty_file");
-            bytes = JsonSerializer.SerializeToUtf8Bytes(new { schema_version = 1, processor_id = store.ProcessorId, display_name = "Vemo Windows" });
+            if (file.ETag == null) throw new GoogleConnectionException("recovery_required");
+            bytes = initialBytes;
             await Drive.UploadAsync(file.Id, bytes, file.ETag ?? "", ct);
             var confirmed = await Drive.FileAsync(file.Id, ct); GoogleDriveClient.Validate(confirmed, journal.FolderId!, "processor.json", "application/json");
             if (!(await Drive.JsonAsync(confirmed, ct)).AsSpan().SequenceEqual(bytes)) throw new GoogleConnectionException("upload_mismatch");
@@ -262,7 +297,7 @@ public sealed partial class GoogleConnectionService
         if (bytes.Length > GoogleWire.JsonLimit) throw new GoogleConnectionException("response_limit");
         parent = journal.FolderId!; current = "";
         foreach (var part in new[] { "results", mobile.RecordingId, mobile.AudioSha256 }) { Live(job, ct); current = current == "" ? part : current + "/" + part; parent = (await Ensure(parent, current, GoogleDriveClient.FolderMime, ct)).Id; }
-        current += "/result.json"; Live(job, ct); var ensuredResult = await Ensure(parent, current, "application/json", ct); Live(job, ct);
+        current += "/result.json"; Live(job, ct); var ensuredResult = await EnsureJson(parent, current, bytes, ct); Live(job, ct);
         var result = await Drive.FileAsync(ensuredResult.Id, ct); GoogleDriveClient.Validate(result, parent, current, "application/json"); Live(job, ct);
         if (result.Size is > 0)
         {
@@ -273,7 +308,11 @@ public sealed partial class GoogleConnectionService
             SafeFiles.Title(p.GetProperty("title").GetString()!);
             if (string.IsNullOrWhiteSpace(p.GetProperty("transcript").GetString()) || string.IsNullOrWhiteSpace(p.GetProperty("notes_markdown").GetString())) throw new GoogleConnectionException("result_conflict");
         }
-        else if (journal.Ids.GetValueOrDefault(current) != result.Id) throw new GoogleConnectionException("foreign_empty_file");
+        else
+        {
+            if (journal.Ids.GetValueOrDefault(current) != result.Id) throw new GoogleConnectionException("foreign_empty_file");
+            if (result.ETag == null) throw new GoogleConnectionException("recovery_required");
+        }
         await Checked(ct); Live(job, ct); await Drive.UploadAsync(result.Id, bytes, result.ETag ?? "", ct);
         var confirmed = await Drive.FileAsync(result.Id, ct); GoogleDriveClient.Validate(confirmed, parent, current, "application/json");
         if (!(await Drive.JsonAsync(confirmed, ct)).AsSpan().SequenceEqual(bytes)) throw new GoogleConnectionException("upload_mismatch"); Live(job, ct);

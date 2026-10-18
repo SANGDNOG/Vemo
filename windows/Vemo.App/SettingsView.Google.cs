@@ -7,7 +7,7 @@ namespace Vemo.App;
 
 public sealed partial class SettingsView
 {
-    Control BuildGoogleSettings(GoogleConnectionService google, TextBlock message)
+    Control BuildGoogleSettings(GoogleConnectionService google, TextBlock message, string processorId)
     {
         var section = new StackPanel { Spacing = 10 };
         var label = NativeWhite.Text("Google Drive", "secondary"); label.FontSize = 11; label.FontWeight = Avalonia.Media.FontWeight.Medium; section.Children.Add(label);
@@ -33,12 +33,14 @@ public sealed partial class SettingsView
         var syncActions = new WrapPanel(); syncActions.Children.Add(list); syncActions.Children.Add(sync); body.Children.Add(syncActions);
         var foldersPanel = new StackPanel { Spacing = 10, IsVisible = false }; body.Children.Add(foldersPanel);
         foldersPanel.Children.Add(NativeWhite.Text("Vemo에서 접근 가능한 폴더", "secondary"));
+        var emptyFolders = NativeWhite.Text("이 PC에 연결할 폴더를 만들어 주세요.", "secondary"); emptyFolders.IsVisible = false; foldersPanel.Children.Add(emptyFolders);
         var folders = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch, PlaceholderText = "폴더를 선택하세요" };
         NativeWhite.Label(folders, "Vemo에서 접근 가능한 폴더 목록"); foldersPanel.Children.Add(folders);
-        var folderName = new TextBox { PlaceholderText = "새 Vemo 폴더 이름", MaxLength = 120 };
+        var folderName = new TextBox { Text = "Vemo Windows", PlaceholderText = "새 Vemo 폴더 이름", MaxLength = 120 };
         NativeWhite.Label(folderName, "새 Google Drive 폴더 이름"); foldersPanel.Children.Add(folderName);
         var folderActions = new WrapPanel(); foldersPanel.Children.Add(folderActions);
         var create = new Button { Content = "Drive 폴더 만들기", Margin = new Thickness(0, 0, 8, 8) };
+        create.Classes.Add("primary");
         var select = new Button { Content = "이 폴더 사용", Margin = new Thickness(0, 0, 8, 8) }; select.Classes.Add("primary");
         var cancelFolder = new Button { Content = "폴더 선택 취소", Margin = new Thickness(0, 0, 8, 8) };
         foreach (var button in new[] { create, select, cancelFolder }) { NativeWhite.Label(button, button.Content!.ToString()!); folderActions.Children.Add(button); }
@@ -48,20 +50,20 @@ public sealed partial class SettingsView
             if (closed) return;
             var state = google.Status; var idle = !busy && !state.Busy;
             status.Text = state.Busy ? "Google 작업 중…" : state.Connected ? "Google 연결됨" : state.Configured ? "연결되지 않음" : "이 빌드에서는 Google 연결을 사용할 수 없습니다.";
-            if (!string.IsNullOrEmpty(state.LastError)) status.Text += " · 연결 오류: " + state.LastError;
+            if (!string.IsNullOrEmpty(state.LastError)) status.Text += " · " + GoogleError(state.LastError);
             folderStatus.Text = state.FolderId == null ? "선택한 Drive 폴더 없음" : "Drive 폴더 · " + (state.FolderName ?? state.FolderId);
             if (state.LastSync != null) folderStatus.Text += " · 마지막 동기화 " + state.LastSync.Value.ToLocalTime().ToString("g");
             connect.IsVisible = !state.Connected; connect.IsEnabled = idle && state.Configured && !state.Connected;
             folderStatus.IsVisible = state.Connected;
             syncActions.IsVisible = state.Connected;
-            list.Content = state.FolderId == null ? "폴더 선택" : "폴더 변경";
-            list.IsEnabled = idle && state.Connected; sync.IsEnabled = idle && state.Connected && state.FolderId != null;
+            list.IsVisible = state.FolderId == null;
+            list.IsEnabled = idle && state.Connected && state.FolderId == null; sync.IsEnabled = idle && state.Connected && state.FolderId != null;
             disconnect.IsVisible = state.Connected; disconnect.IsEnabled = idle && state.Connected;
-            if (!state.Connected) foldersPanel.IsVisible = false;
+            if (!state.Connected || state.FolderId != null) foldersPanel.IsVisible = false;
             cancelOperation.IsVisible = busy && googleOperation; cancelOperation.IsEnabled = busy && googleOperation;
             folders.IsEnabled = idle; folderName.IsEnabled = idle;
-            create.IsEnabled = idle && state.Connected && !string.IsNullOrWhiteSpace(folderName.Text);
-            select.IsEnabled = idle && state.Connected && folders.SelectedItem is ComboBoxItem;
+            create.IsEnabled = idle && state.Connected && state.FolderId == null && !string.IsNullOrWhiteSpace(folderName.Text);
+            select.IsEnabled = idle && state.Connected && state.FolderId == null && folders.SelectedItem is ComboBoxItem;
             cancelFolder.IsEnabled = idle;
         }
         void Changed(object? sender, EventArgs e)
@@ -73,17 +75,28 @@ public sealed partial class SettingsView
         BusyChanged += Refresh; folders.SelectionChanged += (_, _) => Refresh(); folderName.TextChanged += (_, _) => Refresh();
         void ShowFolders(IReadOnlyList<GoogleDriveFolder> items)
         {
-            if (closed) return;
-            folders.ItemsSource = items.Select(f => new ComboBoxItem { Content = f.Name, Tag = f }).ToArray();
+            if (closed || google.Status.FolderId != null) return;
+            var eligible = items.Where(f => f.ProcessorId == processorId).ToArray();
+            emptyFolders.IsVisible = eligible.Length == 0; folders.IsVisible = select.IsVisible = eligible.Length > 0;
+            if (string.IsNullOrWhiteSpace(folderName.Text)) folderName.Text = "Vemo Windows";
+            folders.ItemsSource = eligible.Select(f => new ComboBoxItem { Content = f.Name, Tag = f }).ToArray();
             folders.SelectedIndex = -1; foldersPanel.IsVisible = true;
             message.Foreground = NativeWhite.Secondary;
-            message.Text = items.Count == 0 ? "Vemo에서 접근 가능한 폴더가 없습니다. 새 폴더를 만들 수 있습니다." : "폴더를 고른 뒤 ‘이 폴더 사용’을 누르세요.";
+            message.Text = eligible.Length == 0 ? "이 PC에 연결할 폴더를 만들어 주세요." : "폴더를 고른 뒤 ‘이 폴더 사용’을 누르세요.";
         }
         async Task Run(Func<CancellationToken, Task> action)
         {
             if (closed || busy || google.Status.Busy) return;
             googleOperation = true;
-            try { await RunOperation(action, message); }
+            try
+            {
+                await RunOperation(async token =>
+                {
+                    try { await action(token); }
+                    catch (GoogleConnectionException error) { throw new InvalidOperationException(GoogleError(error.Code), error); }
+                    catch (Exception error) when (error is not OperationCanceledException) { throw new InvalidOperationException(GoogleError(null), error); }
+                }, message);
+            }
             finally { googleOperation = false; if (!closed) Refresh(); }
         }
         connect.Click += async (_, _) => await Run(async token =>
@@ -99,6 +112,7 @@ public sealed partial class SettingsView
         list.Click += async (_, _) => await Run(async token => ShowFolders(await google.ListFoldersAsync(token)));
         create.Click += async (_, _) => await Run(async token =>
         {
+            if (google.Status.FolderId != null) return;
             var folder = await google.CreateFolderAsync(folderName.Text?.Trim() ?? "", token);
             if (closed || token.IsCancellationRequested) return;
             folderName.Text = "";
@@ -115,11 +129,11 @@ public sealed partial class SettingsView
         });
         select.Click += async (_, _) => await Run(async token =>
         {
-            if (folders.SelectedItem is not ComboBoxItem { Tag: GoogleDriveFolder folder }) return;
+            if (google.Status.FolderId != null || folders.SelectedItem is not ComboBoxItem { Tag: GoogleDriveFolder folder } || folder.ProcessorId != processorId) return;
             await google.SelectFolderAsync(folder.Id, token);
             if (!closed) { foldersPanel.IsVisible = false; message.Foreground = NativeWhite.Secondary; message.Text = "Google Drive 폴더를 연결했습니다."; }
         });
-        cancelFolder.Click += (_, _) => { if (closed || busy) return; foldersPanel.IsVisible = false; folders.ItemsSource = null; folderName.Text = ""; };
+        cancelFolder.Click += (_, _) => { if (closed || busy) return; foldersPanel.IsVisible = false; folders.ItemsSource = null; folderName.Text = "Vemo Windows"; };
         cancelOperation.Click += (_, _) => operation?.Cancel();
         disconnect.Click += async (_, _) => await Run(async token =>
         {
@@ -133,4 +147,20 @@ public sealed partial class SettingsView
         });
         Refresh(); return section;
     }
+
+    static string GoogleError(string? code) => code switch
+    {
+        "cancelled" => "작업을 취소했습니다.",
+        "processor_mismatch" => "다른 PC에 연결된 폴더입니다. 이 PC용 폴더를 만들어 주세요.",
+        "binding_conflict" => "이미 연결된 폴더가 있습니다. 현재 폴더를 사용해 주세요.",
+        "account_mismatch" => "폴더에 연결된 Google 계정으로 다시 로그인해 주세요.",
+        "reauthorization_required" or "not_connected" => "Google에 다시 로그인해 주세요.",
+        "access_denied" => "Google 연결을 허용하지 않았습니다. 다시 연결할 수 있습니다.",
+        "folder_required" or "folder_not_accessible" or "not_found" => "연결할 폴더를 확인해 주세요.",
+        "duplicate_roots" => "같은 PC에 연결된 폴더가 여러 개입니다. Drive 폴더를 확인해 주세요.",
+        "configuration_required" or "invalid_configuration" => "이 빌드에서는 Google 연결을 사용할 수 없습니다.",
+        "transport_failed" or "drive_request_failed" => "Google에 연결하지 못했습니다. 네트워크를 확인하고 다시 시도해 주세요.",
+        "remote_conflict" => "Drive의 내용이 변경되었습니다. 다시 동기화해 주세요.",
+        _ => "Google 작업을 완료하지 못했습니다. 다시 시도해 주세요."
+    };
 }
