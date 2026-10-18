@@ -95,6 +95,7 @@ class VemoApp : Application() {
             }
         }
     }
+    fun automaticCopyEnabled(): Boolean = preferences.getBoolean("auto_copy", true) && preferences.getString("folder", null) != null
     fun export(id: String, done: (() -> Unit)? = null) {
         if (!gate.beginSync()) { notify("녹음 또는 동기화가 끝나면 폴더에 복사하세요."); return }
         io.execute {

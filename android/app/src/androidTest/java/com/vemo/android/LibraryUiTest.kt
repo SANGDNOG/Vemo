@@ -1,6 +1,7 @@
 package com.vemo.android
 
 import android.app.Activity
+import android.app.Dialog
 import android.app.Application
 import android.content.Intent
 import android.content.pm.ActivityInfo
@@ -17,6 +18,7 @@ import android.view.ViewGroup
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.EditText
 import android.widget.TextView
+import android.widget.Spinner
 import com.vemo.android.core.*
 import java.io.File
 import java.util.UUID
@@ -102,10 +104,10 @@ class LibraryUiTest : InstrumentationTestCase() {
         manageFolder(child.id); click("이름 변경"); setDialogText("설계 회의"); click("저장")
         assertEquals("설계 회의", LibraryStore(File(app.filesDir, "library.json")).snapshot().folders.single { it.id == child.id }.name)
         selectFolder("전체 녹음")
-        click(first.title); click("녹음 더보기"); click("폴더 이동"); click("${parent.name} / 설계 회의")
+        click(first.title); click("녹음 더보기"); click("폴더 이동"); selectMoveDestination("${parent.name} / 설계 회의"); click("이동")
         assertEquals(child.id, app.library.folderFor(first.id))
         back()
-        click(second.title); click("녹음 더보기"); click("폴더 이동"); click(parent.name); back()
+        click(second.title); click("녹음 더보기"); click("폴더 이동"); selectMoveDestination(parent.name); click("이동"); back()
         selectFolder(parent.name)
         assertText(second.title); assertNoText(first.title); assertNoText(third.title)
         selectFolder("설계 회의")
@@ -328,6 +330,22 @@ class LibraryUiTest : InstrumentationTestCase() {
     }
 
     private fun onMain(block: () -> Unit) = instrumentation.runOnMainSync(block)
+    private fun movePicker(): Spinner {
+        // The picker lives in the app-owned dialog window, not the Activity decor tree.
+        val field = MainActivity::class.java.getDeclaredField("managementDialog").apply { isAccessible = true }
+        val dialog = field.get(activity) as? Dialog ?: error("Move dialog not open")
+        return views(dialog.window!!.decorView).filterIsInstance<Spinner>()
+            .single { it.contentDescription?.toString() == "이동할 위치" }
+    }
+    private fun selectMoveDestination(label: String) {
+        onMain {
+            val picker = movePicker()
+            val index = (0 until picker.adapter.count).singleOrNull { picker.adapter.getItem(it).toString() == label }
+            assertNotNull("Move destination unavailable: $label", index)
+            picker.setSelection(index!!)
+        }
+        instrumentation.waitForIdleSync()
+    }
     private fun views(root: View): List<View> = listOf(root) +
         if (root is ViewGroup) (0 until root.childCount).flatMap { views(root.getChildAt(it)) } else emptyList()
 

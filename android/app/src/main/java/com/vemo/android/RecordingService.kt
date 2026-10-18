@@ -142,7 +142,7 @@ class RecordingService : Service() {
                         id = null; finishing = false
                         stopForeground(STOP_FOREGROUND_REMOVE); stopSelf(); app.changed()
                         if (app.store.get(current).uploadable) {
-                            if (app.preferences.getString("folder", null) != null) app.export(current)
+                            if (app.automaticCopyEnabled()) app.export(current)
                             SyncJobService.schedule(app)
                         }
                     }

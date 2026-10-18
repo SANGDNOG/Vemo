@@ -1,6 +1,7 @@
 package com.vemo.android
 
 import android.app.Activity
+import android.app.Dialog
 import android.app.Application
 import android.content.Intent
 import android.content.pm.ActivityInfo
@@ -19,6 +20,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.EditText
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Spinner
 import com.vemo.android.core.*
 import java.io.File
 import java.util.UUID
@@ -96,7 +98,7 @@ class LibraryInteractionTest : InstrumentationTestCase() {
         // Keep portrait: the real drag must autoscroll from recording rows back to navigation.
         drag(recordingView(loose.title), folderView(destination.id), "drag-recording-highlight")
         await("Recording drop did not persist membership") { reopened().folderFor(loose.id) == destination.id }
-        holdRelease(recordingView(loose.title)); clickDialog("폴더 이동"); clickDialog("미분류")
+        holdRelease(recordingView(loose.title)); clickDialog("폴더 이동"); selectMoveDestination("미분류"); clickDialog("이동")
         await("Unfiled move did not clear membership") { reopened().folderFor(loose.id) == null }
         assertImmutable(immutable)
         recreate()
@@ -163,12 +165,12 @@ class LibraryInteractionTest : InstrumentationTestCase() {
         setDialogText("정리한 프로젝트 $suffix"); screenshot("rounded-rename-input"); clickDialog("저장")
         assertEquals("정리한 프로젝트 $suffix", reopened().snapshot().folders.single { it.id == created.id }.name)
         holdRelease(folderView(created.id)); clickDialog("폴더 이동")
-        assertFalse("Move chooser offers self", nodeText("정리한 프로젝트 $suffix"))
-        assertFalse("Move chooser offers descendant", nodeText("정리한 프로젝트 $suffix / 회의 자료 $suffix"))
+        assertFalse("Move chooser offers self", moveDestinations().contains("정리한 프로젝트 $suffix"))
+        assertFalse("Move chooser offers descendant", moveDestinations().contains("정리한 프로젝트 $suffix / 회의 자료 $suffix"))
         screenshot("rounded-folder-move")
         clickDialog("취소")
         assertNull(reopened().snapshot().folders.single { it.id == created.id }.parentId)
-        holdRelease(folderView(created.id)); clickDialog("폴더 이동"); clickDialog(destination.name)
+        holdRelease(folderView(created.id)); clickDialog("폴더 이동"); selectMoveDestination(destination.name); clickDialog("이동")
         assertEquals(destination.id, reopened().snapshot().folders.single { it.id == created.id }.parentId)
         assertEquals(child.id, reopened().folderFor(memo.id))
         assertImmutable(immutable)
@@ -287,6 +289,30 @@ class LibraryInteractionTest : InstrumentationTestCase() {
         instrumentation.waitForIdleSync()
     }
     private fun main(block: () -> Unit) = instrumentation.runOnMainSync(block)
+    private fun movePicker(): Spinner {
+        // The picker lives in the app-owned dialog window, not the Activity decor tree.
+        val field = MainActivity::class.java.getDeclaredField("managementDialog").apply { isAccessible = true }
+        val dialog = field.get(activity) as? Dialog ?: error("Move dialog not open")
+        return views(dialog.window!!.decorView).filterIsInstance<Spinner>()
+            .single { it.contentDescription?.toString() == "이동할 위치" }
+    }
+    private fun selectMoveDestination(label: String) {
+        main {
+            val picker = movePicker()
+            val index = (0 until picker.adapter.count).singleOrNull { picker.adapter.getItem(it).toString() == label }
+            assertNotNull("Move destination unavailable: $label", index)
+            picker.setSelection(index!!)
+        }
+        instrumentation.waitForIdleSync()
+    }
+    private fun moveDestinations(): List<String> {
+        var labels = emptyList<String>()
+        main {
+            val adapter = movePicker().adapter
+            labels = (0 until adapter.count).map { adapter.getItem(it).toString() }
+        }
+        return labels
+    }
     private fun views(root: View): List<View> = listOf(root) +
         if (root is ViewGroup) (0 until root.childCount).flatMap { views(root.getChildAt(it)) } else emptyList()
     private fun allViews() = views(activity!!.window.decorView)

@@ -18,7 +18,7 @@ public sealed class SettingsWindow : Window
         var header = new StackPanel { Margin = new Thickness(32, 26, 32, 18), Spacing = 8 }; header.Children.Add(NativeWhite.Text("설정", "heading")); header.Children.Add(NativeWhite.Text("로컬 처리기와 저장 위치를 설정합니다. 변경 내용은 저장한 뒤 적용됩니다.", "secondary")); outer.Children.Add(header);
         var content = new StackPanel { Margin = new Thickness(32, 0, 32, 24), Spacing = 20 }; var scroll = new ScrollViewer { Content = content }; Grid.SetRow(scroll, 1); outer.Children.Add(scroll);
         var footer = new StackPanel { Margin = new Thickness(32, 16, 32, 20), Spacing = 12 }; var message = NativeWhite.Text("", "secondary"); footer.Children.Add(new ScrollViewer { Content = message, MaxHeight = 100 });
-        var footerButtons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right }; footerButtons.Children.Add(NativeWhite.Action("취소", Close)); var save = new Button { Content = "설정 저장" }; save.Classes.Add("primary"); footerButtons.Children.Add(save); footer.Children.Add(footerButtons);
+        var footerButtons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right }; var dismiss = NativeWhite.Action("취소", Close); footerButtons.Children.Add(dismiss); var save = new Button { Content = "설정 저장" }; save.Classes.Add("primary"); footerButtons.Children.Add(save); footer.Children.Add(footerButtons);
         var footerBorder = new Border { Child = footer, BorderBrush = NativeWhite.Divider, BorderThickness = new Thickness(0, 1, 0, 0) }; Grid.SetRow(footerBorder, 2); outer.Children.Add(footerBorder);
         StackPanel group = new();
         void Section(string name, string help)
@@ -29,7 +29,7 @@ public sealed class SettingsWindow : Window
         }
         TextBox Field(string label, string value, bool folder = false, bool picker = false)
         {
-            var caption = NativeWhite.Text(label); group.Children.Add(caption); var row = new Grid { ColumnDefinitions = new("*,Auto") }; var box = new TextBox { Text = value }; NativeWhite.Label(box, label); AutomationProperties.SetLabeledBy(box, caption); ToolTip.SetTip(box, label); row.Children.Add(box);
+            var caption = NativeWhite.Text(label); group.Children.Add(caption); var row = new Grid { ColumnDefinitions = new("*,Auto"), HorizontalAlignment = HorizontalAlignment.Stretch }; var box = new TextBox { Text = value, HorizontalAlignment = HorizontalAlignment.Stretch }; NativeWhite.Label(box, label); AutomationProperties.SetLabeledBy(box, caption); ToolTip.SetTip(box, label); row.Children.Add(box);
             if (picker || folder)
             {
                 var browse = new Button { Content = "찾아보기…", Margin = new Thickness(8, 0, 0, 0) }; NativeWhite.Label(browse, label + " 찾아보기"); Grid.SetColumn(browse, 1);
@@ -54,6 +54,8 @@ public sealed class SettingsWindow : Window
         var output = Field("자동 ZIP 저장 폴더", s.OutputDirectory, true);
         var sync = Field("모바일 v1 로컬 동기화 폴더", s.MobileDirectory, true);
         group.Children.Add(NativeWhite.Text("PC의 동기화 앱이 관리하는 폴더를 사용할 수 있습니다. Google 직접 로그인이나 업로드 확인 기능은 아닙니다.", "caption"));
+        Section("새 작업 처리", "일시중지는 진행 중인 작업과 기존 결과를 유지하고, 다음 작업의 시작만 막습니다.");
+        var paused = new CheckBox { Content = "새 작업 일시중지", IsChecked = s.QueuePaused }; NativeWhite.Label(paused, "새 작업 일시중지"); group.Children.Add(paused);
         Section("로컬 모델 설정", "별도 설치 도구가 만든 settings.json을 불러오거나, 설치한 실행 파일과 모델을 직접 선택하세요. 모델을 자동 다운로드하거나 실행하지 않습니다.");
         var import = new Button { Content = "프리셋 설정 가져오기…" }; import.Classes.Add("soft"); group.Children.Add(import); var availability = NativeWhite.Text("", "secondary"); group.Children.Add(availability);
         Section("전사 · Whisper", "프로필 이름과 실제 모델 파일을 각각 선택합니다. 새 설정은 기존 작업의 모델 스냅샷을 바꾸지 않습니다.");
@@ -72,7 +74,7 @@ public sealed class SettingsWindow : Window
         void UpdateAvailability()
         {
             var paths = new[] { whisperExe.Text, whisperModel.Text, llamaExe.Text, llamaModel.Text, ffmpeg.Text }; var missing = paths.Count(p => string.IsNullOrWhiteSpace(p) || !File.Exists(p));
-            availability.Text = missing > 0 ? $"필수 파일 {missing}개를 선택하거나 경로를 확인하세요." : "선택한 파일이 존재합니다. 실행 호환성과 결과 품질은 실제 처리 시 확인하세요.";
+            availability.Text = missing > 0 ? $"이 기기에서 처리기를 사용할 수 없습니다 · 필수 파일 {missing}개를 선택하거나 경로를 확인하세요." : "선택한 파일이 존재합니다. 실행 호환성과 결과 품질은 실제 처리 시 확인하세요.";
             availability.Foreground = missing > 0 ? NativeWhite.Danger : NativeWhite.Secondary;
             var gpu = compute.SelectedItem?.ToString() == "CUDA"; cuda.IsEnabled = gpu; layers.IsEnabled = gpu;
         }
@@ -99,8 +101,19 @@ public sealed class SettingsWindow : Window
             try
             {
                 if (closed) return;
-                var updated = store.Settings with { OutputDirectory = output.Text?.Trim() ?? "", MobileDirectory = sync.Text?.Trim() ?? "", Models = new() { WhisperProfile = whisperProfile.SelectedItem?.ToString() ?? "large-v3-turbo", NotesProfile = notesProfile.SelectedItem?.ToString() ?? "Qwen3.5 9B GGUF", WhisperExecutable = whisperExe.Text?.Trim() ?? "", WhisperModel = whisperModel.Text?.Trim() ?? "", LlamaExecutable = llamaExe.Text?.Trim() ?? "", LlamaModel = llamaModel.Text?.Trim() ?? "", FfmpegExecutable = ffmpeg.Text?.Trim() ?? "", Compute = compute.SelectedItem?.ToString() ?? "CPU", CudaConfirmed = cuda.IsChecked == true, GpuLayers = int.Parse(layers.Text ?? "20"), TimeoutMinutes = int.Parse(timeout.Text ?? "120") } };
-                store.UpdateSettings(updated); if (updated.MobileDirectory != "") mobile.Register(updated.MobileDirectory); Close();
+                var updated = store.Settings with { QueuePaused = paused.IsChecked == true, OutputDirectory = output.Text?.Trim() ?? "", MobileDirectory = sync.Text?.Trim() ?? "", Models = new() { WhisperProfile = whisperProfile.SelectedItem?.ToString() ?? "large-v3-turbo", NotesProfile = notesProfile.SelectedItem?.ToString() ?? "Qwen3.5 9B GGUF", WhisperExecutable = whisperExe.Text?.Trim() ?? "", WhisperModel = whisperModel.Text?.Trim() ?? "", LlamaExecutable = llamaExe.Text?.Trim() ?? "", LlamaModel = llamaModel.Text?.Trim() ?? "", FfmpegExecutable = ffmpeg.Text?.Trim() ?? "", Compute = compute.SelectedItem?.ToString() ?? "CPU", CudaConfirmed = cuda.IsChecked == true, GpuLayers = int.Parse(layers.Text ?? "20"), TimeoutMinutes = int.Parse(timeout.Text ?? "120") } };
+                store.UpdateSettings(updated); dismiss.Content = "닫기";
+                if (updated.MobileDirectory != "")
+                {
+                    try { mobile.Register(updated.MobileDirectory); }
+                    catch (Exception e)
+                    {
+                        message.Foreground = NativeWhite.Danger;
+                        message.Text = "설정은 저장되었습니다. 모바일 처리기 등록은 완료하지 못했습니다: " + e.Message + "\n경로/권한을 확인한 뒤 설정 저장으로 다시 시도하세요. 닫기는 저장된 설정을 되돌리지 않습니다.";
+                        return;
+                    }
+                }
+                Close();
             }
             catch (Exception e) { if (!closed) { message.Foreground = NativeWhite.Danger; message.Text = e.Message; } }
         };

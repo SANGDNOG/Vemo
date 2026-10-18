@@ -4,6 +4,7 @@ namespace Vemo.Core;
 
 public sealed class LibraryStore : IDisposable
 {
+    const string PurgePendingError = "Owned data deletion is incomplete. Retry permanent deletion.";
     readonly object gate = new(); readonly string root; readonly FileStream ownership; LibraryData data;
     public string Root => root;
     public LibraryStore(string root)
@@ -19,10 +20,11 @@ public sealed class LibraryStore : IDisposable
             foreach (var j in data.Jobs) { ValidateId(j.Id); SafeFiles.Title(j.Title); SafeFiles.RecordedAt(j.RecordedAt); if (j.ArtifactRevision != null) ValidateId(j.ArtifactRevision); if (j.PendingArtifactRevision != null) { ValidateId(j.PendingArtifactRevision); if (j.PendingArtifactRevision == j.ArtifactRevision) throw new InvalidDataException("Pending artifacts must not overwrite the committed revision."); } }
             foreach (var f in data.Folders) { ValidateId(f.Id); SafeFiles.Name(f.Name); }
             data.Jobs = data.Jobs.Select(j => j.State is JobState.Transcribing or JobState.GeneratingNotes ? j with { State = JobState.Queued, Error = "Recovered interrupted processing." } : j).ToList(); Save();
-            foreach (var j in data.Jobs.Where(j => j.State == JobState.Purged))
+            foreach (var j in data.Jobs.Where(j => j.State == JobState.Purged).ToArray())
             {
-                // A durable tombstone survives interrupted deletion. Unsafe leftovers stay suppressed and can be purged again.
-                try { SafeFiles.DeleteTree(Item(j.Id)); }
+                // Keep deletion intent and retry visibility durable, including for older tombstones.
+                var pending = j with { Error = PurgePendingError }; Replace(pending);
+                try { DeletePurged(pending); }
                 catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
             }
         }
@@ -79,7 +81,12 @@ public sealed class LibraryStore : IDisposable
     public void Move(IEnumerable<string> ids, string? folderId) { lock (gate) { CheckFolder(folderId); foreach (var id in ids.ToArray()) { var j = Get(id); if (j.State == JobState.Purged) continue; Replace(j with { FolderId = folderId, ExportPath = null }); } } }
     public void Trash(IEnumerable<string> ids) { lock (gate) { foreach (var id in ids.ToArray()) { var j = Get(id); if (j.State is JobState.Transcribing or JobState.GeneratingNotes) throw new InvalidOperationException("Cancel processing before trashing."); Replace(j with { Trashed = true }); } } }
     public void Restore(IEnumerable<string> ids) { lock (gate) { foreach (var id in ids.ToArray()) { var j = Get(id); if (j.State != JobState.Purged) Replace(j with { Trashed = false }); } } }
-    public void Purge(IEnumerable<string> ids) { lock (gate) { foreach (var id in ids.ToArray()) { var j = Get(id); if (!j.Trashed || j.State is JobState.Transcribing or JobState.GeneratingNotes) throw new InvalidOperationException("Only inactive trash may be purged."); Replace(j with { State = JobState.Purged }); SafeFiles.DeleteTree(Item(id)); } } }
+    public void Purge(IEnumerable<string> ids) { lock (gate) { foreach (var id in ids.ToArray()) { var j = Get(id); if (!j.Trashed || j.State is JobState.Transcribing or JobState.GeneratingNotes) throw new InvalidOperationException("Only inactive trash may be purged."); var pending = j with { State = JobState.Purged, Error = PurgePendingError }; Replace(pending); DeletePurged(pending); } } }
+    void DeletePurged(RecordingJob pending)
+    {
+        // Never restore the previous state: a failed delete may already have removed some owned files.
+        SafeFiles.DeleteTree(Item(pending.Id)); Replace(pending with { Error = null });
+    }
     static bool SameAsr(ModelSelection a, ModelSelection b) => a.WhisperExecutable == b.WhisperExecutable && a.WhisperModel == b.WhisperModel && a.FfmpegExecutable == b.FfmpegExecutable && a.Compute == b.Compute && (a.Compute != "CUDA" || a.CudaConfirmed == b.CudaConfirmed);
     public void Retry(IEnumerable<string> ids, bool useCurrentModels = false)
     {
