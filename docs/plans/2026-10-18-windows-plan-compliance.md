@@ -19,8 +19,10 @@ Sources: user-approved START_HERE.txt, IMPLEMENTATION_HANDOFF.md and exports at 
 - [x] Independent tests: wrong/duplicate state, denial, timeout, refresh rejection, disconnect races, wrong processor/hash, duplicate imports, network failure, keyboard/focus/selection, settings save/reopen, existing DnD/inference.
 - [x] Compare rendered app settings and main views with reference; report physical-DPI limits.
 - [x] Native Windows build/tests and side-by-side install after verification; user OAuth login approval only when concrete app is ready.
-- [ ] Record actual evidence and gaps on NAS; do not call mocked or headless results real account verification.
+- [x] Record actual evidence and gaps on NAS; do not call mocked or headless results real account verification.
 
 Real Google authorization requires user interaction; credentials must never appear in reports, commits or test fixtures. Existing authorized Desktop client configuration may be imported locally, not published. Mounted G: is not a substitute for OAuth.
 
 This slice is installed and tested; real account authorization/phone roundtrip and full product parity remain pending. See WINDOWS_PLAN_AUDIT.md and WINDOWS_GOOGLE_SETUP.md.
+
+NAS record verified: /mnt/nas/codex-worklog/records/2026/10/2026-10-18-151543-vemo-windows-oauth-native-white (mounted CIFS, readback hashes and INDEX checked).
