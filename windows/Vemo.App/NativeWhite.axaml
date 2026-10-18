@@ -77,4 +77,17 @@
   <Style Selector="Button:focus-visible"><Setter Property="BorderBrush" Value="#6D5BB5" /><Setter Property="BorderThickness" Value="2" /></Style>
   <Style Selector="ListBoxItem:focus-visible /template/ ContentPresenter"><Setter Property="BorderBrush" Value="#6D5BB5" /><Setter Property="BorderThickness" Value="1" /></Style>
   <Style Selector="TextBox:focus"><Setter Property="BorderBrush" Value="#6D5BB5" /><Setter Property="BorderThickness" Value="1" /></Style>
+  <Style Selector=".settings-view Border.settings-group"><Setter Property="BorderBrush" Value="#E8E8ED" /><Setter Property="BorderThickness" Value="1" /><Setter Property="CornerRadius" Value="12" /><Setter Property="Background" Value="White" /><Setter Property="ClipToBounds" Value="True" /></Style>
+  <Style Selector=".settings-view Grid.settings-row"><Setter Property="Margin" Value="16,0" /></Style>
+  <Style Selector=".settings-view StackPanel.settings-field"><Setter Property="Margin" Value="16,12" /></Style>
+  <Style Selector=".settings-view TextBox.settings-path"><Setter Property="Background" Value="Transparent" /><Setter Property="BorderThickness" Value="0" /><Setter Property="Padding" Value="0,4" /><Setter Property="MinHeight" Value="28" /><Setter Property="FontSize" Value="13" /><Setter Property="Foreground" Value="#6B6D78" /></Style>
+  <Style Selector=".settings-view Expander.settings-advanced"><Setter Property="BorderThickness" Value="0" /><Setter Property="Margin" Value="0,4" /></Style>
+  <Style Selector=".settings-view Button.quiet"><Setter Property="Foreground" Value="#6B6D78" /><Setter Property="Padding" Value="10,6" /></Style>
+  <Style Selector=".settings-view Button.compact"><Setter Property="Padding" Value="10,6" /><Setter Property="MinHeight" Value="32" /><Setter Property="FontSize" Value="13" /></Style>
+  <Style Selector=".settings-view Button:disabled"><Setter Property="Background" Value="#F7F7FA" /><Setter Property="Foreground" Value="#6B6D78" /><Setter Property="BorderBrush" Value="#E8E8ED" /><Setter Property="Opacity" Value="0.6" /></Style>
+  <Style Selector=".settings-view Button:disabled /template/ ContentPresenter"><Setter Property="Background" Value="#F7F7FA" /><Setter Property="Foreground" Value="#6B6D78" /><Setter Property="BorderBrush" Value="#E8E8ED" /></Style>
+  <Style Selector=".settings-view Expander.settings-advanced"><Setter Property="Background" Value="Transparent" /><Setter Property="Padding" Value="0,8,0,0" /><Setter Property="HorizontalContentAlignment" Value="Stretch" /></Style>
+  <Style Selector=".settings-view Expander.settings-advanced /template/ ToggleButton#ExpanderHeader"><Setter Property="Background" Value="Transparent" /><Setter Property="BorderThickness" Value="0" /><Setter Property="Foreground" Value="#6B6D78" /><Setter Property="Padding" Value="16,8,0,8" /></Style>
+  <Style Selector=".settings-view Expander.settings-advanced /template/ ToggleButton#ExpanderHeader /template/ Border#ToggleButtonBackground"><Setter Property="Background" Value="Transparent" /><Setter Property="BorderThickness" Value="0" /></Style>
+  <Style Selector=".settings-view Expander.settings-advanced /template/ Border#ExpanderContent"><Setter Property="Background" Value="Transparent" /><Setter Property="BorderThickness" Value="0" /></Style>
 </Styles>

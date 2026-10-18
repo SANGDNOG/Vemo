@@ -24,6 +24,18 @@ The [license inventory](licenses/index.json) maps 32 NuGet dependency entries (i
 
 Embedded package licenses/notices were copied byte-for-byte. Missing embedded licenses were retrieved only from explicit public license URLs, pinned to the package's declared repository commit. The older `xunit.abstractions` nuspec declares `xunit/xunit/master/license.txt` without a source commit: its declared license URL was resolved to immutable license snapshot `c54cc52ffb275c81afed022521870193bbca6c39`. That is a license snapshot pin, not a claim about the package's source commit. The full Apache 2.0 text comes from the Apache Software Foundation's license URL. Exact URLs and content hashes are in the inventory.
 
+## Windows audio playback
+
+NAudio.Wasapi **2.3.0** and its NAudio.Core **2.3.0** dependency are distributed under the MIT license. Their NuGet packages declare source repository commit `c89fee940ee6f8d7374d18714a6b85d8b7a18ab0` in [naudio/NAudio](https://github.com/naudio/NAudio/tree/c89fee940ee6f8d7374d18714a6b85d8b7a18ab0). The complete upstream [license text](https://github.com/naudio/NAudio/blob/c89fee940ee6f8d7374d18714a6b85d8b7a18ab0/license.txt) is reproduced below. These playback dependencies supplement the earlier license inventory above; its counts do not yet include them. Media Foundation and WASAPI are Windows system components and are not bundled by Vemo.
+
+Copyright 2020 Mark Heath
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
 ## Separately selected inference runtimes and models
 
 This publication does not redistribute model weights or inference-runtime archives. `Vemo.Provision` downloads a user's selected artifacts directly from the upstream pinned HTTPS URLs and verifies the pinned size/SHA-256. Keep all dependency and license files from each extracted archive together. Hash verification is not code signing or a license grant.

@@ -21,6 +21,10 @@ public sealed record ModelSelection
 public sealed record ModelCatalogueEntry(string Id, string DisplayName, string Repository, string Revision, string FileName, string Sha256, string License, string? MemoryEstimate);
 public sealed record AppSettings
 {
+    public string InputDirectory { get; init; } = "";
+    public bool AutoExport { get; init; } = true;
+    public bool RequireExternalPower { get; init; }
+    public bool CloseToTray { get; init; }
     public string OutputDirectory { get; init; } = "";
     public string MobileDirectory { get; init; } = "";
     public bool QueuePaused { get; init; }

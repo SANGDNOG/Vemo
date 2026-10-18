@@ -42,6 +42,12 @@ public sealed class LibraryStore : IDisposable
         {
             if (settings.OutputDirectory != "") SafeFiles.Disjoint(root, settings.OutputDirectory);
             if (settings.MobileDirectory != "") { SafeFiles.Disjoint(root, settings.MobileDirectory); if (settings.OutputDirectory != "") SafeFiles.Disjoint(settings.OutputDirectory, settings.MobileDirectory); }
+            if (settings.InputDirectory != "")
+            {
+                SafeFiles.Disjoint(root, settings.InputDirectory);
+                if (settings.OutputDirectory != "") SafeFiles.Disjoint(settings.InputDirectory, settings.OutputDirectory);
+                if (settings.MobileDirectory != "") SafeFiles.Disjoint(settings.InputDirectory, settings.MobileDirectory);
+            }
             if (settings.Models.Compute is not ("CPU" or "CUDA") || settings.Models.TimeoutMinutes is < 1 or > 1440 || settings.Models.GpuLayers is < 0 or > 256) throw new InvalidDataException("Invalid runtime settings.");
             data.Settings = settings; Save();
         }
@@ -74,9 +80,70 @@ public sealed class LibraryStore : IDisposable
     void Replace(RecordingJob job) { var i = data.Jobs.FindIndex(j => j.Id == job.Id); var previous = data.Jobs[i]; data.Jobs[i] = job; try { Save(); } catch { data.Jobs[i] = previous; throw; } }
     public void SetRecordedAt(string id, string? recordedAt) { lock (gate) { SafeFiles.RecordedAt(recordedAt); var j = Get(id); if (j.Mobile != null && j.RecordedAt != recordedAt) throw new InvalidOperationException("Mobile recording date is immutable."); Replace(j with { RecordedAt = recordedAt, ExportPath = null }); } }
     public void Rename(string id, string title) { lock (gate) { SafeFiles.Title(title); Replace(Get(id) with { Title = title, ExportPath = null }); } }
-    public LibraryFolder CreateFolder(string name, string? parentId) { lock (gate) { SafeFiles.Name(name); CheckFolder(parentId); if (data.Folders.Any(f => f.ParentId == parentId && f.Name.Equals(name, StringComparison.OrdinalIgnoreCase))) throw new IOException("Folder name exists."); var f = new LibraryFolder(Guid.NewGuid().ToString(), name, parentId); data.Folders.Add(f); Save(); return f; } }
+    public LibraryFolder CreateFolder(string name, string? parentId)
+    {
+        lock (gate)
+        {
+            SafeFiles.Name(name); CheckFolder(parentId);
+            if (data.Folders.Any(f => f.ParentId == parentId && f.Name.Equals(name, StringComparison.OrdinalIgnoreCase))) throw new IOException("Folder name exists.");
+            var folder = new LibraryFolder(Guid.NewGuid().ToString(), name, parentId);
+            SaveFolders([.. data.Folders, folder], data.Jobs); return folder;
+        }
+    }
     void CheckFolder(string? id) { if (id != null && !data.Folders.Any(f => f.Id == id)) throw new InvalidDataException("Unknown folder."); }
-    public void MoveFolder(string id, string? parentId) { lock (gate) { CheckFolder(id); CheckFolder(parentId); var p = parentId; while (p != null) { if (p == id) throw new InvalidDataException("Folder cycle."); p = data.Folders.Single(f => f.Id == p).ParentId; } var i = data.Folders.FindIndex(f => f.Id == id); var f = data.Folders[i]; if (data.Folders.Any(x => x.Id != id && x.ParentId == parentId && x.Name.Equals(f.Name, StringComparison.OrdinalIgnoreCase))) throw new IOException("Folder name exists."); data.Folders[i] = f with { ParentId = parentId }; Save(); } }
+    LibraryFolder GetFolder(string id) => data.Folders.SingleOrDefault(f => f.Id == id) ?? throw new InvalidDataException("Unknown folder.");
+    HashSet<string> FolderTree(string id)
+    {
+        var children = data.Folders.Where(f => f.ParentId != null).ToLookup(f => f.ParentId!);
+        var ids = new HashSet<string>(); var pending = new Stack<string>(); pending.Push(id);
+        while (pending.TryPop(out var current))
+        {
+            if (!ids.Add(current)) continue;
+            foreach (var child in children[current]) pending.Push(child.Id);
+        }
+        return ids;
+    }
+    void SaveFolders(List<LibraryFolder> folders, List<RecordingJob> jobs)
+    {
+        // Persist filing and export invalidation together; keep both snapshots on failure.
+        var previousFolders = data.Folders; var previousJobs = data.Jobs;
+        data.Folders = folders; data.Jobs = jobs;
+        try { Save(); } catch { data.Folders = previousFolders; data.Jobs = previousJobs; throw; }
+    }
+    public void RenameFolder(string id, string name)
+    {
+        lock (gate)
+        {
+            var folder = GetFolder(id); SafeFiles.Name(name);
+            if (data.Folders.Any(f => f.Id != id && f.ParentId == folder.ParentId && f.Name.Equals(name, StringComparison.OrdinalIgnoreCase))) throw new IOException("Folder name exists.");
+            if (folder.Name == name) return;
+            var affected = FolderTree(id);
+            SaveFolders(data.Folders.Select(f => f.Id == id ? f with { Name = name } : f).ToList(),
+                data.Jobs.Select(j => j.FolderId != null && affected.Contains(j.FolderId) ? j with { ExportPath = null } : j).ToList());
+        }
+    }
+    public void DeleteFolder(string id)
+    {
+        lock (gate)
+        {
+            GetFolder(id); var affected = FolderTree(id);
+            // Folder deletion changes filing only, including trash and purge tombstones.
+            SaveFolders(data.Folders.Where(f => !affected.Contains(f.Id)).ToList(),
+                data.Jobs.Select(j => j.FolderId != null && affected.Contains(j.FolderId) ? j with { FolderId = null, ExportPath = null } : j).ToList());
+        }
+    }
+    public void MoveFolder(string id, string? parentId)
+    {
+        lock (gate)
+        {
+            var folder = GetFolder(id); CheckFolder(parentId); var affected = FolderTree(id);
+            if (parentId != null && affected.Contains(parentId)) throw new InvalidDataException("Folder cycle.");
+            if (data.Folders.Any(f => f.Id != id && f.ParentId == parentId && f.Name.Equals(folder.Name, StringComparison.OrdinalIgnoreCase))) throw new IOException("Folder name exists.");
+            if (folder.ParentId == parentId) return;
+            SaveFolders(data.Folders.Select(f => f.Id == id ? f with { ParentId = parentId } : f).ToList(),
+                data.Jobs.Select(j => j.FolderId != null && affected.Contains(j.FolderId) ? j with { ExportPath = null } : j).ToList());
+        }
+    }
     public void Move(IEnumerable<string> ids, string? folderId) { lock (gate) { CheckFolder(folderId); foreach (var id in ids.ToArray()) { var j = Get(id); if (j.State == JobState.Purged) continue; Replace(j with { FolderId = folderId, ExportPath = null }); } } }
     public void Trash(IEnumerable<string> ids) { lock (gate) { foreach (var id in ids.ToArray()) { var j = Get(id); if (j.State is JobState.Transcribing or JobState.GeneratingNotes) throw new InvalidOperationException("Cancel processing before trashing."); Replace(j with { Trashed = true }); } } }
     public void Restore(IEnumerable<string> ids) { lock (gate) { foreach (var id in ids.ToArray()) { var j = Get(id); if (j.State != JobState.Purged) Replace(j with { Trashed = false }); } } }

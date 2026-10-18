@@ -44,6 +44,7 @@ public sealed partial class MainWindow
     {
         dragPress = null; dragCandidate = null;
         if (closing || dragging || !e.GetCurrentPoint(this).Properties.IsLeftButtonPressed) return;
+        if ((e.Source as Visual)?.GetSelfAndVisualAncestors().TakeWhile(v => v is not ListBoxItem).Any(v => v is Button) == true) return;
         var row = DragRow(e.Source);
         if (sender == folders && row?.Content is FolderChoice { Id: { } folderId })
             dragCandidate = new(this, folderId, []);

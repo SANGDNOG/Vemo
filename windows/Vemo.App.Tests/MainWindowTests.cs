@@ -1,3 +1,4 @@
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Headless.XUnit;
 using Avalonia.Input;
@@ -101,17 +102,22 @@ public sealed class MainWindowTests
     }
 
     [AvaloniaFact]
-    public async Task Settings_click_opens_real_settings_and_cancel_preserves_configuration()
+    public async Task Settings_click_opens_right_pane_and_cancel_discards_draft_on_reopen()
     {
         await using var ui = new UiFixture();
         var before = ui.Store.Settings;
         Click(ui.Window, Button(ui.Window, "설정"));
-        var dialog = Assert.IsType<SettingsWindow>(Assert.Single(ui.Window.OwnedWindows));
+        var dialog = ui.Window;
+        var pane = SettingsTestInput.AssertOpen(ui);
         var output = Named<TextBox>(dialog, "자동 ZIP 저장 폴더");
-        Type(dialog, output, "/unused-test-output");
+        SettingsTestInput.Edit(ui, output, "/unused-test-output");
         Click(dialog, Button(dialog, "취소"));
-        await Until(() => ui.Window.OwnedWindows.Count == 0, "Settings cancel should close its dialog.");
+        await Until(() => !SettingsTestInput.IsOpen(ui), "Settings cancel should remove its right pane.");
         Assert.Equal(before, ui.Store.Settings);
+        Click(ui.Window, Button(ui.Window, "설정"));
+        Assert.NotSame(pane, SettingsTestInput.AssertOpen(ui));
+        Assert.Equal(before.OutputDirectory, Named<TextBox>(ui.Window, "자동 ZIP 저장 폴더").Text);
+        Click(ui.Window, Button(ui.Window, "취소"));
     }
 
     [AvaloniaFact]
@@ -119,14 +125,23 @@ public sealed class MainWindowTests
     {
         await using var ui = new UiFixture();
         Click(ui.Window, Button(ui.Window, "설정"));
-        var dialog = Assert.Single(ui.Window.OwnedWindows);
+        var dialog = ui.Window;
+        var pane = SettingsTestInput.AssertOpen(ui);
+        SettingsTestInput.ShowAdvanced(ui);
         var timeout = Named<TextBox>(dialog, "프로세스별 시간 제한 · 분");
-        timeout.SelectAll();
-        Type(dialog, timeout, "60");
+        SettingsTestInput.Edit(ui, timeout, "60");
         Click(dialog, Button(dialog, "설정 저장"));
-        await Until(() => ui.Window.OwnedWindows.Count == 0, "Valid settings should save and close.");
+        await Until(() => !SettingsTestInput.IsOpen(ui), "Valid settings should save and close.");
         Assert.Equal(60, ui.Store.Settings.Models.TimeoutMinutes);
         Assert.True(ui.Store.Settings.QueuePaused);
+        Click(ui.Window, Button(ui.Window, "설정"));
+        SettingsTestInput.AssertOpen(ui);
+        SettingsTestInput.ShowAdvanced(ui);
+        Assert.Equal("60", Named<TextBox>(ui.Window, "프로세스별 시간 제한 · 분").Text);
+        Click(ui.Window, Button(ui.Window, "취소"));
+        await ui.CloseAsync();
+        using var reopened = new LibraryStore(ui.LibraryRoot);
+        Assert.Equal(60, reopened.Settings.Models.TimeoutMinutes);
     }
 
     [AvaloniaFact]
@@ -135,13 +150,15 @@ public sealed class MainWindowTests
         await using var ui = new UiFixture();
         var before = ui.Store.Settings;
         Click(ui.Window, Button(ui.Window, "설정"));
-        var dialog = Assert.Single(ui.Window.OwnedWindows);
+        var dialog = ui.Window;
+        var pane = SettingsTestInput.AssertOpen(ui);
+        SettingsTestInput.ShowAdvanced(ui);
         var timeout = Named<TextBox>(dialog, "프로세스별 시간 제한 · 분");
-        timeout.SelectAll();
-        Type(dialog, timeout, "0");
+        SettingsTestInput.Edit(ui, timeout, "0");
         Click(dialog, Button(dialog, "설정 저장"));
-        Assert.True(dialog.IsVisible);
+        Assert.Same(pane, SettingsTestInput.AssertOpen(ui));
         Assert.Equal(before, ui.Store.Settings);
+        Assert.True(timeout.IsFocused);
         Assert.Contains(dialog.GetVisualDescendants().OfType<TextBlock>(), t => t.IsVisible && t.Classes.Contains("error") && !string.IsNullOrEmpty(t.Text));
         Click(dialog, Button(dialog, "취소"));
     }
@@ -157,10 +174,11 @@ public sealed class MainWindowTests
         var markerText = System.Text.Json.JsonSerializer.Serialize(new { schema_version = 1, processor_id = Guid.NewGuid().ToString(), display_name = "Other PC" });
         File.WriteAllText(marker, markerText);
         Click(ui.Window, Button(ui.Window, "설정"));
-        var dialog = Assert.Single(ui.Window.OwnedWindows);
-        Type(dialog, Named<TextBox>(dialog, "모바일 v1 로컬 동기화 폴더"), foreign);
+        var dialog = ui.Window;
+        var pane = SettingsTestInput.AssertOpen(ui);
+        SettingsTestInput.Edit(ui, Named<TextBox>(dialog, "모바일 v1 로컬 동기화 폴더"), foreign);
         Click(dialog, Button(dialog, "설정 저장"));
-        Assert.True(dialog.IsVisible);
+        Assert.Same(pane, SettingsTestInput.AssertOpen(ui));
         Assert.Equal(before, ui.Store.Settings);
         Assert.Equal(markerText, File.ReadAllText(marker));
         Assert.Contains(dialog.GetVisualDescendants().OfType<TextBlock>(), t => t.Text?.Contains("다른 PC") == true);
@@ -168,6 +186,68 @@ public sealed class MainWindowTests
         await ui.CloseAsync();
         using var reopened = new LibraryStore(ui.LibraryRoot);
         Assert.Equal(before, reopened.Settings);
+    }
+
+    [AvaloniaFact]
+    public async Task Settings_escape_discards_draft_and_returns_focus_to_invoker()
+    {
+        await using var ui = new UiFixture();
+        ui.Navigate(1); ui.SelectJob();
+        var selected = Assert.Single(ui.Jobs.SelectedItems!.Cast<object>());
+        var opener = Button(ui.Window, "설정");
+        Assert.True(opener.Focus());
+        Key(ui.Window, Avalonia.Input.Key.Enter);
+        var pane = SettingsTestInput.AssertOpen(ui);
+        Assert.Contains(pane.GetVisualDescendants().OfType<Control>(), c => c.IsFocused);
+        var output = Named<TextBox>(ui.Window, "자동 ZIP 저장 폴더");
+        SettingsTestInput.Edit(ui, output, "/discard-this-draft");
+        Key(ui.Window, Avalonia.Input.Key.Escape);
+        await Until(() => !SettingsTestInput.IsOpen(ui), "Escape must close embedded settings.");
+        Assert.Same(selected, Assert.Single(ui.Jobs.SelectedItems!.Cast<object>()));
+        Assert.Equal("", ui.Store.Settings.OutputDirectory);
+        Assert.True(opener.IsFocused, "Closing settings must restore focus to the invoking action.");
+        Key(ui.Window, Avalonia.Input.Key.Enter);
+        SettingsTestInput.AssertOpen(ui);
+        Assert.Equal("", Named<TextBox>(ui.Window, "자동 ZIP 저장 폴더").Text);
+        Click(ui.Window, Button(ui.Window, "취소"));
+    }
+
+    [AvaloniaTheory]
+    [InlineData(980, 540)]
+    [InlineData(1200, 720)]
+    public async Task Settings_policy_controls_save_and_reopen_at_supported_window_sizes(int width, int height)
+    {
+        await using var ui = new UiFixture();
+        ui.Window.Width = width; ui.Window.Height = height; Pump();
+        Click(ui.Window, Button(ui.Window, "설정"));
+        SettingsTestInput.AssertOpen(ui);
+        var input = Named<TextBox>(ui.Window, "오디오 입력 폴더");
+        var syntheticInput = Path.Combine(Path.GetDirectoryName(ui.LibraryRoot)!, "watched-empty");
+        Directory.CreateDirectory(syntheticInput);
+        SettingsTestInput.Edit(ui, input, syntheticInput);
+        var archive = Named<ToggleSwitch>(ui.Window, "완료된 녹음 자동 ZIP 저장");
+        archive.BringIntoView(); Pump();
+        Assert.True(archive.Focus()); Key(ui.Window, Avalonia.Input.Key.Space);
+        Assert.False(archive.IsChecked);
+        var power = Named<ToggleSwitch>(ui.Window, "전원 연결 시에만 처리");
+        power.BringIntoView(); Pump();
+        Assert.True(power.Focus()); Key(ui.Window, Avalonia.Input.Key.Space);
+        Assert.True(power.IsChecked);
+        var save = Button(ui.Window, "설정 저장");
+        var position = save.TranslatePoint(new Avalonia.Point(save.Bounds.Width / 2, save.Bounds.Height / 2), ui.Window);
+        Assert.NotNull(position);
+        Assert.InRange(position.Value.Y, 0, ui.Window.ClientSize.Height);
+        Click(ui.Window, save);
+        await Until(() => !SettingsTestInput.IsOpen(ui), "Settings footer must remain clickable at supported window sizes.");
+        Assert.Equal(syntheticInput, ui.Store.Settings.InputDirectory);
+        Assert.False(ui.Store.Settings.AutoExport);
+        Assert.True(ui.Store.Settings.RequireExternalPower);
+        Click(ui.Window, Button(ui.Window, "설정"));
+        SettingsTestInput.AssertOpen(ui);
+        Assert.Equal(syntheticInput, Named<TextBox>(ui.Window, "오디오 입력 폴더").Text);
+        Assert.False(Named<ToggleSwitch>(ui.Window, "완료된 녹음 자동 ZIP 저장").IsChecked);
+        Assert.True(Named<ToggleSwitch>(ui.Window, "전원 연결 시에만 처리").IsChecked);
+        Click(ui.Window, Button(ui.Window, "취소"));
     }
 
     [AvaloniaFact]

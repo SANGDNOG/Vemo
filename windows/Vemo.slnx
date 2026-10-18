@@ -3,6 +3,8 @@
   <Project Path="Vemo.App/Vemo.App.csproj" />
   <Project Path="Vemo.Core.Tests/Vemo.Core.Tests.csproj" />
   <Project Path="Vemo.Core/Vemo.Core.csproj" />
+  <Project Path="Vemo.StartupTray.Tests/Vemo.StartupTray.Tests.csproj" />
+  <Project Path="Vemo.Playback.Tests/Vemo.Playback.Tests.csproj" />
   <Project Path="Vemo.Provision.Tests/Vemo.Provision.Tests.csproj" />
   <Project Path="Vemo.Provision/Vemo.Provision.csproj" />
   <Project Path="Vemo.Validation/Vemo.Validation.csproj" />

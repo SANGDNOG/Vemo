@@ -87,7 +87,7 @@ public sealed class JobRunner(LibraryStore store, IInferenceEngine engine)
             ct.ThrowIfCancellationRequested(); store.SaveTranscript(id, transcript);
             var sources = SourceLines(transcript); var json = await engine.GenerateNotesAsync(context, sources, ct); ct.ThrowIfCancellationRequested(); var notes = NotesDocument.Parse(json, sources);
             SafeFiles.Atomic(Path.Combine(context.WorkDirectory, "notes.json"), notes.ToJson()); store.Complete(id, notes.Markdown(store.Get(id).Title));
-            try { store.Export(id); } catch (Exception e) { store.SetExportError(id, e.Message); }
+            if (store.Settings.AutoExport) { try { store.Export(id); } catch (Exception e) { store.SetExportError(id, e.Message); } }
             return true;
         }
         catch (OperationCanceledException) { if (id != null) store.Fail(id, "Processing cancelled; existing transcript is preserved.", true); return id != null; }

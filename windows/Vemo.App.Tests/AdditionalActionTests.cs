@@ -1,6 +1,7 @@
 using Avalonia.Controls;
 using Avalonia.Headless.XUnit;
 using Avalonia.Input;
+using Avalonia.VisualTree;
 using Vemo.Core;
 using Xunit;
 using static Vemo.App.Tests.UiFixture;
@@ -9,6 +10,22 @@ namespace Vemo.App.Tests;
 
 public sealed class AdditionalActionTests
 {
+    [AvaloniaFact]
+    public async Task Import_plus_has_accessible_name_and_folder_move_is_context_only()
+    {
+        await using var ui = new UiFixture();
+        var import = Named<Button>(ui.Window, "오디오 파일 가져오기");
+        Assert.Equal("+", import.Content);
+        Assert.True(import.IsEffectivelyVisible && import.IsEnabled);
+        Assert.InRange(import.Bounds.Width, 28, 48);
+        Assert.InRange(import.Bounds.Height, 28, 48);
+        Assert.DoesNotContain(ui.Window.GetVisualDescendants().OfType<Button>(), b => Equals(b.Content, "선택 폴더 이동…"));
+        ui.SelectFolder();
+        RightClick(ui.Window, Realize(ui.Folders, ui.Folders.SelectedIndex));
+        Assert.True(Menu(ui.Folders.ContextMenu!, "선택 폴더 이동…").IsEnabled);
+        Key(ui.Window, Avalonia.Input.Key.Escape);
+    }
+
     [AvaloniaFact]
     public async Task Empty_library_repeated_navigation_preserves_empty_state_and_available_actions()
     {
@@ -37,14 +54,15 @@ public sealed class AdditionalActionTests
     }
 
     [AvaloniaFact]
-    public async Task Folder_move_button_excludes_self_and_descendants_and_moves_to_selected_parent()
+    public async Task Folder_context_move_excludes_self_and_descendants_and_moves_to_selected_parent()
     {
         await using var ui = new UiFixture();
         var parent = ui.Store.CreateFolder("프로젝트", null);
         var child = ui.Store.CreateFolder("하위", ui.FolderId);
         await Until(() => ui.Folders.ItemCount == 3, "The real refresh timer must display added folders.");
         ui.SelectFolder(ui.Folders.Items.Cast<object>().ToList().FindIndex(f => f.ToString() == "회의"));
-        Click(ui.Window, Button(ui.Window, "선택 폴더 이동…"));
+        RightClick(ui.Window, Realize(ui.Folders, ui.Folders.SelectedIndex));
+        ActivateMenu(ui.Window, ui.Folders.ContextMenu!, "선택 폴더 이동…");
         var dialog = ui.Dialog("폴더 이동");
         var choices = Named<ComboBox>(dialog, "이동할 폴더");
         Assert.Equal(new[] { "미분류 / 최상위", "프로젝트" }, choices.Items.Cast<object>().Select(x => x.ToString()));
@@ -106,6 +124,39 @@ public sealed class AdditionalActionTests
     }
 
     [AvaloniaFact]
+    public async Task Folder_manage_button_retargets_rename_and_collapse_preserves_child_for_drop()
+    {
+        await using var ui = new UiFixture();
+        var child = ui.Store.CreateFolder("하위", ui.FolderId);
+        var other = ui.Store.CreateFolder("프로젝트", null);
+        await Until(() => ui.Folders.ItemCount == 3, "Timer must display both root folders and the child.");
+        ui.SelectFolder(ui.Folders.Items.Cast<object>().ToList().FindIndex(f => f.ToString() == "회의"));
+        Click(ui.Window, Named<Button>(ui.Window, "프로젝트 폴더 관리"));
+        ActivateMenu(ui.Window, ui.Folders.ContextMenu!, "이름 변경…");
+        var dialog = ui.Dialog("폴더 이름 변경");
+        var name = Named<TextBox>(dialog, "폴더 이름");
+        Assert.Equal("프로젝트", name.Text);
+        name.SelectAll(); Type(dialog, name, "이름 변경됨");
+        Click(dialog, Button(dialog, "저장"));
+        await Until(() => ui.Store.Folders.Single(f => f.Id == other.Id).Name == "이름 변경됨", "Manage action must rename the clicked folder.");
+        Assert.Equal("회의", ui.Store.Folders.Single(f => f.Id == ui.FolderId).Name);
+        Click(ui.Window, Named<Button>(ui.Window, "회의 하위 폴더 접기"));
+        await Until(() => ui.Folders.ItemCount == 2, "Collapse must hide descendants from the tree.");
+        Assert.DoesNotContain(ui.Folders.Items.Cast<object>(), f => f.ToString() == "하위");
+        Assert.Equal(ui.FolderId, ui.Store.Folders.Single(f => f.Id == child.Id).ParentId);
+        using (var data = DragDropTestInput.Internal(ui, recordingIds: [ui.UnfiledId]))
+        {
+            var target = DragDropTestInput.Folder(ui, "회의");
+            Assert.Equal(DragDropEffects.Move, DragDropTestInput.Route(target, data, DragDrop.DragOverEvent).DragEffects);
+            DragDropTestInput.RawDrop(ui.Window, target, data);
+            await Until(() => ui.Store.Get(ui.UnfiledId).FolderId == ui.FolderId, "Collapsed parent remains a valid drop destination.");
+        }
+        Click(ui.Window, Named<Button>(ui.Window, "회의 하위 폴더 펼치기"));
+        await Until(() => ui.Folders.ItemCount == 3, "Expand must restore the same child.");
+        Assert.Contains(ui.Folders.Items.Cast<object>(), f => f.ToString() == "하위");
+    }
+
+    [AvaloniaFact]
     public async Task Untouched_detail_title_tracks_background_store_rename()
     {
         await using var ui = new UiFixture();
@@ -138,25 +189,31 @@ public sealed class AdditionalActionTests
     [InlineData("create")]
     [InlineData("move")]
     [InlineData("settings")]
-    public async Task Modal_dialog_survives_real_timer_refresh_and_preserves_selected_recording(string action)
+    public async Task Editor_survives_real_timer_refresh_and_preserves_selected_recording(string action)
     {
         await using var ui = new UiFixture();
         ui.SelectJob();
         Click(ui.Window, Button(ui.Window, action == "create" ? "+ 폴더" : action == "move" ? "선택 이동…" : "설정"));
-        var dialog = Assert.Single(ui.Window.OwnedWindows);
+        var dialog = action == "settings" ? ui.Window : Assert.Single(ui.Window.OwnedWindows);
+        var settings = action == "settings" ? SettingsTestInput.AssertOpen(ui) : null;
         TextBox? input = action == "create" ? Named<TextBox>(dialog, "새 폴더 이름") : action == "settings" ? Named<TextBox>(dialog, "자동 ZIP 저장 폴더") : null;
-        if (input != null) Type(dialog, input, "draft-value");
+        if (input != null)
+        {
+            if (action == "settings") SettingsTestInput.Edit(ui, input, "draft-value");
+            else Type(dialog, input, "draft-value");
+        }
         // Mutate the real window-owned store from background work. Observe the
         // actual 1-second DispatcherTimer; never invoke the private Refresh method.
         await Task.Run(() => ui.Store.Rename(ui.UnfiledId, "백그라운드 갱신"));
         await Until(() => ui.VisibleTitles().Contains("백그라운드 갱신"), "A real timer refresh must run while the modal dialog remains open.");
         Assert.True(dialog.IsVisible);
-        Assert.Same(dialog, Assert.Single(ui.Window.OwnedWindows));
+        if (action == "settings") Assert.Same(settings, SettingsTestInput.AssertOpen(ui));
+        else Assert.Same(dialog, Assert.Single(ui.Window.OwnedWindows));
         Assert.Single(ui.Jobs.SelectedItems!);
         Assert.Equal("백그라운드 갱신", Named<TextBox>(ui.Window, "녹음 제목").Text);
         if (input != null) Assert.Equal("draft-value", input.Text);
         Click(dialog, Button(dialog, action == "create" ? "만들기" : "취소"));
-        await Until(() => ui.Window.OwnedWindows.Count == 0, "The dialog must still respond after a background refresh.");
+        await Until(() => ui.Window.OwnedWindows.Count == 0 && !SettingsTestInput.IsOpen(ui), "The editor must still respond after a background refresh.");
         if (action == "create") Assert.Contains(ui.Store.Folders, f => f.Name == "draft-value");
         Assert.Single(ui.Jobs.SelectedItems!);
     }
