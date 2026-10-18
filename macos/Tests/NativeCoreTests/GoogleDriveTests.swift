@@ -135,6 +135,103 @@ final class GoogleDriveTests: XCTestCase, @unchecked Sendable {
         let requests = await retry.captured()
         XCTAssertEqual(requests.map(\.httpMethod), ["GET", "GET"])
     }
+    func testForeignNameCollisionJournalsDistinctRootAndResumesLostCreate() async throws {
+        let directory = try temporary(), name = "Vemo 테스트", chosen = "Vemo 테스트 (11111111)"
+        var foreign = root("foreign", name: name)
+        foreign["properties"] = ["vemoProtocol": "1", "vemoKind": "root",
+                                 "vemoProcessor": "22222222-2222-4222-8222-222222222222"]
+        let fixture = DriveFixture([
+            try .init(["user": ["permissionId": "account1"]]), try .init(["files": [foreign]]),
+            try .init(["ids": ["reserved"]]), try .init(404, ["error": "missing"]),
+            try .init(503, ["error": "lost acknowledgement"])
+        ])
+        let mirror = GoogleDriveMirror(stateDirectory: directory, client: client(fixture))
+        do { _ = try await mirror.createRoot(displayName: name, processorID: processor); XCTFail("lost ACK") }
+        catch { XCTAssertEqual(error as? GoogleDriveError, .http(503)) }
+        let journal = try JSONSerialization.jsonObject(with: Data(contentsOf: directory.appendingPathComponent("drive.json"))) as! [String: Any]
+        let intent = journal["rootIntent"] as! [String: Any]
+        XCTAssertEqual(intent["name"] as? String, chosen)
+        XCTAssertEqual(intent["id"] as? String, "reserved")
+        let sent = await fixture.captured()
+        XCTAssertEqual(sent.map(\.httpMethod), ["GET", "GET", "GET", "GET", "POST"])
+        let body = try JSONSerialization.jsonObject(with: sent.last!.httpBody!) as! [String: Any]
+        XCTAssertEqual(body["name"] as? String, chosen)
+        XCTAssertEqual(body["id"] as? String, "reserved")
+        XCTAssertFalse(sent.contains { $0.url?.path.hasSuffix("/foreign") == true })
+        // A retry after a genuinely absent create must send the identical ID/name.
+        let retry = DriveFixture([try .init(["user": ["permissionId": "account1"]]),
+            try .init(404, ["error": "missing"]), try .init(root("reserved", name: chosen))])
+        let resumed = GoogleDriveMirror(stateDirectory: directory, client: client(retry))
+        let binding = try await resumed.createRoot(displayName: name, processorID: processor)
+        XCTAssertEqual(binding.rootID, "reserved")
+        let retried = await retry.captured()
+        let retryBody = try JSONSerialization.jsonObject(with: retried.last!.httpBody!) as! [String: Any]
+        XCTAssertEqual(retryBody["name"] as? String, chosen)
+        XCTAssertEqual(retryBody["id"] as? String, "reserved")
+        // Once bound, a requested name must never rename or replace the root.
+        await retry.add([try .init(["user": ["permissionId": "account1"]]), try .init(root("reserved", name: chosen))])
+        let unchanged = try await resumed.createRoot(displayName: "Other", processorID: processor)
+        XCTAssertEqual(unchanged, binding)
+        await retry.add([try .init(["user": ["permissionId": "account1"]]), try .init(root("reserved", name: "Renamed on Drive"))])
+        let remoteName = try await resumed.boundRootDisplayName()
+        XCTAssertEqual(remoteName, "Renamed on Drive")
+        let persisted = try await resumed.restore(); XCTAssertEqual(persisted, binding)
+    }
+
+    func testRootIntentRejectsWrongIdentityAndUnrelatedName() async throws {
+        let directory = try temporary()
+        let intent: [String: Any] = ["accountID": "account1", "processorID": processor,
+            "name": "Vemo (11111111)", "id": "reserved"]
+        let bytes = try JSONSerialization.data(withJSONObject: ["version": 1, "rootIntent": intent, "ids": [:]])
+        try bytes.write(to: directory.appendingPathComponent("drive.json"))
+        for (account, requestedProcessor, name) in [
+            ("different", processor, "Vemo"),
+            ("account1", "22222222-2222-4222-8222-222222222222", "Vemo"),
+            ("account1", processor, "Unrelated")
+        ] {
+            let fixture = DriveFixture([try .init(["user": ["permissionId": account]])])
+            let mirror = GoogleDriveMirror(stateDirectory: directory, client: client(fixture))
+            do { _ = try await mirror.createRoot(displayName: name, processorID: requestedProcessor); XCTFail("intent mismatch") }
+            catch { XCTAssertEqual(error as? GoogleDriveError, .conflict) }
+            let requests = await fixture.captured()
+            XCTAssertEqual(requests.count, 1)
+            XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("drive.json")), bytes)
+        }
+        let retry = DriveFixture([try .init(["user": ["permissionId": "account1"]]),
+                                  try .init(root("reserved", name: "Vemo (11111111)"))])
+        let mirror = GoogleDriveMirror(stateDirectory: directory, client: client(retry))
+        let binding = try await mirror.createRoot(displayName: "Vemo", processorID: processor)
+        XCTAssertEqual(binding.rootID, "reserved")
+    }
+
+    func testExistingProcessorRootFailsBeforeAllocationEvenWithDifferentName() async throws {
+        let directory = try temporary()
+        let fixture = DriveFixture([try .init(["user": ["permissionId": "account1"]]),
+                                   try .init(["files": [root("existing", name: "Other")]])])
+        let mirror = GoogleDriveMirror(stateDirectory: directory, client: client(fixture))
+        do { _ = try await mirror.createRoot(displayName: "Vemo", processorID: processor); XCTFail("duplicate processor") }
+        catch { XCTAssertEqual(error as? GoogleDriveError, .conflict) }
+        let requests = await fixture.captured(); XCTAssertEqual(requests.count, 2)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("drive.json").path))
+    }
+
+    func testFallbackNameCollisionFailsBeforeAllocatingOrWriting() async throws {
+        let directory = try temporary()
+        var foreign = root("foreign")
+        foreign["properties"] = ["vemoProtocol": "1", "vemoKind": "root",
+                                 "vemoProcessor": "22222222-2222-4222-8222-222222222222"]
+        var collision = root("collision", name: "Vemo (11111111)")
+        collision["properties"] = ["vemoProtocol": "1", "vemoKind": "root",
+                                   "vemoProcessor": "33333333-3333-4333-8333-333333333333"]
+        let fixture = DriveFixture([try .init(["user": ["permissionId": "account1"]]),
+                                   try .init(["files": [foreign, collision]])])
+        let mirror = GoogleDriveMirror(stateDirectory: directory, client: client(fixture))
+        do { _ = try await mirror.createRoot(displayName: "Vemo", processorID: processor); XCTFail("collision") }
+        catch { XCTAssertEqual(error as? GoogleDriveError, .conflict) }
+        let requests = await fixture.captured(); XCTAssertEqual(requests.count, 2)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("drive.json").path))
+    }
+
     func testPullCommitsAudioBeforeMarkerAndRejectsBadHash() async throws {
         for corrupt in [false, true] {
             let audio = Data([1, 2, 3]), hash = MobileSyncValidation.digest(audio)
@@ -206,6 +303,155 @@ final class GoogleDriveTests: XCTestCase, @unchecked Sendable {
         let config = try await broker.configuration(); XCTAssertNil(config)
         let requests = await fixture.captured(); XCTAssertTrue(requests.allSatisfy { $0.httpMethod == "GET" })
     }
+
+    func testUnchangedResultStillUploadsAndReadsBackTimeline() async throws {
+        try await timelinePush(mode: "success")
+    }
+    func testTimelineReadbackMismatchIsRejected() async throws {
+        try await timelinePush(mode: "mismatch")
+    }
+    func testTimelineLiveGuardRejectsStaleJobBeforeUpload() async throws {
+        try await timelinePush(mode: "stale")
+    }
+    func testForeignTimelineIsPreserved() async throws {
+        try await timelinePush(mode: "foreign")
+    }
+    func testUnchangedTimelineIsReadBackWithoutUpload() async throws {
+        try await timelinePush(mode: "unchanged")
+    }
+    private func timelinePush(mode: String) async throws {
+        let state = try temporary(), mirrorState = try temporary()
+        let broker = MobileSyncBroker(root: state)
+        let processor = try await broker.processorIdentity()
+        func rootObject() -> [String: Any] {
+            ["id": "root123", "name": "Vemo", "mimeType": GoogleDriveClient.folderMIME, "trashed": false,
+             "properties": ["vemoProtocol": "1", "vemoKind": "root", "vemoProcessor": processor]]
+        }
+        func item(_ id: String, _ path: String, _ parent: String, _ mime: String, _ size: Int? = nil) -> [String: Any] {
+            var object: [String: Any] = ["id": id, "name": String(path.split(separator: "/").last!), "parents": [parent],
+                "mimeType": mime, "properties": GoogleDriveClient.properties(path: path), "trashed": false]
+            if let size { object["size"] = String(size) }
+            return object
+        }
+        let processorBytes = try BrokerFiles.json(MobileSyncProcessor(processorID: processor, displayName: "Synthetic"))
+        let account = try DriveFixture.Reply(["user": ["permissionId": "account1"]])
+        let fixture = DriveFixture([account, try .init(rootObject())])
+        let mirror = GoogleDriveMirror(stateDirectory: mirrorState, client: client(fixture))
+        let cache = try await mirror.connect(binding: .init(accountID: "account1", rootID: "root123", processorID: processor))
+        _ = try await broker.register(syncRoot: cache, displayName: "Synthetic")
+        let source = state.appendingPathComponent("synthetic.m4a")
+        do {
+            let writer = try AVAudioFile(forWriting: source, settings: [AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: 16000, AVNumberOfChannelsKey: 1, AVEncoderBitRateKey: 32000])
+            let buffer = AVAudioPCMBuffer(pcmFormat: writer.processingFormat, frameCapacity: 1600)!
+            buffer.frameLength = 1600
+            for i in 0..<1600 { buffer.floatChannelData![0][i] = Float(sin(Double(i) / 20)) * 0.1 }
+            try writer.write(from: buffer)
+        }
+        let hash = try BrokerFiles.hash(source), id = UUID().uuidString.lowercased()
+        let requestPath = "recordings/" + id + "/" + hash
+        let local = try MobileSyncFiles.Directory(cache).child("recordings", create: true).child(id, create: true).child(hash, create: true)
+        try FileManager.default.copyItem(at: source, to: local.url.appendingPathComponent("audio.m4a"))
+        let marker = try JSONSerialization.data(withJSONObject: ["schema_version": 1, "recording_id": id, "audio_sha256": hash,
+            "audio_bytes": try BrokerFiles.stamp(source).size, "audio_file": "audio.m4a", "recorded_at": "2026-10-17T12:00:00+09:00",
+            "title": "Synthetic", "mode": "desktop", "target_processor_id": processor, "completed": true])
+        try local.atomic(marker, name: "recording.json", replace: false)
+        let imports = ImportBroker(root: state), scan = try await broker.scan(importBroker: imports)
+        guard let memo = scan.pending.first else { XCTFail("missing import"); return }
+        try await broker.markDelivered(sourceReference: memo.source_reference, jobID: "live-job")
+        let snapshot = try await imports.snapshot(reference: memo.source_reference, jobID: "live-job")
+        let artifacts = state.appendingPathComponent("artifacts/live-job")
+        try BrokerFiles.directory(artifacts)
+        let transcript = artifacts.appendingPathComponent("transcript.json"), notes = artifacts.appendingPathComponent("notes.json")
+        let text = "Synthetic transcript."
+        try JSONSerialization.data(withJSONObject: ["text": text, "segments": [], "alignment_status": "completed"]).write(to: transcript)
+        try JSONSerialization.data(withJSONObject: ["schema_version": 1, "source_sha256": MobileSyncValidation.digest(Data(text.utf8)),
+            "summary": [["text": "Synthetic", "quotes": [text]]], "highlights": [], "topics": []]).write(to: notes)
+        let job = try JSONDecoder().decode(Job.self, from: JSONSerialization.data(withJSONObject: [
+            "id": "live-job", "uuid": memo.uuid, "topic": "Synthetic", "recording_date": "2026-10-17", "recorded_at": memo.recorded_at!,
+            "status": "completed", "stage": "completed", "elapsed_seconds": 0, "title_status": "completed",
+            "alignment_status": "completed", "notes_status": "completed", "audio_path": snapshot.owned_path,
+            "artifact_path": transcript.path, "notes_path": notes.path]))
+        let output = try await broker.publish(job: job)
+        let resultBytes = try Data(contentsOf: output)
+        let timelineURL = output.deletingLastPathComponent().appendingPathComponent("transcript-timeline.json")
+        let resultPath = "results/" + id + "/" + hash
+        // Literal wire fixture independent of the producer.
+        let timelineBytes = try JSONSerialization.data(withJSONObject: [
+            "schema_version": 1, "recording_id": id, "audio_sha256": hash, "processor_id": processor,
+            "transcript_sha256": MobileSyncValidation.digest(Data(text.utf8)),
+            "segments": [["start": NSNull(), "end": NSNull(), "text": text]]
+        ], options: [.sortedKeys])
+        // Simulate a settled v1 result without any sidecar in Drive.
+        // Local broker backfills its own sidecar as part of pushResult.
+        let timelinePath = resultPath + "/transcript-timeline.json"
+        let emptyTimeline = item("timeline", timelinePath, "resultRevision", GoogleDriveClient.jsonMIME, 0)
+        let fullTimeline = item("timeline", timelinePath, "resultRevision", GoogleDriveClient.jsonMIME, timelineBytes.count)
+        func prefixReplies() throws -> [DriveFixture.Reply] {
+            [account, try .init(rootObject()),
+             try .init(["files": [item("processor", "processor.json", "root123", GoogleDriveClient.jsonMIME, processorBytes.count)]]),
+             .init(status: 200, bytes: processorBytes),
+             try .init(["files": [item("recordings", "recordings", "root123", GoogleDriveClient.folderMIME)]]),
+             try .init(["files": [item("recording", "recordings/" + id, "recordings", GoogleDriveClient.folderMIME)]]),
+             try .init(["files": [item("revision", requestPath, "recording", GoogleDriveClient.folderMIME)]]),
+             try .init(["files": [item("marker", requestPath + "/recording.json", "revision", GoogleDriveClient.jsonMIME, marker.count)]]),
+             .init(status: 200, bytes: marker),
+             try .init(["files": [item("results", "results", "root123", GoogleDriveClient.folderMIME)]]),
+             try .init(["files": [item("resultRecording", "results/" + id, "results", GoogleDriveClient.folderMIME)]]),
+             try .init(["files": [item("resultRevision", resultPath, "resultRecording", GoogleDriveClient.folderMIME)]]),
+             try .init(["files": [item("result", resultPath + "/result.json", "resultRevision", GoogleDriveClient.jsonMIME, resultBytes.count)]]),
+             .init(status: 200, bytes: resultBytes)]
+        }
+        if mode == "foreign" || mode == "unchanged" {
+            var foreign = try JSONSerialization.jsonObject(with: timelineBytes) as! [String: Any]
+            if mode == "foreign" { foreign["processor_id"] = UUID().uuidString.lowercased() }
+            let existing = try JSONSerialization.data(withJSONObject: foreign, options: [.sortedKeys])
+            await fixture.add(try prefixReplies() + [
+                try .init(["files": [item("timeline", timelinePath, "resultRevision", GoogleDriveClient.jsonMIME, existing.count)]]),
+                .init(status: 200, bytes: existing)
+            ])
+        } else {
+            var readback = timelineBytes
+            if mode == "mismatch" {
+                var value = try JSONSerialization.jsonObject(with: timelineBytes) as! [String: Any]
+                value["transcript_sha256"] = String(repeating: "f", count: 64)
+                readback = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
+            }
+            await fixture.add(try prefixReplies() + [
+                try .init(["files": []]), try .init(["ids": ["timeline"]]),
+                try .init(404, ["error": "missing"]), try .init(emptyTimeline),
+                account, try .init(rootObject()),
+                try .init(["files": [item("processor", "processor.json", "root123", GoogleDriveClient.jsonMIME, processorBytes.count)]]),
+                .init(status: 200, bytes: processorBytes),
+                try .init([:]), try .init(fullTimeline), .init(status: 200, bytes: readback)
+            ])
+        }
+        do {
+            try await mirror.pushResult(job: job, broker: broker, shouldPublish: {
+                // Includes the initial connect and the last owner read.
+                if mode != "stale" { return true }
+                return await fixture.captured().count < 24
+            })
+            if ["mismatch", "stale", "foreign"].contains(mode) { XCTFail("sidecar failure accepted: " + mode) }
+        } catch {
+            XCTAssertEqual(error as? GoogleDriveError, mode == "stale" ? .staleJob : .conflict)
+            if mode == "success" || mode == "unchanged" { throw error }
+        }
+        let requests = await fixture.captured()
+        let uploads = requests.filter { $0.httpMethod == "PATCH" }
+        XCTAssertEqual(uploads.count, ["stale", "foreign", "unchanged"].contains(mode) ? 0 : 1)
+        if let uploaded = uploads.first?.httpBody {
+            let value = try JSONSerialization.jsonObject(with: uploaded) as! [String: Any]
+            XCTAssertEqual(value["transcript_sha256"] as? String, MobileSyncValidation.digest(Data(text.utf8)))
+            XCTAssertEqual((value["segments"] as? [[String: Any]])?.first?["text"] as? String, text)
+        }
+        if mode == "success" || mode == "mismatch" || mode == "unchanged" {
+            XCTAssertEqual(requests.last?.url?.path, "/drive/v3/files/timeline")
+            XCTAssertEqual(URLComponents(url: requests.last!.url!, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "alt" })?.value, "media")
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: timelineURL.path))
+    }
+
 
     func testFinalLiveGuardRejectsStaleJobWithoutUpload() async throws {
         let state = try temporary(), mirrorState = try temporary()

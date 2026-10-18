@@ -53,7 +53,11 @@ func XCTAssertThrowsError<T>(_ expression: @autoclosure () throws -> T) {
         try await tests.testMutationGuardRunsAfterTokenAwait()
         try await tests.testGooglePrepareAcceptsCanonicalInternalCacheAndRejectsOtherOverlap()
         try await tests.testRootPaginationRejectsDuplicateProcessorAcrossDifferentNames()
-        print("GoogleDrive: 15 synthetic checks passed")
+        try await tests.testForeignNameCollisionJournalsDistinctRootAndResumesLostCreate()
+        try await tests.testRootIntentRejectsWrongIdentityAndUnrelatedName()
+        try await tests.testFallbackNameCollisionFailsBeforeAllocatingOrWriting()
+        try await tests.testExistingProcessorRootFailsBeforeAllocationEvenWithDifferentName()
+        print("GoogleDrive: 19 synthetic checks passed")
     }
 }
 '''

@@ -23,8 +23,6 @@ struct LibraryView: View {
         .toolbar {
             ToolbarItem(placement: .principal) { Text(model.overallStatus).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
             ToolbarItem { if model.importing { ProgressView().controlSize(.small).help("오디오를 안전하게 가져오는 중") } }
-            ToolbarItem { Button { model.chooseFiles() } label: { Label("파일 가져오기", systemImage: "square.and.arrow.down") }.help("파일 가져오기 ⌘O") }
-            ToolbarItem { SettingsLink { Label("설정", systemImage: "gearshape") } }
         }
         .onChange(of: model.selection) { _, _ in Task { await model.loadSelection() } }
         .onChange(of: model.visibleJobs.map(\.id)) { _, _ in model.reconcileLibrarySelection() }
@@ -217,8 +215,24 @@ struct LibraryView: View {
         .navigationSplitViewStyle(.balanced)
     }
     private var foldersColumn: some View {
-        folderNavigation
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        VStack(spacing: 0) {
+            folderNavigation
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            Divider().padding(.horizontal, 16)
+            SettingsLink {
+                HStack(spacing: 10) {
+                    Image(systemName: "gearshape").frame(width: 18)
+                    Text("설정")
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(VemoButtonStyle(emphasis: .quiet))
+            .accessibilityLabel("설정")
+            .help("설정 ⌘,")
+            .padding(12)
+        }
     }
     private var recordingsColumn: some View {
         VStack(spacing: 0) {
