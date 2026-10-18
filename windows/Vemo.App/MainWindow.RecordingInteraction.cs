@@ -36,5 +36,17 @@ public sealed partial class MainWindow
     {
         var job = Current(); var current = runner.Progress;
         processingProgress.Update(current?.JobId == job?.Id ? current : null, job?.State ?? Vemo.Core.JobState.Queued);
+        if (!string.IsNullOrWhiteSpace(transcript.Text)) processingProgress.IsVisible = false;
+        notesProgress.Update(current?.JobId == job?.Id ? current : null, job?.State ?? Vemo.Core.JobState.Queued);
+        if (!string.IsNullOrWhiteSpace(notes.Text)) notesProgress.IsVisible = false;
+        renderedNotes.IsVisible = !notesProgress.IsVisible;
+        processingProgress.SetPaused(store.Settings.QueuePaused); notesProgress.SetPaused(store.Settings.QueuePaused);
+        queueProgress.IsVisible = current != null && current.Stage is "preparing" or "transcribing" or "notes" or "saving";
+        if (queueProgress.IsVisible && current != null)
+        {
+            var percent = current.Stage == "transcribing" && current.Percent is { } p && double.IsFinite(p) && p is >= 0 and <= 100 ? current.Percent : null;
+            queueProgress.IsIndeterminate = percent == null; queueProgress.Value = percent ?? 0;
+            queueInfo.Text = (current.Stage == "notes" ? "노트 생성 중" : current.Stage == "saving" ? "결과 저장 중" : current.Stage == "preparing" ? "오디오 준비 중" : "전사 중") + (percent is { } n ? $" · {n:0}%" : "") + $" · 경과 {(int)current.Elapsed.TotalMinutes}:{current.Elapsed.Seconds:00}";
+        }
     }
 }

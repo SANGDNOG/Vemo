@@ -11,16 +11,17 @@ public sealed partial class SettingsView
     {
         var section = new StackPanel { Spacing = 10 };
         var label = NativeWhite.Text("Google Drive", "secondary"); label.FontSize = 11; label.FontWeight = Avalonia.Media.FontWeight.Medium; section.Children.Add(label);
-        var body = new StackPanel { Spacing = 12, Margin = new Thickness(16) };
-        var card = new Border { Child = body }; card.Classes.Add("settings-group"); section.Children.Add(card);
-        var status = NativeWhite.Text("", "secondary"); NativeWhite.Label(status, "Google 연결 상태"); body.Children.Add(status);
-        var folderStatus = NativeWhite.Text("", "caption"); NativeWhite.Label(folderStatus, "Google 선택한 폴더"); body.Children.Add(folderStatus);
+        var body = new StackPanel();
+        var card = new Border { Child = body, BorderBrush = NativeWhite.Divider, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(13), Background = Avalonia.Media.Brushes.White, ClipToBounds = true }; card.Classes.Add("settings-group"); section.Children.Add(card);
+        var connectionRow = new Grid { ColumnDefinitions = new("*,Auto"), MinHeight = 59, Margin = new Thickness(14, 0) }; body.Children.Add(connectionRow);
+        var status = NativeWhite.Text("", "secondary"); status.FontSize = 12; status.Margin = new Thickness(0, 12, 12, 12); status.VerticalAlignment = VerticalAlignment.Center; NativeWhite.Label(status, "Google 연결 상태"); connectionRow.Children.Add(status);
+        var folderStatus = NativeWhite.Text("", "caption"); folderStatus.FontSize = 10; NativeWhite.Label(folderStatus, "Google 선택한 폴더");
         var googleOperation = false;
-        var actions = new WrapPanel { Orientation = Orientation.Horizontal }; body.Children.Add(actions);
+        var actions = new WrapPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Right }; Grid.SetColumn(actions, 1); connectionRow.Children.Add(actions);
         Button Action(string label)
         {
-            var button = new Button { Content = label, Margin = new Thickness(0, 0, 8, 8) };
-            button.Classes.Add("compact"); NativeWhite.Label(button, label); actions.Children.Add(button); return button;
+            var button = new Button { Content = label, FontSize = 11, MinHeight = 36, Padding = new Thickness(10, 6), Margin = new Thickness(4, 0, 0, 0) };
+            button.Classes.Add("quiet"); NativeWhite.Label(button, label); actions.Children.Add(button); return button;
         }
         var connect = Action("Google Drive 연결"); connect.Classes.Add("primary");
         var list = Action("폴더 선택");
@@ -30,20 +31,23 @@ public sealed partial class SettingsView
         NativeWhite.Label(connect, "Google 로그인"); NativeWhite.Label(list, "Drive 폴더 선택…");
         NativeWhite.Label(sync, "지금 동기화"); NativeWhite.Label(disconnect, "Google 연결 해제");
         actions.Children.Remove(list); actions.Children.Remove(sync);
-        var syncActions = new WrapPanel(); syncActions.Children.Add(list); syncActions.Children.Add(sync); body.Children.Add(syncActions);
-        var foldersPanel = new StackPanel { Spacing = 10, IsVisible = false }; body.Children.Add(foldersPanel);
-        foldersPanel.Children.Add(NativeWhite.Text("Vemo에서 접근 가능한 폴더", "secondary"));
-        var emptyFolders = NativeWhite.Text("이 PC에 연결할 폴더를 만들어 주세요.", "secondary"); emptyFolders.IsVisible = false; foldersPanel.Children.Add(emptyFolders);
-        var folders = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch, PlaceholderText = "폴더를 선택하세요" };
+        var syncActions = new Grid { ColumnDefinitions = new("*,Auto"), MinHeight = 59 };
+        var folderText = new StackPanel { Spacing = 6, Margin = new Thickness(14, 12, 12, 12), VerticalAlignment = VerticalAlignment.Center }; var folderLabel = NativeWhite.Text("동기화 폴더"); folderLabel.FontSize = 12; folderText.Children.Add(folderLabel); folderText.Children.Add(folderStatus); syncActions.Children.Add(folderText);
+        var syncButtons = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 14, 0) }; syncButtons.Children.Add(list); syncButtons.Children.Add(sync); Grid.SetColumn(syncButtons, 1); syncActions.Children.Add(syncButtons);
+        body.Children.Add(new Border { Child = syncActions, BorderBrush = NativeWhite.Divider, [!IsVisibleProperty] = syncActions[!IsVisibleProperty], BorderThickness = new Thickness(0, 1, 0, 0) });
+        var foldersPanel = new StackPanel { Spacing = 10, Margin = new Thickness(14, 12), IsVisible = false }; body.Children.Add(foldersPanel);
+        var pickerLabel = NativeWhite.Text("Vemo에서 접근 가능한 폴더", "secondary"); pickerLabel.FontSize = 12; foldersPanel.Children.Add(pickerLabel);
+        var emptyFolders = NativeWhite.Text("이 PC에 연결할 폴더를 만들어 주세요.", "secondary"); emptyFolders.FontSize = 10; emptyFolders.IsVisible = false; foldersPanel.Children.Add(emptyFolders);
+        var folders = new ComboBox { FontSize = 11, HorizontalAlignment = HorizontalAlignment.Stretch, PlaceholderText = "폴더를 선택하세요" };
         NativeWhite.Label(folders, "Vemo에서 접근 가능한 폴더 목록"); foldersPanel.Children.Add(folders);
-        var folderName = new TextBox { Text = "Vemo Windows", PlaceholderText = "새 Vemo 폴더 이름", MaxLength = 120 };
+        var folderName = new TextBox { Text = "Vemo Windows", FontSize = 12, PlaceholderText = "새 Vemo 폴더 이름", MaxLength = 120 };
         NativeWhite.Label(folderName, "새 Google Drive 폴더 이름"); foldersPanel.Children.Add(folderName);
         var folderActions = new WrapPanel(); foldersPanel.Children.Add(folderActions);
         var create = new Button { Content = "Drive 폴더 만들기", Margin = new Thickness(0, 0, 8, 8) };
         create.Classes.Add("primary");
         var select = new Button { Content = "이 폴더 사용", Margin = new Thickness(0, 0, 8, 8) }; select.Classes.Add("primary");
         var cancelFolder = new Button { Content = "폴더 선택 취소", Margin = new Thickness(0, 0, 8, 8) };
-        foreach (var button in new[] { create, select, cancelFolder }) { NativeWhite.Label(button, button.Content!.ToString()!); folderActions.Children.Add(button); }
+        foreach (var button in new[] { create, select, cancelFolder }) { button.FontSize = 11; button.Padding = new Thickness(10, 6); button.MinHeight = 36; NativeWhite.Label(button, button.Content!.ToString()!); folderActions.Children.Add(button); }
 
         void Refresh()
         {

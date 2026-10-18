@@ -12,7 +12,7 @@ public sealed class AudioPlayerView : UserControl, IDisposable
     static readonly Geometry playGeometry = Geometry.Parse("M8 4l12 8-12 8z"), pauseGeometry = Geometry.Parse("M8 5v14 M16 5v14");
     readonly Avalonia.Controls.Shapes.Path playbackIcon = new() { Data = playGeometry, Stroke = NativeWhite.Secondary, StrokeThickness = 1.6, StrokeLineCap = PenLineCap.Round, IsHitTestVisible = false };
     readonly Button play = new() { Width = 32, Height = 32, MinWidth = 32, MinHeight = 0, Padding = new Thickness(0), HorizontalContentAlignment = HorizontalAlignment.Center, VerticalContentAlignment = VerticalAlignment.Center };
-    readonly Slider seek = new() { Minimum = 0, Maximum = 1, MinWidth = 60, VerticalAlignment = VerticalAlignment.Center, Foreground = Brush.Parse("#9C8BCB") };
+    readonly Slider seek = new() { Minimum = 0, Maximum = 1, MinWidth = 60, Height = 32, MinHeight = 0, VerticalAlignment = VerticalAlignment.Center, Foreground = Brush.Parse("#9C8BCB") };
     readonly TextBlock elapsed = new() { Text = "0:00", VerticalAlignment = VerticalAlignment.Center, FontSize = 10, Foreground = NativeWhite.Secondary };
     readonly TextBlock duration = new() { Text = "0:00", VerticalAlignment = VerticalAlignment.Center, FontSize = 10, Foreground = NativeWhite.Secondary };
     readonly TextBlock error = new() { IsVisible = false, TextWrapping = TextWrapping.Wrap, FontSize = 12, Foreground = NativeWhite.Danger };
@@ -25,7 +25,7 @@ public sealed class AudioPlayerView : UserControl, IDisposable
         play.Classes.Add("quiet");
         var iconCanvas = new Canvas { Width = 24, Height = 24, IsHitTestVisible = false };
         iconCanvas.Children.Add(playbackIcon);
-        play.Content = new Viewbox { Width = 19, Height = 19, Stretch = Stretch.Uniform, Child = iconCanvas, IsHitTestVisible = false };
+        play.Content = new Viewbox { Width = 15, Height = 15, Stretch = Stretch.Uniform, Child = iconCanvas, IsHitTestVisible = false };
         // Keep Fluent's keyboard/pointer behavior with prototype-sized track and thumb.
         seek.Resources["SliderHorizontalThumbWidth"] = 10d;
         seek.Resources["SliderHorizontalThumbHeight"] = 10d;
@@ -41,7 +41,7 @@ public sealed class AudioPlayerView : UserControl, IDisposable
         var row = new Grid { ColumnDefinitions = new("Auto,Auto,*,Auto"), ColumnSpacing = 9 };
         row.Children.Add(play); Grid.SetColumn(elapsed, 1); row.Children.Add(elapsed);
         Grid.SetColumn(seek, 2); row.Children.Add(seek); Grid.SetColumn(duration, 3); row.Children.Add(duration);
-        var body = new StackPanel { Spacing = 5 }; body.Children.Add(row); body.Children.Add(error);
+        var body = new StackPanel { Spacing = 5 }; body.Children.Add(row); var errorScroll = new ScrollViewer { Content = error, MaxHeight = 32, IsVisible = false }; error.PropertyChanged += (_, e) => { if (e.Property == IsVisibleProperty) errorScroll.IsVisible = error.IsVisible; }; body.Children.Add(errorScroll);
         Content = new Border { BorderBrush = NativeWhite.Divider, BorderThickness = new Thickness(0, 1), Padding = new Thickness(1, 6, 9, 6), Child = body };
         play.Click += (_, _) => { if (playback.IsPlaying) playback.Pause(); else playback.Play(); Update(); };
         seek.ValueChanged += (_, _) => { if (!updating) { playback.Seek(TimeSpan.FromSeconds(seek.Value)); Update(); } };

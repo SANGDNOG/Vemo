@@ -26,45 +26,54 @@ public sealed partial class SettingsView : UserControl
         KeyDown += (_, e) => { if (e.Key == Key.Escape) { RequestClose(); e.Handled = true; } };
         var s = store.Settings; var m = s.Models;
         var outer = new Grid { RowDefinitions = new("Auto,*,Auto") }; Content = outer;
-        var header = new StackPanel { Margin = new Thickness(32, 0, 32, 22), Spacing = 0 };
+        var header = new StackPanel { Margin = new Thickness(32, 0, 32, 0), Spacing = 0 };
         var topline = new Grid { ColumnDefinitions = new("*,Auto"), Height = 58 };
         var context = NativeWhite.Text("Vemo 환경 설정", "caption"); context.FontSize = 10; context.VerticalAlignment = VerticalAlignment.Center; topline.Children.Add(context);
         var dismiss = NativeWhite.Action("", RequestClose, "quiet");
-        dismiss.Content = new Avalonia.Controls.Shapes.Path { Data = Avalonia.Media.Geometry.Parse("M6,6 L18,18 M18,6 L6,18"), Width = 19, Height = 19, Stretch = Avalonia.Media.Stretch.Uniform, Stroke = NativeWhite.Secondary, StrokeThickness = 1.6, IsHitTestVisible = false };
-        dismiss.Width = 36; dismiss.Height = 36; dismiss.Padding = new Thickness(9); dismiss.VerticalAlignment = VerticalAlignment.Center;
+        var closeCanvas = new Canvas { Width = 24, Height = 24 };
+        closeCanvas.Children.Add(new Avalonia.Controls.Shapes.Path { Data = Avalonia.Media.Geometry.Parse("M6,6 L18,18 M18,6 L6,18"), Stroke = NativeWhite.Secondary, StrokeThickness = 1.6, StrokeLineCap = Avalonia.Media.PenLineCap.Round, IsHitTestVisible = false });
+        dismiss.Content = new Viewbox { Width = 19, Height = 19, Child = closeCanvas, IsHitTestVisible = false };
+        dismiss.Width = 36; dismiss.Height = 36; dismiss.Padding = new Thickness(0); dismiss.VerticalAlignment = VerticalAlignment.Center;
         initialFocus = dismiss; NativeWhite.Label(dismiss, "설정 닫기"); ToolTip.SetTip(dismiss, "설정 닫기"); Grid.SetColumn(dismiss, 1); topline.Children.Add(dismiss);
-        header.Children.Add(topline); var heading = NativeWhite.Text("설정", "heading"); heading.FontSize = 25; header.Children.Add(heading); outer.Children.Add(header);
-        var content = new StackPanel { Margin = new Thickness(32, 0, 32, 24), Spacing = 24 }; var scroll = new ScrollViewer { Content = content }; Grid.SetRow(scroll, 1); outer.Children.Add(scroll);
+        header.Children.Add(topline); var heading = NativeWhite.Text("설정", "heading"); heading.FontSize = 25; heading.Margin = new Thickness(0, 0, 0, 22); header.Children.Add(heading); outer.Children.Add(header);
+        var content = new StackPanel { Margin = new Thickness(32, 25, 32, 30), Spacing = 25 }; var scroll = new ScrollViewer { Content = content, HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled }; Grid.SetRow(scroll, 1); outer.Children.Add(scroll);
         var footer = new StackPanel { Margin = new Thickness(32, 16, 32, 20), Spacing = 12 }; var message = NativeWhite.Text("", "secondary"); NativeWhite.Label(message, "설정 저장 상태"); footer.Children.Add(new ScrollViewer { Content = message, MaxHeight = 100 });
         var footerButtons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right }; footerButtons.Children.Add(NativeWhite.Action("취소", RequestClose, "quiet")); var save = new Button { Content = "설정 저장" }; BusyChanged += () => save.IsEnabled = !busy; save.Classes.Add("primary"); footerButtons.Children.Add(save); footer.Children.Add(footerButtons);
         var footerBorder = new Border { Child = footer, BorderBrush = NativeWhite.Divider, BorderThickness = new Thickness(0, 1, 0, 0) }; Grid.SetRow(footerBorder, 2); outer.Children.Add(footerBorder);
         StackPanel group = new();
+        Border Card(Control child) => new() { Child = child, BorderBrush = NativeWhite.Divider, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(13), Background = Avalonia.Media.Brushes.White, ClipToBounds = true };
+        void AddRow(Control child)
+        {
+            group.Children.Add(new Border { Child = child, BorderBrush = NativeWhite.Divider, BorderThickness = new Thickness(0, group.Children.Count > 0 ? 1 : 0, 0, 0) });
+        }
         void Section(string name, string help)
         {
             var section = new StackPanel { Spacing = 10 }; var label = NativeWhite.Text(name, "secondary"); label.FontSize = 11; label.FontWeight = Avalonia.Media.FontWeight.Medium; section.Children.Add(label);
             group = new StackPanel();
-            var card = new Border { Child = group }; card.Classes.Add("settings-group"); section.Children.Add(card);
+            var card = Card(group); card.Classes.Add("settings-group"); section.Children.Add(card);
             if (help.Length > 0) { var note = NativeWhite.Text(help, "caption"); note.Margin = new Thickness(4, 0); section.Children.Add(note); }
             content.Children.Add(section);
         }
         void Row(string label, Control editor, string? help = null)
         {
-            var row = new Grid { ColumnDefinitions = new("*,Auto"), MinHeight = 59 };
+            var row = new Grid { ColumnDefinitions = new("*,Auto"), MinHeight = 59, Margin = new Thickness(14, 0) };
             row.Classes.Add("settings-row");
-            var text = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) };
-            text.Children.Add(NativeWhite.Text(label)); if (help != null) text.Children.Add(NativeWhite.Text(help, "caption")); row.Children.Add(text);
-            editor.VerticalAlignment = VerticalAlignment.Center; Grid.SetColumn(editor, 1); row.Children.Add(editor); group.Children.Add(new Border { Child = row, BorderBrush = NativeWhite.Divider, BorderThickness = new Thickness(0, 0, 0, 1) });
+            var text = new StackPanel { Spacing = 6, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 12, 12, 12) };
+            var title = NativeWhite.Text(label); title.FontSize = 12; text.Children.Add(title);
+            if (help != null) { var detail = NativeWhite.Text(help, "caption"); detail.FontSize = 10; detail.LineHeight = 15; text.Children.Add(detail); } row.Children.Add(text);
+            if (editor is Button button) { button.FontSize = 11; button.Padding = new Thickness(14, 10); button.MinHeight = 36; }
+            editor.VerticalAlignment = VerticalAlignment.Center; Grid.SetColumn(editor, 1); row.Children.Add(editor); AddRow(row);
         }
         var fieldErrors = new Dictionary<TextBox, TextBlock>();
         TextBox Field(string label, string value, bool folder = false, bool picker = false)
         {
-            var field = new StackPanel { Spacing = 6 }; field.Classes.Add("settings-field"); group.Children.Add(new Border { Child = field, BorderBrush = NativeWhite.Divider, BorderThickness = new Thickness(0, 0, 0, 1) });
-            var caption = NativeWhite.Text(label); var row = new Grid { ColumnDefinitions = new("*,Auto") }; row.Children.Add(caption);
+            var field = new StackPanel { Spacing = 6, Margin = new Thickness(14, 12) }; field.Classes.Add("settings-field"); AddRow(field);
+            var caption = NativeWhite.Text(label); caption.FontSize = 12; var row = new Grid { ColumnDefinitions = new("*,Auto") }; row.Children.Add(caption);
             var box = new TextBox { Text = value }; NativeWhite.Label(box, label); AutomationProperties.SetLabeledBy(box, caption); ToolTip.SetTip(box, label);
             if (picker || folder)
             {
                 box.Classes.Add("settings-path");
-                var browse = new Button { Content = "변경", Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center }; browse.Classes.Add("quiet"); NativeWhite.Label(browse, label + " 찾아보기"); Grid.SetColumn(browse, 1);
+                var browse = new Button { Content = "변경", FontSize = 11, Padding = new Thickness(14, 10), MinHeight = 36, Margin = new Thickness(12, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center }; browse.Classes.Add("quiet"); NativeWhite.Label(browse, label + " 찾아보기"); Grid.SetColumn(browse, 1);
                 BusyChanged += () => browse.IsEnabled = !busy;
                 browse.Click += async (_, _) => await RunOperation(async token =>
                 {
@@ -76,12 +85,12 @@ public sealed partial class SettingsView : UserControl
             }
             if (folder)
             {
-                field.Margin = new Thickness(14, 8); field.MinHeight = 42; field.Spacing = 0;
+                field.Margin = new Thickness(14, 12); field.MinHeight = 35; field.Spacing = 0;
                 row.Children.Remove(caption);
-                var labels = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
+                var labels = new StackPanel { Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
                 labels.Children.Add(caption); labels.Children.Add(box); row.Children.Add(labels);
-                box.MinHeight = 20; box.Padding = new Thickness(0); box.PlaceholderText = "폴더를 선택하세요";
-                row.MinHeight = 42;
+                box.MinHeight = 15; box.FontSize = 10; box.Foreground = NativeWhite.Secondary; box.Background = Avalonia.Media.Brushes.Transparent; box.BorderThickness = new Thickness(0); box.Padding = new Thickness(0); box.PlaceholderText = "폴더를 선택하세요";
+                row.MinHeight = 35;
             }
             field.Children.Add(row); if (!folder) field.Children.Add(box);
             var error = NativeWhite.Text("", "error"); error.IsVisible = false; field.Children.Add(error); fieldErrors.Add(box, error);
@@ -89,11 +98,15 @@ public sealed partial class SettingsView : UserControl
         }
         ComboBox Choice(string label, string[] options, string selected)
         {
-            var box = new ComboBox { ItemsSource = options.Contains(selected) ? options : options.Append(selected).ToArray(), SelectedItem = selected, MinWidth = 125, MaxWidth = 220, HorizontalAlignment = HorizontalAlignment.Right }; NativeWhite.Label(box, label); Row(label, box); return box;
+            var box = new ComboBox { ItemsSource = options.Contains(selected) ? options : options.Append(selected).ToArray(), SelectedItem = selected, FontSize = 11, Padding = new Thickness(7), MinWidth = 125, MaxWidth = 140, HorizontalAlignment = HorizontalAlignment.Right }; NativeWhite.Label(box, label); Row(label, box); return box;
         }
-        content.Children.Add(BuildGoogleSettings(google ?? GoogleConnectionService.Shared(store), message, store.ProcessorId));
-        Section("입력 폴더", "");
+        var googleSection = BuildGoogleSettings(google ?? GoogleConnectionService.Shared(store), message, store.ProcessorId);
+        if (googleSection is StackPanel googleStack && googleStack.Children.OfType<Border>().FirstOrDefault() is { } googleCard)
+        { googleCard.BorderBrush = NativeWhite.Divider; googleCard.BorderThickness = new Thickness(1); googleCard.CornerRadius = new CornerRadius(13); googleCard.Background = Avalonia.Media.Brushes.White; googleCard.ClipToBounds = true; }
+        Section("입력 · 출력 폴더", "");
         var input = Field("오디오 입력 폴더", s.InputDirectory, true);
+        var output = Field("자동 ZIP 저장 폴더", s.OutputDirectory, true);
+        content.Children.Add(googleSection);
         var legacyFields = new StackPanel(); group = legacyFields;
         var sync = Field("모바일 동기화 폴더", s.MobileDirectory, true);
         var scanLocal = new Button { Content = "다시 확인" }; scanLocal.Classes.Add("quiet"); Row("로컬 동기화 상태", scanLocal);
@@ -108,7 +121,6 @@ public sealed partial class SettingsView : UserControl
         Section("ZIP 아카이브", "");
         var archiveSection = content.Children[^1];
         var autoExport = new ToggleSwitch { OnContent = null, OffContent = null, IsChecked = s.AutoExport }; NativeWhite.Label(autoExport, "완료된 녹음 자동 ZIP 저장"); Row("완료된 녹음 자동 ZIP 저장", autoExport);
-        var output = Field("자동 ZIP 저장 폴더", s.OutputDirectory, true);
         Section("모델", "");
         var whisperProfile = Choice("전사 모델", ["small", "large-v3-turbo"], m.WhisperProfile);
         var notesProfile = Choice("노트 모델", ["Qwen3.5 9B GGUF", "Qwen3.5 27B GGUF"], m.NotesProfile);
@@ -122,8 +134,8 @@ public sealed partial class SettingsView : UserControl
         var ffmpeg = Field("FFmpeg 네이티브 실행 파일", m.FfmpegExecutable, picker: true);
         var advanced = new Expander { Header = "고급 · 실행 파일과 모델 경로", Content = advancedFields, IsExpanded = false, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch }; advanced.Classes.Add("settings-advanced"); modelGroup.Children.Add(advanced);
         Section("처리", "");
-        var automatic = new ToggleSwitch { OnContent = null, OffContent = null, IsChecked = !s.QueuePaused }; NativeWhite.Label(automatic, "새 작업 자동 처리"); Row("새 작업 자동 처리", automatic, "진행 중인 작업과 기존 결과는 유지합니다.");
-        var externalPower = new ToggleSwitch { OnContent = null, OffContent = null, IsChecked = s.RequireExternalPower }; NativeWhite.Label(externalPower, "전원 연결 시에만 처리"); Row("전원 연결 시에만 처리", externalPower, "배터리 사용 중에는 새 작업을 기다립니다.");
+        var externalPower = new ToggleSwitch { OnContent = null, OffContent = null, IsChecked = s.RequireExternalPower }; NativeWhite.Label(externalPower, "전원 연결 시에만 처리"); Row("전원 연결 시에만 처리", externalPower); ToolTip.SetTip(externalPower, "배터리 사용 중에는 새 작업을 기다립니다.");
+        var automatic = new ToggleSwitch { OnContent = null, OffContent = null, IsChecked = !s.QueuePaused }; NativeWhite.Label(automatic, "새 작업 자동 처리"); Row("새 작업 자동 처리", automatic); ToolTip.SetTip(automatic, "진행 중인 작업과 기존 결과는 유지합니다.");
         var processingGroup = group; group = advancedFields;
         var compute = Choice("처리 장치", ["CPU", "CUDA"], m.Compute);
         var cuda = new CheckBox { Content = NativeWhite.Text("CUDA 실행 파일과 NVIDIA 장치 지원을 확인했습니다.", "secondary"), IsChecked = m.CudaConfirmed, Margin = new Thickness(16, 12) }; group.Children.Add(cuda);

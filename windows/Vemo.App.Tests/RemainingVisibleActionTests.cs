@@ -21,7 +21,8 @@ public sealed class RemainingVisibleActionTests
         ui.Navigate(1);
         ui.SelectJob();
         var sourceHash = SafeFiles.Hash(ui.Store.AudioPath(ui.UnfiledId));
-        Click(ui.Window, Button(ui.Window, "ZIP 내보내기"));
+        RightClick(ui.Window, Realize(ui.Jobs, ui.Jobs.SelectedIndex));
+        ActivateMenu(ui.Window, ui.Jobs.ContextMenu!, "ZIP 내보내기");
         await Until(() => ui.Store.Get(ui.UnfiledId).ExportPath != null, "Export button must create an archive.");
         var path = ui.Store.Get(ui.UnfiledId).ExportPath!;
         using var zip = ZipFile.OpenRead(path);
@@ -64,7 +65,7 @@ public sealed class RemainingVisibleActionTests
     public async Task Queue_flyout_pause_and_resume_updates_settings_and_status()
     {
         await using var ui = new UiFixture(seedRecordings: false);
-        var button = Button(ui.Window, "처리 ⋯");
+        var button = Named<Button>(ui.Window, "처리 상태 메뉴");
         var flyout = Assert.IsType<MenuFlyout>(button.Flyout);
         var toggle = Assert.Single(flyout.Items.OfType<MenuItem>(), item => Equals(item.Header, "새 작업 일시중지 / 재개"));
         Assert.True(ui.Store.Settings.QueuePaused);

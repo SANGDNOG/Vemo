@@ -194,7 +194,12 @@ public sealed class AdditionalActionTests
     {
         await using var ui = new UiFixture();
         ui.SelectJob();
-        Click(ui.Window, Button(ui.Window, action == "create" ? "+ 폴더" : action == "move" ? "선택 이동…" : "설정"));
+        if (action == "move")
+        {
+            RightClick(ui.Window, Realize(ui.Jobs, ui.Jobs.SelectedIndex));
+            ActivateMenu(ui.Window, ui.Jobs.ContextMenu!, "선택 이동…");
+        }
+        else Click(ui.Window, Button(ui.Window, action == "create" ? "+ 폴더" : "설정"));
         var dialog = action == "settings" ? ui.Window : Assert.Single(ui.Window.OwnedWindows);
         var settings = action == "settings" ? SettingsTestInput.AssertOpen(ui) : null;
         TextBox? input = action == "create" ? Named<TextBox>(dialog, "새 폴더 이름") : action == "settings" ? Named<TextBox>(dialog, "자동 ZIP 저장 폴더") : null;

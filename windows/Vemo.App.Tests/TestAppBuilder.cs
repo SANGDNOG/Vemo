@@ -9,6 +9,6 @@ namespace Vemo.App.Tests;
 public static class TestAppBuilder
 {
     // Run the shipped Application.Initialize, including Fluent and NativeWhite styles.
-    public static AppBuilder BuildAvaloniaApp() => AppBuilder.Configure<VemoApplication>()
+    public static AppBuilder BuildAvaloniaApp() => VemoApplication.BuildApp()
         .UseHeadless(new AvaloniaHeadlessPlatformOptions());
 }

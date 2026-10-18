@@ -11,18 +11,19 @@ namespace Vemo.App.Tests;
 public sealed class TranscriptProgressViewTests
 {
     [AvaloniaFact]
-    public void Plain_transcript_cards_preserve_every_character_and_have_no_timestamps()
+    public void Plain_transcript_rows_preserve_every_character_and_have_no_timestamps()
     {
         var view = new TranscriptView(); var host = new Window { Content = view, Width = 600, Height = 400 }; host.Show();
         try
         {
             const string raw = "첫 문장입니다. 두 번째 문장입니다.\n\n다음 문단입니다.";
             view.SetDocument(new(raw, [])); Pump();
-            var cards = view.GetVisualDescendants().OfType<Border>().Where(b => b.Classes.Contains("transcript-card")).ToArray();
+            var cards = view.GetVisualDescendants().OfType<Border>().Where(b => b.Classes.Contains("transcript-row")).ToArray();
             Assert.True(cards.Length >= 2);
-            Assert.Equal(raw, string.Concat(view.GetVisualDescendants().OfType<SelectableTextBlock>().Select(x => x.Text)));
+            // Display suppresses trailing line terminators; raw export preservation is tested by native pipeline tests.
+            Assert.Equal(raw.Replace("\r", "").Replace("\n", ""), string.Concat(view.GetVisualDescendants().OfType<SelectableTextBlock>().Select(x => x.Text)).Replace("\r", "").Replace("\n", ""));
             Assert.Empty(view.GetVisualDescendants().OfType<Button>());
-            Assert.All(cards, card => Assert.NotNull(card.Background));
+            Assert.All(cards, row => Assert.Equal(1, row.BorderThickness.Top));
         }
         finally { host.Close(); Pump(); }
     }

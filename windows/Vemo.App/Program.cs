@@ -6,10 +6,21 @@ namespace Vemo.App;
 
 internal static class Program
 {
-    [STAThread] public static void Main(string[] args) => AppBuilder.Configure<VemoApplication>().UsePlatformDetect().LogToTrace().StartWithClassicDesktopLifetime(args);
+    [STAThread] public static void Main(string[] args) => VemoApplication.BuildApp().UsePlatformDetect().LogToTrace().StartWithClassicDesktopLifetime(args);
 }
 public sealed class VemoApplication : Application
 {
+    public static AppBuilder BuildApp()
+    {
+        var builder = AppBuilder.Configure<VemoApplication>();
+        // Windows platform fallback otherwise resolves Korean semibold text to regular
+        // Malgun Gothic. An explicit fallback preserves the requested font weight.
+        if (OperatingSystem.IsWindows()) builder.With(new Avalonia.Media.FontManagerOptions
+        {
+            FontFallbacks = [new Avalonia.Media.FontFallback { FontFamily = new Avalonia.Media.FontFamily("Malgun Gothic") }]
+        });
+        return builder;
+    }
     public override void Initialize()
     {
         RequestedThemeVariant = ThemeVariant.Light;

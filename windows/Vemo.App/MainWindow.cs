@@ -23,7 +23,8 @@ public sealed partial class MainWindow : Window
     TrayController? tray; bool exitRequested;
     readonly AudioPlayerView player = new();
     readonly TranscriptView transcriptCards = new();
-    readonly ProcessingProgressView processingProgress = new();
+    readonly ProcessingProgressView processingProgress = new(), notesProgress = new();
+    readonly ProgressBar queueProgress = new() { Width = 55, Height = 3, Foreground = NativeWhite.Accent, Background = NativeWhite.Divider, IsVisible = false };
     readonly TextBlock recordedDate = NativeWhite.Text("", "caption");
     Grid? dateEditor;
     bool titleEditing;
@@ -85,7 +86,7 @@ public sealed partial class MainWindow : Window
             var selectedRow = new Grid { ColumnDefinitions = new("*,20") }; selectedRow.Children.Add(row); var mark = NativeWhite.SelectionMark(); Grid.SetColumn(mark, 1); selectedRow.Children.Add(mark); return selectedRow;
         });
         var outer = new Grid { RowDefinitions = new("*,Auto") };
-        var columns = new Grid { ColumnDefinitions = new("220,310,*") }; outer.Children.Add(columns);
+        var columns = new Grid { ColumnDefinitions = new("220,300,*") }; outer.Children.Add(columns);
         var sidebar = new Grid { RowDefinitions = new("Auto,Auto,Auto,Auto,*,Auto"), Background = NativeWhite.Sidebar };
         var brand = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(22, 21, 20, 28) };
         brand.Children.Add(new Image { Width = 27, Height = 27, Source = new Bitmap(Avalonia.Platform.AssetLoader.Open(new Uri("avares://Vemo.App/Assets/vemo-icon.png"))) }); brand.Children.Add(new TextBlock { Text = "Vemo", FontSize = 18, FontWeight = FontWeight.SemiBold, VerticalAlignment = VerticalAlignment.Center }); sidebar.Children.Add(brand);
@@ -110,36 +111,57 @@ public sealed partial class MainWindow : Window
         jobs.ContextMenu = new ContextMenu { ItemsSource = SelectionMenu() };
         var importRow = new Grid { ColumnDefinitions = new("*,Auto") }; var importLabel = NativeWhite.Text("오디오 파일 가져오기", "secondary"); importLabel.FontSize = 10; importLabel.VerticalAlignment = VerticalAlignment.Center; importRow.Children.Add(importLabel); var import = Button("+", Import, "quiet", () => !importing); NativeWhite.Label(import, "오디오 파일 가져오기", "Ctrl+O"); import.Classes.Add("icon-action"); import.Margin = new Thickness(0); import.ContentTemplate = new FuncDataTemplate<string>((_, _) => VemoIcons.Outline("plus", 24)); ToolTip.SetTip(import, "Ctrl+O · 녹음이 끝난 파일을 선택하세요"); Grid.SetColumn(import, 1); importRow.Children.Add(import); var importBorder = new Border { Child = importRow, Padding = new Thickness(18, 14), BorderBrush = NativeWhite.Divider, BorderThickness = new Thickness(0, 1, 0, 0) }; Grid.SetRow(importBorder, 3); listPane.Children.Add(importBorder);
         var listBorder = NativeWhite.Panel(listPane, true); Grid.SetColumn(listBorder, 1); columns.Children.Add(listBorder);
-        var detail = new Grid { RowDefinitions = new("Auto,*"), Margin = new Thickness(32, 18, 32, 20) }; recordingDetail = detail; detailHost.Children.Add(detail); Grid.SetColumn(detailHost, 2); columns.Children.Add(detailHost);
-        var top = new Grid { ColumnDefinitions = new("*,Auto") }; queueInfo.VerticalAlignment = VerticalAlignment.Center; top.Children.Add(queueInfo);
-        var queueMenu = new Button { Content = "처리 ⋯", Flyout = new MenuFlyout { ItemsSource = new Control[] { Menu("새 작업 일시중지 / 재개", ToggleQueue), Menu("모바일 폴더 지금 확인", Scan), Menu("설정", OpenSettings) } } }; queueMenu.Classes.Add("quiet"); VemoIcons.Decorate(queueMenu, "more", iconOnly: true); var topActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 3 };
+        var detail = new Grid { RowDefinitions = new("58,*") }; recordingDetail = detail; detailHost.Children.Add(detail); Grid.SetColumn(detailHost, 2); columns.Children.Add(detailHost);
+        var top = new Grid { ColumnDefinitions = new("*,Auto"), Margin = new Thickness(27, 0) }; queueInfo.VerticalAlignment = VerticalAlignment.Center; queueInfo.FontSize = 10;
+        var queueMenu = new Button { Content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 7, Children = { queueProgress, queueInfo } }, Padding = new Thickness(0), HorizontalAlignment = HorizontalAlignment.Left, Flyout = new MenuFlyout { ItemsSource = new Control[] { Menu("새 작업 일시중지 / 재개", ToggleQueue), Menu("모바일 폴더 지금 확인", Scan), Menu("설정", OpenSettings) } } }; queueMenu.Classes.Add("quiet"); NativeWhite.Label(queueMenu, "처리 상태 메뉴"); top.Children.Add(queueMenu);
+        var topActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 3 };
         var topImport = Button("파일 가져오기", Import, "quiet", () => !importing); VemoIcons.Decorate(topImport, "import", iconOnly: true);
         var topSettings = Button("환경 설정", OpenSettings, "quiet"); VemoIcons.Decorate(topSettings, "settings", iconOnly: true);
-        topActions.Children.Add(topImport); topActions.Children.Add(topSettings); topActions.Children.Add(queueMenu);
+        topActions.Children.Add(topImport); topActions.Children.Add(topSettings);
         Grid.SetColumn(topActions, 1); top.Children.Add(topActions); detail.Children.Add(top);
         var detailArea = new Grid(); Grid.SetRow(detailArea, 1); detail.Children.Add(detailArea);
         emptyDetail.Spacing = 12; emptyDetail.VerticalAlignment = VerticalAlignment.Center; emptyDetail.HorizontalAlignment = HorizontalAlignment.Center; emptyDetail.MaxWidth = 350;
         emptyDetail.Children.Add(NativeWhite.Text("기록을 선택하세요", "heading")); emptyDetail.Children.Add(NativeWhite.Text("전사와 노트를 한곳에서 읽고 정리하세요.\n완료된 오디오를 가져오면 설정한 로컬 처리기로 작업합니다.", "secondary")); emptyImport = Button("오디오 가져오기", Import, "primary", () => !importing); emptyDetail.Children.Add(emptyImport); detailArea.Children.Add(emptyDetail);
-        detailBody.RowDefinitions = new("Auto,Auto,Auto,Auto,*,Auto");
-        var detailScroll = new ScrollViewer { Content = detailBody, HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled };
-        detailBody.Height = 600;
-        detailScroll.SizeChanged += (_, e) => detailBody.Height = Math.Max(600, e.NewSize.Height);
-        detailArea.Children.Add(detailScroll);
+        detailBody.RowDefinitions = new("Auto,Auto,Auto,*,Auto");
+        detailArea.Children.Add(detailBody);
         title.DoubleTapped += (_, e) => { BeginTitleEdit(); e.Handled = true; };
-        var titleRow = new Grid { ColumnDefinitions = new("*,Auto"), Margin = new Thickness(0, 24, 0, 4) }; titleRow.Children.Add(title);
+        var titleRow = new Grid { ColumnDefinitions = new("*,Auto"), Margin = new Thickness(32, 27, 32, 0) }; titleRow.Children.Add(title);
         var more = new Button { Content = "⋯", Flyout = new MenuFlyout { ItemsSource = SelectionMenu() } }; NativeWhite.Label(more, "녹음 작업 메뉴"); more.Classes.Add("quiet"); VemoIcons.Decorate(more, "more", iconOnly: true); NativeWhite.Label(more, "녹음 작업 메뉴"); Grid.SetColumn(more, 1); titleRow.Children.Add(more); detailBody.Children.Add(titleRow);
-        var metadata = new StackPanel { Spacing = 8 }; metadata.Children.Add(detailPath); var edit = new Grid { ColumnDefinitions = new("*,Auto") }; dateEditor = edit; metadata.Children.Add(recordedDate); NativeWhite.Label(recordedDate, "녹음 날짜 표시"); edit.Children.Add(date); var save = Button("저장", SaveTitle, "soft"); Grid.SetColumn(save, 1); edit.Children.Add(save); metadata.Children.Add(edit); metadata.Children.Add(detailState); Grid.SetRow(metadata, 1); detailBody.Children.Add(metadata);
-        jobInfo.Margin = new Thickness(0, 10, 0, 12); var processingInfo = new StackPanel { Spacing = 8 }; processingInfo.Children.Add(processingProgress); processingInfo.Children.Add(jobInfo); var infoScroll = new ScrollViewer { Content = processingInfo, MaxHeight = 150 }; Grid.SetRow(infoScroll, 2); detailBody.Children.Add(infoScroll);
+        var metadata = new StackPanel { Spacing = 0, Margin = new Thickness(32, 10, 32, 22) }; recordedDate.FontSize = 11; recordedDate.LineHeight = 13; recordedDate.Margin = new Thickness(0, 0, 0, 15); detailPath.FontSize = 11; detailPath.VerticalAlignment = VerticalAlignment.Center; detailPath.Foreground = NativeWhite.Accent; var breadcrumb = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Height = 26, VerticalAlignment = VerticalAlignment.Center }; breadcrumb.Children.Add(VemoIcons.Outline("folder", 14)); breadcrumb.Children.Add(detailPath); var edit = new Grid { ColumnDefinitions = new("*,Auto") }; dateEditor = edit; metadata.Children.Add(recordedDate); NativeWhite.Label(recordedDate, "녹음 날짜 표시"); edit.Children.Add(date); var save = Button("저장", SaveTitle, "soft"); Grid.SetColumn(save, 1); edit.Children.Add(save); metadata.Children.Add(edit); metadata.Children.Add(breadcrumb); Grid.SetRow(metadata, 1); detailBody.Children.Add(metadata);
+        jobInfo.Margin = new Thickness(32, 8); jobInfo.FontSize = 11;
         tabs.SelectionChanged += (_, _) => UpdateActions();
         TabItem ResultTab(string name, string icon, Control body)
         {
             var item = new TabItem { Header = name, Content = body };
-            item.HeaderTemplate = new FuncDataTemplate<string>((text, _) => { var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 7 }; row.Children.Add(VemoIcons.Outline(icon, 15)); row.Children.Add(new TextBlock { Text = text }); return row; });
+            item.HeaderTemplate = new FuncDataTemplate<string>((text, _) => { var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Height = 16 }; row.Children.Add(VemoIcons.Outline(icon, 16)); row.Children.Add(new TextBlock { Text = text, FontSize = 12, LineHeight = 16, VerticalAlignment = VerticalAlignment.Center }); return row; });
             return item;
         }
-        tabs.ItemsSource = new[] { ResultTab("전사", "text", transcriptCards), ResultTab("노트", "note", new ScrollViewer { Content = renderedNotes }) }; Grid.SetRow(player, 3); detailBody.Children.Add(player); Grid.SetRow(tabs, 4); detailBody.Children.Add(tabs);
-        var footer = new WrapPanel { Margin = new Thickness(0, 16, 0, 0) }; var copyResult = Button("복사", CopyResult, "soft", HasResult); VemoIcons.Decorate(copyResult, "copy"); footer.Children.Add(copyResult); var exportResult = Button("내보내기", SaveResult, "soft", HasResult); VemoIcons.Decorate(exportResult, "export"); footer.Children.Add(exportResult); var resultFolder = Button("결과 폴더", OpenResultDirectory, "soft", () => Current()?.ExportPath != null); VemoIcons.Decorate(resultFolder, "folder"); footer.Children.Add(resultFolder); footer.Children.Add(Button("ZIP 내보내기", Export, null, () => HasSelection() && SelectedJobs().All(j => j.State == JobState.Completed))); footer.Children.Add(Button("선택 이동…", Move, null, HasSelection)); Grid.SetRow(footer, 5); detailBody.Children.Add(footer);
-        status.Margin = new Thickness(16, 8); var statusBar = new Border { Child = new ScrollViewer { Content = status, MaxHeight = 70 }, Background = NativeWhite.Sidebar, BorderBrush = NativeWhite.Divider, BorderThickness = new Thickness(0, 1, 0, 0) }; Grid.SetRow(statusBar, 1); outer.Children.Add(statusBar); Content = outer;
+        var transcriptBody = new Grid(); transcriptBody.Children.Add(transcriptCards); transcriptBody.Children.Add(processingProgress);
+        tabs.Classes.Add("result-tabs");
+        var notesBody = new Grid(); notesBody.Children.Add(renderedNotes); notesBody.Children.Add(notesProgress);
+        var notesScroll = new ScrollViewer { Content = notesBody }; notesScroll.SizeChanged += (_, e) => notesBody.MinHeight = Math.Max(0, e.NewSize.Height);
+        tabs.ItemsSource = new[] { ResultTab("전사", "text", transcriptBody), ResultTab("노트", "note", notesScroll) };
+        player.Margin = new Thickness(32, 0, 32, 22); Grid.SetRow(player, 2); detailBody.Children.Add(player); Grid.SetRow(tabs, 3); detailBody.Children.Add(tabs);
+        var footerArea = new StackPanel(); var errorScroll = new ScrollViewer { Content = jobInfo, MaxHeight = 80, IsVisible = false }; jobInfo.PropertyChanged += (_, e) => { if (e.Property == IsVisibleProperty) errorScroll.IsVisible = jobInfo.IsVisible; }; footerArea.Children.Add(errorScroll);
+        var footer = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(32, 18, 32, 25) };
+        var copyResult = Button("복사", CopyResult, null, HasResult); VemoIcons.Decorate(copyResult, "copy"); footer.Children.Add(copyResult);
+        var exportResult = Button("내보내기", SaveResult, null, HasResult); VemoIcons.Decorate(exportResult, "export"); footer.Children.Add(exportResult);
+        var resultFolder = Button("결과 폴더", OpenResultDirectory, null, () => Current()?.ExportPath != null); VemoIcons.Decorate(resultFolder, "folder"); footer.Children.Add(resultFolder);
+        foreach (Button button in footer.Children) { button.Margin = new Thickness(0); button.FontSize = 11; button.Foreground = NativeWhite.Secondary; }
+        footerArea.Children.Add(footer); Grid.SetRow(footerArea, 4); detailBody.Children.Add(footerArea);
+        void FitDetailHeight()
+        {
+            var compact = ClientSize.Height < 620;
+            titleRow.Margin = new Thickness(32, compact ? 16 : 27, 32, 0);
+            metadata.Margin = new Thickness(32, 10, 32, compact ? 12 : 22);
+            player.Margin = new Thickness(32, 0, 32, compact ? 12 : 22);
+            footer.Margin = new Thickness(32, compact ? 10 : 18, 32, compact ? 12 : 25);
+            errorScroll.MaxHeight = compact ? 40 : 80;
+        }
+        SizeChanged += (_, _) => FitDetailHeight();
+        FitDetailHeight();
+        processingProgress.PauseRequested += () => _ = Execute(ToggleQueue); notesProgress.PauseRequested += () => _ = Execute(ToggleQueue);
+        status.Margin = new Thickness(16, 8); var statusBar = new Border { Child = new ScrollViewer { Content = status, MaxHeight = 70 }, Background = NativeWhite.Sidebar, BorderBrush = NativeWhite.Divider, BorderThickness = new Thickness(0, 1, 0, 0) }; statusBar.IsVisible = !string.IsNullOrWhiteSpace(status.Text); status.PropertyChanged += (_, e) => { if (e.Property == TextBlock.TextProperty) statusBar.IsVisible = !string.IsNullOrWhiteSpace(status.Text); }; Grid.SetRow(statusBar, 1); outer.Children.Add(statusBar); Content = outer;
         transcriptCards.SeekRequested += seconds => player.Seek(seconds);
         runner.ProgressChanged += ProgressChanged;
         WireDragDrop(listArea);
@@ -352,22 +374,22 @@ public sealed partial class MainWindow : Window
         {
             refreshing = true; titleEditing = false; title.IsReadOnly = true; title.Text = RecordingTitles.Display(j); date.Text = RecordingTitles.Day(j) ?? ""; refreshing = false; editing = false; detailId = j.Id;
         }
-        recordedDate.Text = RecordingTitles.Day(j) ?? "녹음 날짜 미확인";
+        recordedDate.Text = j.RecordedAt != null && RecordingTitles.Day(j) == j.RecordedAt[..10] ? DisplayDate(j.RecordedAt) : RecordingTitles.Day(j)?.Replace("-", ".") ?? "녹음 날짜 미확인";
         if (dateEditor != null) dateEditor.IsVisible = RecordingTitles.Day(j) == null && j.Mobile == null;
         date.IsReadOnly = j.Mobile != null;
         UpdateProgress();
         ToolTip.SetTip(date, j.Mobile != null ? "모바일 녹음 날짜는 원본에서 유지되며 수정할 수 없습니다." : "예: 2026-10-18 · Enter 저장 / Escape 취소");
         detailPath.Text = FolderPath(j.FolderId) + (j.Trashed ? " · 휴지통" : "");
         detailState.Text = StateLabel(j.State) + " · " + j.Models.WhisperProfile + " / " + j.Models.NotesProfile + " · " + j.Models.Compute;
-        var messages = new List<string>(); if (RecordingTitles.Day(j) == null) messages.Add("녹음 날짜 미확인 · 파일 수정일로 대신하지 않습니다.");
-        if (j.Error != null) messages.Add("처리: " + j.Error); if (j.ExportError != null) messages.Add("ZIP 저장: " + j.ExportError); if (j.ExportPath != null) messages.Add("ZIP: " + j.ExportPath);
+        var messages = new List<string>();
+        if (j.Error != null) messages.Add("처리: " + j.Error); if (j.ExportError != null) messages.Add("ZIP 저장: " + j.ExportError);
         if (j.State != JobState.Completed && j.ArtifactRevision != null) messages.Add("이전 완료 결과는 유지됩니다.");
-        jobInfo.Text = string.Join("\n", messages); jobInfo.Foreground = j.Error != null || j.ExportError != null ? NativeWhite.Danger : NativeWhite.Secondary;
+        jobInfo.IsVisible = messages.Count > 0; jobInfo.Text = string.Join("\n", messages); jobInfo.Foreground = j.Error != null || j.ExportError != null ? NativeWhite.Danger : NativeWhite.Secondary;
         try
         {
             var source = store.ReadTranscript(j.Id); var markdown = store.ReadNotes(j.Id);
             transcriptCards.SetDocument(store.ReadTranscriptDocument(j.Id));
-            if (transcript.Text != source) transcript.Text = source; if (notes.Text != markdown) notes.Text = markdown; RenderNotes(markdown);
+            if (transcript.Text != source) transcript.Text = source; if (notes.Text != markdown) notes.Text = markdown; RenderNotes(markdown); UpdateProgress();
             transcript.PlaceholderText = "아직 전사가 없습니다. 처리 상태와 로컬 모델 설정을 확인하세요.";
             notes.PlaceholderText = "아직 노트가 없습니다. 전사가 있으면 재시도로 이어서 처리할 수 있습니다.";
         }

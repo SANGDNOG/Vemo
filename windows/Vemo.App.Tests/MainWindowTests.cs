@@ -299,7 +299,8 @@ public sealed class MainWindowTests
     {
         await using var ui = new UiFixture();
         ui.SelectJob();
-        Click(ui.Window, Button(ui.Window, "선택 이동…"));
+        RightClick(ui.Window, Realize(ui.Jobs, ui.Jobs.SelectedIndex));
+        ActivateMenu(ui.Window, ui.Jobs.ContextMenu!, "선택 이동…");
         var dialog = ui.Dialog("폴더 이동");
         var choices = Named<ComboBox>(dialog, "이동할 폴더");
         Assert.True(choices.Focus());

@@ -10,7 +10,7 @@ namespace Vemo.App;
 
 public sealed partial class MainWindow
 {
-    readonly StackPanel renderedNotes = new() { Spacing = 12, Margin = new Thickness(0, 16) };
+    readonly StackPanel renderedNotes = new() { Spacing = 12, Margin = new Thickness(32, 29) };
     string renderedMarkdown = "";
 
     void RenderNotes(string markdown)
@@ -29,7 +29,8 @@ public sealed partial class MainWindow
             var heading = line.StartsWith("### ") ? 3 : line.StartsWith("## ") ? 2 : line.StartsWith("# ") ? 1 : 0;
             var text = heading > 0 ? line[(heading + 1)..] : line.StartsWith("- ") ? "•  " + line[2..] : line;
             var block = NativeWhite.Text(text, line.StartsWith("출처:") ? "caption" : null);
-            block.FontSize = heading switch { 1 => 23, 2 => 19, 3 => 15, _ => 15 };
+            block.FontSize = heading switch { 1 => 18, 2 => 16, 3 => 14, _ => 13 };
+            block.LineHeight = heading > 0 ? 24 : 24.7; if (heading == 0) block.Foreground = Brush.Parse("#555660");
             if (heading > 0) { block.FontWeight = FontWeight.SemiBold; block.Margin = new Thickness(0, heading == 1 ? 0 : 14, 0, 2); }
             renderedNotes.Children.Add(block);
         }
