@@ -580,6 +580,8 @@ class MainActivity : Activity() {
         }
         standardFilters()
         navigation.addView(row().apply {
+            minimumHeight = dp(48)
+            dropTarget(this, null, foldersOnly = true)
             addView(text("폴더", 13f, muted, true), LinearLayout.LayoutParams(0, -2, 1f))
             addView(button("＋ 폴더") { rememberFolderFocus("create-folder"); folderEditor(null, selectedFolder) }.apply {
                 folderActionViews["create-folder"] = this
@@ -815,11 +817,16 @@ class MainActivity : Activity() {
             vemo().library.assign(item.id, target)
         }
     }
-    private fun dropTarget(view: View, target: String?) {
+    private fun dropTarget(view: View, target: String?, foldersOnly: Boolean = false) {
         val normal = view.background
         var accepted = false
         view.setOnDragListener { _, event ->
-            val item = event.localState as? LibraryDrag ?: return@setOnDragListener false
+            val item = event.localState as? LibraryDrag
+            if (item == null || (foldersOnly && !item.folder)) {
+                accepted = false
+                view.background = normal
+                return@setOnDragListener false
+            }
             when (event.action) {
                 DragEvent.ACTION_DRAG_STARTED -> {
                     accepted = try { canMove(item, target, vemo().library.snapshot()) } catch (_: Exception) { false }

@@ -2,5 +2,5 @@
     android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
     <path android:fillColor="@android:color/transparent" android:strokeColor="@color/vemo_design_accent"
         android:strokeWidth="1.7" android:strokeLineCap="round" android:strokeLineJoin="round"
-        android:pathData="M20,5v5h-5 M20,10A8,8 0,1 0,19,16" />
+        android:pathData="M19.391,15.061A8,8 0,1 1,17.657,6.343L20,8.686 M20,3.686V8.686H15" />
 </vector>

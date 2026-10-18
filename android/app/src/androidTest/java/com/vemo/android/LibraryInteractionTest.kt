@@ -32,6 +32,7 @@ class LibraryInteractionTest : InstrumentationTestCase() {
     @Volatile private var activity: Activity? = null
     private val folderIds = linkedSetOf<String>()
     private val recordingIds = linkedSetOf<String>()
+    private var ownsFixtureGate = false
     private val suffix = UUID.randomUUID().toString().take(6)
     private val lifecycle = object : Application.ActivityLifecycleCallbacks {
         override fun onActivityResumed(value: Activity) { if (value is MainActivity) activity = value }
@@ -48,7 +49,12 @@ class LibraryInteractionTest : InstrumentationTestCase() {
         // The legacy runner can start its test thread before Application.onCreate finishes.
         instrumentation.waitForIdleSync()
         app = instrumentation.targetContext.applicationContext as VemoApp
-        assertFalse("An existing recording or sync must not be interrupted", app.gate.busy())
+        if (name in setOf("testHeadingDropPersistsSubtreeAndSelectionAndKeepsCreateAction", "testCancelledRootAndDuplicateDropsPreserveLibrary")) {
+            assertFalse("Do not interrupt capture", app.gate.isRecording())
+            await("Existing sync must finish before fixture isolation") {
+                app.gate.beginSync().also { if (it) ownsFixtureGate = true }
+            }
+        } else assertFalse("An existing recording or sync must not be interrupted", app.gate.busy())
         app.registerActivityLifecycleCallbacks(lifecycle)
     }
 
@@ -64,9 +70,64 @@ class LibraryInteractionTest : InstrumentationTestCase() {
                 if (app.library.snapshot().folders.any { it.id == id }) app.library.deleteFolder(id)
             }
         } finally {
+            if (ownsFixtureGate) { app.gate.endSync(); ownsFixtureGate = false }
             app.unregisterActivityLifecycleCallbacks(lifecycle)
             super.tearDown()
         }
+    }
+
+    fun testHeadingDropPersistsSubtreeAndSelectionAndKeepsCreateAction() {
+        val parent = folder("parent")
+        val source = folder("source", parent.id)
+        val child = folder("child", source.id)
+        launch()
+        val selectedView = folderView(source.id)
+        main { assertTrue(selectedView.performClick()) }
+        instrumentation.waitForIdleSync()
+        val target = rootDropHeader()
+        main { assertTrue("Heading needs a 48dp drop area", target.height >= (48 * app.resources.displayMetrics.density).toInt()) }
+        val normal = target.background
+        drag(folderView(source.id), target, hover = {
+            assertNotSame("Valid hover should highlight", normal, target.background)
+        })
+        main {
+            assertNull(reopened().snapshot().folders.single { it.id == source.id }.parentId)
+            assertEquals(source.id, reopened().snapshot().folders.single { it.id == child.id }.parentId)
+            val selected = MainActivity::class.java.getDeclaredField("selectedFolder").apply { isAccessible = true }
+            assertEquals(source.id, selected.get(activity))
+            val create = views(activity!!.window.decorView).filterIsInstance<TextView>().single { it.text.toString() == "＋ 폴더" }
+            assertTrue(create.performClick())
+            val dialog = MainActivity::class.java.getDeclaredField("managementDialog").apply { isAccessible = true }.get(activity) as Dialog
+            assertTrue(dialog.isShowing)
+            dialog.dismiss()
+        }
+    }
+
+    fun testCancelledRootAndDuplicateDropsPreserveLibrary() {
+        val parent = folder("parent")
+        val source = folder("source", parent.id)
+        val collision = app.library.createFolder(parent.name, source.id).also { folderIds += it.id }
+        launch()
+        val before = File(app.filesDir, "library.json").readBytes()
+        val target = rootDropHeader()
+        val normal = target.background
+        drag(folderView(source.id), target, cancel = true, hover = {
+            assertNotSame("Valid cancelled drag should first highlight", normal, target.background)
+        })
+        main { assertSame(normal, target.background) }
+        assertTrue(before.contentEquals(File(app.filesDir, "library.json").readBytes()))
+        for (id in listOf(parent.id, collision.id)) {
+            val current = rootDropHeader()
+            val background = current.background
+            drag(folderView(id), current, hover = { assertSame("Invalid move must not highlight", background, current.background) })
+            assertTrue(before.contentEquals(File(app.filesDir, "library.json").readBytes()))
+        }
+        assertEquals(parent.id, reopened().snapshot().folders.single { it.id == source.id }.parentId)
+    }
+    private fun rootDropHeader(): View {
+        var target: View? = null
+        main { target = allViews().filterIsInstance<TextView>().single { it.text.toString() == "폴더" }.parent as View }
+        return target!!
     }
 
     fun testTouchFolderAndRecordingDragPreservesDescendantsAndImmutableBytes() {
@@ -288,7 +349,11 @@ class LibraryInteractionTest : InstrumentationTestCase() {
             .setAction(Intent.ACTION_MAIN).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
         instrumentation.waitForIdleSync()
     }
-    private fun main(block: () -> Unit) = instrumentation.runOnMainSync(block)
+    private fun main(block: () -> Unit) {
+        var failure: Throwable? = null
+        instrumentation.runOnMainSync { try { block() } catch (error: Throwable) { failure = error } }
+        failure?.let { throw it }
+    }
     private fun movePicker(): Spinner {
         // The picker lives in the app-owned dialog window, not the Activity decor tree.
         val field = MainActivity::class.java.getDeclaredField("managementDialog").apply { isAccessible = true }
@@ -373,7 +438,7 @@ class LibraryInteractionTest : InstrumentationTestCase() {
         inject(MotionEvent.ACTION_UP, point.exactCenterX(), point.exactCenterY(), down)
         instrumentation.waitForIdleSync()
     }
-    private fun drag(source: View, target: View, screenshotName: String? = null, cancel: Boolean = false) {
+    private fun drag(source: View, target: View, screenshotName: String? = null, cancel: Boolean = false, hover: () -> Unit = {}) {
         val from = bounds(source)
         val down = SystemClock.uptimeMillis()
         var x = from.exactCenterX(); var y = from.exactCenterY()
@@ -416,6 +481,7 @@ class LibraryInteractionTest : InstrumentationTestCase() {
                 SystemClock.sleep(25)
             }
             SystemClock.sleep(100)
+            main(hover)
             if (screenshotName != null) screenshot(screenshotName, settleMs = 100)
             val finalBounds = bounds(target, false)
             x = finalBounds.exactCenterX(); y = finalBounds.exactCenterY()
