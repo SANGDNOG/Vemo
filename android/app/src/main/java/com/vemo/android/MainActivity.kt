@@ -705,15 +705,49 @@ class MainActivity : Activity() {
             if (query.isNotBlank()) null else "새 녹음"
         ) { stopPlayer(); detailId = null; tab = "record"; render() })
     }
-    private fun emptyState(icon: Int, title: String, description: String, actionTitle: String? = null, action: () -> Unit = {}): LinearLayout = column().apply {
-        gravity = Gravity.CENTER; setPadding(dp(12), dp(32), dp(12), dp(32))
+    private fun emptyState(icon: Int, title: String, description: String, actionTitle: String? = null,
+        enabled: Boolean = true, compact: Boolean = false, action: () -> Unit = {}): LinearLayout = column().apply {
+        layoutParams = LinearLayout.LayoutParams(-1, -2)
+        gravity = Gravity.CENTER
+        minimumHeight = if (compact) 0 else dp(240)
+        setPadding(dp(25), dp(if (compact) 18 else 35), dp(25), dp(if (compact) 18 else 35))
+        if (compact) background = surface(subtle)
         addView(ImageView(this@MainActivity).apply {
-            setImageResource(icon); imageTintList = android.content.res.ColorStateList.valueOf(muted)
+            setImageResource(icon); imageTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#B5AFC4"))
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-        }, LinearLayout.LayoutParams(dp(32), dp(32)).apply { bottomMargin = dp(14) })
-        addView(text(title, 18f, ink, true).apply { gravity = Gravity.CENTER })
-        addView(text(description, 14f, muted).apply { gravity = Gravity.CENTER; setLineSpacing(dp(3).toFloat(), 1.15f) })
-        if (actionTitle != null) addView(compactAction(actionTitle, outlined = true, action = action), LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(14) })
+        }, LinearLayout.LayoutParams(dp(if (compact) 24 else 36), dp(if (compact) 24 else 36)).apply { bottomMargin = dp(18) })
+        addView(text(title, 17f, ink, true).apply {
+            gravity = Gravity.CENTER; setPadding(0, 0, 0, 0)
+        }, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(9) })
+        addView(text(description, 12f, muted).apply {
+            gravity = Gravity.CENTER; setPadding(0, 0, 0, 0); setLineSpacing(0f, 1.8f)
+        }, LinearLayout.LayoutParams(-1, -2))
+        if (actionTitle != null) addView(compactAction(actionTitle, outlined = true, action = action).apply {
+            isEnabled = enabled
+            textSize = 12f; minWidth = dp(76); minimumWidth = dp(76)
+            setPadding(dp(16), dp(8), dp(16), dp(8))
+        }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(21) })
+    }
+    private fun syncProblemPanel(problem: SyncProblem, compact: Boolean): LinearLayout {
+        val title = when (problem) {
+            SyncProblem.CONNECTION -> "연결을 확인해 주세요"
+            SyncProblem.AUTH -> "연결 승인을 확인해 주세요"
+            SyncProblem.CONFLICT -> "원격 파일을 확인해 주세요"
+            SyncProblem.VALIDATION -> "동기화 설정을 확인해 주세요"
+            SyncProblem.OTHER -> "동기화를 완료하지 못했어요"
+        }
+        val body = when (problem) {
+            SyncProblem.CONNECTION -> "기존 녹음과 결과는 그대로 보관되어 있어요.\n연결 상태를 확인한 뒤 다시 시도해 주세요."
+            SyncProblem.AUTH -> "기존 녹음과 결과는 그대로 보관되어 있어요.\n설정에서 로그인과 접근 권한을 확인해 주세요."
+            SyncProblem.CONFLICT -> "원격 콘텐츠와 충돌해 덮어쓰지 않았어요.\n기기 원본과 이전 결과는 그대로 보관되어 있어요."
+            SyncProblem.VALIDATION -> "연결된 폴더와 PC 처리기 정보를 확인해 주세요.\n기존 녹음과 결과는 그대로 보관되어 있어요."
+            SyncProblem.OTHER -> "저장 공간·폴더 권한·연결을 확인해 주세요.\n기존 녹음과 결과는 그대로 보관되어 있어요."
+        }
+        val settings = problem == SyncProblem.AUTH || problem == SyncProblem.VALIDATION || !vemo().cloudConfigured()
+        return emptyState(R.drawable.ic_warning, title, body,
+            if (settings) "연결 설정" else "다시 시도", !vemo().gate.busy(), compact) {
+            if (settings) { stopPlayer(); tab = "settings"; detailId = null; render() } else vemo().sync(true)
+        }
     }
     private fun freezeInteraction(frozen: Boolean) {
         interactionFrozen = frozen
@@ -1061,9 +1095,12 @@ class MainActivity : Activity() {
         }
         content.addView(tabs, LinearLayout.LayoutParams(if (resources.configuration.fontScale > 1.3f) -1 else dp(200), -2))
         gap(24)
+        val syncProblem = vemo().syncFeedback.problem(id)
         if (result != null) {
+            if (syncProblem != null) content.addView(syncProblemPanel(syncProblem, compact = true))
             val body = if (detailTab == "notes") result.notes else result.transcript
-            if (body.isBlank()) content.addView(text(if (detailTab == "notes") "아직 생성된 노트가 없습니다." else "아직 생성된 전사가 없습니다.", 15f, muted))
+            if (body.isBlank()) content.addView(emptyState(if (detailTab == "notes") R.drawable.ic_notes else R.drawable.ic_transcript,
+                if (detailTab == "notes") "아직 노트가 없어요" else "아직 전사가 없어요", "연결된 PC의 처리 결과를 확인해 주세요.", "다시 확인", !vemo().gate.busy()) { vemo().sync(true) })
             else if (detailTab == "notes") renderNotes(body)
             else body.split(Regex("\\n[ \t]*\\n")).forEach { paragraph ->
                 divider(content)
@@ -1074,22 +1111,35 @@ class MainActivity : Activity() {
             }
         } else {
             when {
-                item.state == CaptureState.INTERRUPTED -> content.addView(emptyState(R.drawable.ic_mic, "녹음이 중단되었어요", state(item), "복구 시도") { vemo().recover(id) })
-                item.state == CaptureState.FAILED -> content.addView(emptyState(R.drawable.ic_mic, "녹음을 완료하지 못했어요", state(item)))
-                item.mode == Mode.DESKTOP && item.uploadable && item.uploaded -> content.addView(emptyState(R.drawable.ic_refresh,
-                    "PC 결과를 기다리고 있어요", "녹음은 기기에 저장되어 있어요.\n연결된 PC의 처리가 끝나면 전사와 노트를 확인할 수 있어요.", "다시 확인") { vemo().sync(true) })
-                item.mode == Mode.DESKTOP && item.uploadable -> content.addView(emptyState(R.drawable.ic_refresh,
-                    "업로드를 기다리고 있어요", "클라우드 연결 후 완료한 녹음을 업로드하세요.\n기기 원본은 오프라인에서도 유지됩니다.", if (vemo().cloudConfigured()) "다시 시도" else "연결 설정") {
+                syncProblem != null -> content.addView(syncProblemPanel(syncProblem, compact = false))
+                vemo().syncing && vemo().syncFeedback.isAttempting(id) -> content.addView(emptyState(R.drawable.ic_cloud, "동기화를 확인하고 있어요", "기기 원본을 보존하며 업로드와 결과를 확인하고 있어요."))
+                item.state == CaptureState.INTERRUPTED -> content.addView(emptyState(R.drawable.ic_warning, "녹음이 중단되었어요", state(item), "복구 시도", !vemo().gate.busy()) { vemo().recover(id) })
+                item.state == CaptureState.FAILED -> content.addView(emptyState(R.drawable.ic_warning, "녹음을 완료하지 못했어요", state(item)))
+                item.mode == Mode.DESKTOP && item.uploadable && item.uploaded -> content.addView(emptyState(R.drawable.ic_cloud,
+                    "PC 결과를 기다리고 있어요", "녹음은 안전하게 저장되어 있어요.\n연결된 PC에서 처리가 끝나면 전사와 노트가 도착해요.", "다시 확인", !vemo().gate.busy()) { vemo().sync(true) })
+                item.mode == Mode.DESKTOP && item.uploadable -> content.addView(emptyState(R.drawable.ic_cloud,
+                    "업로드를 기다리고 있어요", "클라우드 연결 후 완료한 녹음을 업로드하세요.\n기기 원본은 오프라인에서도 유지됩니다.", if (vemo().cloudConfigured()) "다시 시도" else "연결 설정", !vemo().gate.busy()) {
                         if (vemo().cloudConfigured()) vemo().sync(true) else { stopPlayer(); tab = "settings"; detailId = null; render() }
                     })
-                else -> content.addView(text("아직 생성된 전사와 노트가 없습니다.", 15f, muted))
+                else -> content.addView(emptyState(R.drawable.ic_transcript, "아직 전사와 노트가 없어요",
+                    if (item.mode == Mode.RECORD_ONLY) "녹음만 저장한 기록이에요.\n오디오를 듣거나 공유할 수 있어요." else "녹음이 완료되면 PC 처리 결과를 확인할 수 있어요."))
             }
         }
-        // Preserve the exact supplied status, including failures after an earlier result; do not infer error categories.
+        // Keep diagnostics available without repeating a second status block below the designed state.
         if (item.status.isNotBlank()) {
-            content.addView(text(item.status, 13f, muted))
-            if (item.uploadable && vemo().cloudConfigured() && result != null)
-                content.addView(compactAction("동기화 / PC 결과 확인") { vemo().sync(true) })
+            val diagnostic = text(item.status, 12f, muted).apply {
+                visibility = View.GONE; setTextIsSelectable(true)
+                setLineSpacing(dp(2).toFloat(), 1.2f)
+            }
+            content.addView(compactAction("상태 자세히", outlined = false, action = {}).apply {
+                textSize = 12f
+                setOnClickListener {
+                    val open = diagnostic.visibility != View.VISIBLE
+                    diagnostic.visibility = if (open) View.VISIBLE else View.GONE
+                    text = if (open) "상태 접기" else "상태 자세히"
+                }
+            }, LinearLayout.LayoutParams(-2, -2).apply { gravity = Gravity.CENTER_HORIZONTAL })
+            content.addView(diagnostic, LinearLayout.LayoutParams(-1, -2))
         }
     }
 

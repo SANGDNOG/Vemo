@@ -78,3 +78,8 @@ Windows: `windows/artifacts/native-white-audit-20261018/{win-x64,win-arm64}.zip`
 작업 브랜치 PR: https://github.com/SANGDNOG/Vemo/pull/2
 
 기본 디자인 적용 이후 Android 확장(다중 선택/휴지통/기기 AI), Windows 엔진·플랫폼 기능, 남은 UI 차이와 실제 기기 검증을 별도 범위로 이어간다. 아직 전체 시안 완성 또는 모든 플랫폼 사용성 검증 완료를 주장하지 않는다.
+
+
+## 후속 Android 상태 화면 보완
+
+0.1.12에서 첨부 시안의 구름/경고·중앙 안내와 실제 오류 구분을 보완했다. [변경·동작·검증](ANDROID_STATUS_STATES.md)을 최신 상태로 참조한다. Windows는 이 후속 작업에서 변경하지 않았다.
